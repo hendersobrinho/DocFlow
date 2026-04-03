@@ -4,11 +4,73 @@
 
 # G-docs
 
-Documentacao tecnica principal do sistema desktop local para controle de recebimento de documentos por empresa.
+Sistema desktop local para controle de recebimento de documentos por empresa.
 
-Este `README` agora funciona como capa e indice da documentacao. O detalhamento completo foi separado em arquivos `.md` por topico dentro da pasta [`docs/`](docs).
+O G-docs foi pensado para organizar uma rotina operacional que normalmente fica espalhada entre planilhas, e-mails, mensagens e controles manuais. A proposta do projeto e oferecer uma aplicacao simples, clara e funcional para acompanhar documentos recorrentes, registrar pendencias, marcar recebimentos e manter historico operacional com mais seguranca.
 
-## Navegacao
+## Objetivo
+
+Centralizar o controle mensal de documentos empresariais em um sistema leve, local e facil de manter, permitindo que a operacao saiba com clareza:
+
+- quais documentos devem ser recebidos
+- de qual empresa cada documento pertence
+- em qual periodo ele esta pendente ou recebido
+- quando um documento foi encerrado e deixou de fazer parte da rotina
+- quem realizou alteracoes importantes dentro do sistema
+
+## Missao
+
+Reduzir o trabalho manual e a desorganizacao operacional, transformando um processo repetitivo e sensivel em um fluxo mais confiavel, rastreavel e simples de executar no dia a dia.
+
+## Principais caracteristicas
+
+- aplicacao desktop local, sem dependencia de servidor
+- interface em abas, objetiva e voltada para uso operacional
+- banco SQLite separado do programa, facilitando atualizacoes sem perda de dados
+- controle mensal por empresa, documento e periodo
+- regra de encerramento para retirar documentos dos meses futuros
+- login de usuarios com senha protegida por hash
+- perfis `admin` e `comum`
+- logs das alteracoes mais importantes
+- importacao por Excel para empresas e documentos
+- preparacao para empacotamento e instalacao
+
+## O que o sistema entrega
+
+- cadastro de empresas
+- cadastro de tipos de documento
+- cadastro de documentos vinculados a cada empresa
+- geracao de periodos mensais por ano
+- consulta por intervalo de ate 12 meses
+- atualizacao de status como `Recebido`, `Pendente` e `Encerrado`
+- controle de usuarios
+- visualizacao de logs administrativos
+- estrutura pronta para build por Windows, macOS e Linux
+
+## Fluxo principal de uso
+
+1. O usuario faz login no sistema.
+2. Cadastra ou importa empresas.
+3. Cadastra os tipos e documentos necessarios.
+4. Gera os periodos anuais de controle.
+5. Consulta uma empresa por periodo na aba `Controle`.
+6. Atualiza os status mensais dos documentos.
+7. O sistema registra logs das alteracoes relevantes.
+
+## Tecnologias utilizadas
+
+- Python
+- Tkinter
+- SQLite
+- openpyxl
+- PyInstaller
+
+## Estrutura da documentacao
+
+Este `README` funciona como apresentacao geral do projeto. A documentacao tecnica detalhada foi separada em arquivos `.md` dentro da pasta [`docs/`](docs), para facilitar estudo, manutencao e navegacao por assunto.
+
+### Documentacao tecnica
+
 - [1. Visao Geral Do Sistema](docs/01-visao-geral-do-sistema.md)
 - [2. Estrutura De Pastas E Arquivos](docs/02-estrutura-de-pastas-e-arquivos.md)
 - [3. Arquitetura Geral Do Projeto](docs/03-arquitetura-geral-do-projeto.md)
@@ -30,8 +92,8 @@ Este `README` agora funciona como capa e indice da documentacao. O detalhamento 
 - [19. Observacoes Importantes Para Git E Empacotamento](docs/19-observacoes-importantes-para-git-e-empacotamento.md)
 - [20. Encerramento](docs/20-encerramento.md)
 
-## Observacao
+## Observacoes
 
-- A imagem de capa usada neste arquivo esta em [`assets/capa.png`](assets/capa.png).
-- Os topicos foram separados para facilitar estudo, manutencao e consulta por assunto.
-- O conteudo tecnico detalhado continua preservado nos arquivos da pasta [`docs/`](docs).
+- A capa deste arquivo esta em [`assets/capa.png`](assets/capa.png).
+- Os icones da aplicacao ficam em [`assets/icons`](assets/icons).
+- O projeto foi estruturado para evoluir sem complicar a arquitetura alem do necessario.
