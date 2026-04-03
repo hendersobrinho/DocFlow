@@ -1,0 +1,2 @@
+"""Interface grafica Tkinter."""
+
