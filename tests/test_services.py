@@ -263,6 +263,19 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(worksheet["A1"].value, "Nome do documento")
         self.assertEqual(worksheet["B2"].value, "Extratos CC")
 
+    @unittest.skipIf(load_workbook is None, "openpyxl nao esta disponivel no ambiente de teste")
+    def test_import_service_exports_complete_registration_template(self) -> None:
+        file_path = Path(self.temp_dir.name) / "modelo_cadastro_completo.xlsx"
+
+        result = self.import_service.export_cadastro_completo_template(str(file_path))
+        workbook = load_workbook(file_path)
+        worksheet = workbook["Cadastros completos"]
+
+        self.assertEqual(result["columns"], 7)
+        self.assertEqual(worksheet["A1"].value, "Codigo da empresa")
+        self.assertEqual(worksheet["F1"].value, "Nome do documento")
+        self.assertEqual(worksheet["G2"].value, "Extratos CC")
+
     def test_empresa_service_accepts_integer_like_numeric_codes(self) -> None:
         empresa_id = self.empresa_service.create_empresa("101.0", "Empresa Decimal")
         empresa = self.empresa_service.get_empresa(empresa_id)
@@ -474,6 +487,159 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(len(documentos), 1)
         self.assertEqual(documentos[0]["nome_documento"], "Banco XP")
         self.assertEqual(documentos[0]["nome_tipo"], "Extratos CC")
+
+    def test_document_service_lists_reusable_document_names_by_type(self) -> None:
+        empresa_a_id = self.empresa_service.create_empresa(405, "Empresa A")
+        empresa_b_id = self.empresa_service.create_empresa(406, "Empresa B")
+        tipo_extrato_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        tipo_contrato_id = self.tipo_service.get_or_create_tipo("Contratos")["id"]
+
+        self.documento_service.create_documento(empresa_a_id, tipo_extrato_id, "Banco do Brasil")
+        self.documento_service.create_documento(empresa_b_id, tipo_extrato_id, "Banco do Brasil")
+        self.documento_service.create_documento(empresa_b_id, tipo_extrato_id, "Bradesco")
+        self.documento_service.create_documento(empresa_a_id, tipo_contrato_id, "Contrato Social")
+
+        extrato_names = self.documento_service.list_document_name_suggestions(tipo_extrato_id)
+        contrato_names = self.documento_service.list_document_name_suggestions(tipo_contrato_id)
+        filtered_names = self.documento_service.list_document_name_suggestions(tipo_extrato_id, search="brad")
+
+        self.assertEqual(extrato_names, ["Banco do Brasil", "Bradesco"])
+        self.assertEqual(contrato_names, ["Contrato Social"])
+        self.assertEqual(filtered_names, ["Bradesco"])
+
+    def test_import_service_imports_complete_registrations_for_multiple_companies(self) -> None:
+        class FakeWorksheet:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def iter_rows(self, min_row=1, values_only=True):
+                return iter(self._rows)
+
+        class FakeWorkbook:
+            def __init__(self, rows):
+                self.active = FakeWorksheet(rows)
+
+        workbook = FakeWorkbook(
+            [
+                (
+                    "codigo_empresa",
+                    "nome_empresa",
+                    "meios_recebimento",
+                    "email_contato",
+                    "nome_contato",
+                    "nome_documento",
+                    "nome_tipo",
+                ),
+                (
+                    601,
+                    "Empresa Importacao Completa A",
+                    "Email",
+                    "empresa.a@teste.com",
+                    "Ana",
+                    "Banco A",
+                    "Extratos CC",
+                ),
+                (None, None, None, None, None, "Relatorio Gerencial", "Balancetes"),
+                (
+                    602,
+                    "Empresa Importacao Completa B",
+                    "Onvio",
+                    "empresa.b@teste.com",
+                    "Bruno",
+                    "Portal Fiscal",
+                    "Comprovantes",
+                ),
+            ]
+        )
+
+        with patch.object(self.import_service, "_load_workbook", return_value=workbook):
+            result = self.import_service.import_cadastros_completos("cadastro_completo.xlsx")
+
+        empresa_a = self.empresa_service.get_empresa_by_code(601)
+        empresa_b = self.empresa_service.get_empresa_by_code(602)
+        documentos_a = self.documento_service.list_documentos_empresa(empresa_a["id"])
+        documentos_b = self.documento_service.list_documentos_empresa(empresa_b["id"])
+        tipo_balancetes = self.tipo_service.get_or_create_tipo("Balancetes")
+
+        self.assertEqual(result["processed_rows"], 3)
+        self.assertEqual(result["companies_created"], 2)
+        self.assertEqual(result["companies_updated"], 0)
+        self.assertEqual(result["companies_reused"], 0)
+        self.assertEqual(result["types_created"], 1)
+        self.assertEqual(result["documents_imported"], 3)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(empresa_a["email_contato"], "empresa.a@teste.com")
+        self.assertEqual(empresa_b["meios_recebimento"], "Onvio")
+        self.assertEqual(
+            [(doc["nome_documento"], doc["nome_tipo"]) for doc in documentos_a],
+            [("Relatorio Gerencial", "Balancetes"), ("Banco A", "Extratos CC")],
+        )
+        self.assertEqual([doc["nome_documento"] for doc in documentos_b], ["Portal Fiscal"])
+        self.assertEqual(tipo_balancetes["nome_tipo"], "Balancetes")
+
+    def test_import_service_complete_import_updates_existing_company_and_rolls_back_failed_rows(self) -> None:
+        class FakeWorksheet:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def iter_rows(self, min_row=1, values_only=True):
+                return iter(self._rows)
+
+        class FakeWorkbook:
+            def __init__(self, rows):
+                self.active = FakeWorksheet(rows)
+
+        self.empresa_service.create_empresa(610, "Empresa Existente")
+        workbook = FakeWorkbook(
+            [
+                (
+                    "codigo_empresa",
+                    "nome_empresa",
+                    "meios_recebimento",
+                    "email_contato",
+                    "nome_contato",
+                    "nome_documento",
+                    "nome_tipo",
+                ),
+                (
+                    610,
+                    "Empresa Existente Atualizada",
+                    "Email, Onvio",
+                    "empresa.existente@teste.com",
+                    "Carla",
+                    "Banco Central",
+                    "Extratos CC",
+                ),
+                (
+                    611,
+                    "Empresa Com Falha",
+                    "Email",
+                    "empresa.falha@teste.com",
+                    "Diego",
+                    "Documento sem tipo",
+                    None,
+                ),
+            ]
+        )
+
+        with patch.object(self.import_service, "_load_workbook", return_value=workbook):
+            result = self.import_service.import_cadastros_completos("cadastro_completo_erros.xlsx")
+
+        empresa_atualizada = self.empresa_service.get_empresa_by_code(610)
+        documentos = self.documento_service.list_documentos_empresa(empresa_atualizada["id"])
+
+        self.assertEqual(result["processed_rows"], 1)
+        self.assertEqual(result["companies_created"], 0)
+        self.assertEqual(result["companies_updated"], 1)
+        self.assertEqual(result["documents_imported"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertIsNone(self.empresa_service.get_empresa_by_code(611))
+        self.assertEqual(empresa_atualizada["nome_empresa"], "Empresa Existente Atualizada")
+        self.assertEqual(empresa_atualizada["meios_recebimento"], "Email, Onvio")
+        self.assertEqual(empresa_atualizada["email_contato"], "empresa.existente@teste.com")
+        self.assertEqual(empresa_atualizada["nome_contato"], "Carla")
+        self.assertEqual([doc["nome_documento"] for doc in documentos], ["Banco Central"])
+        self.assertIn("Linha 3", result["errors"][0])
 
     def test_alias_type_name_is_normalized_to_existing_canonical_type(self) -> None:
         tipo = self.tipo_service.get_or_create_tipo("Extrato CC")

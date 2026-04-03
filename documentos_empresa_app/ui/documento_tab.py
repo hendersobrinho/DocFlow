@@ -1,97 +1,9 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 from documentos_empresa_app.utils.helpers import CompanySelector, ValidationError
-
-
-class DocumentoImportLayoutDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Misc, import_service) -> None:
-        super().__init__(parent.winfo_toplevel())
-        self.parent = parent
-        self.import_service = import_service
-
-        self.title("Documentos - Layout de importacao")
-        self.transient(parent.winfo_toplevel())
-        self.resizable(True, True)
-        self.minsize(560, 320)
-
-        self._build_layout()
-        self.grab_set()
-        self.after(10, self._center_on_parent)
-
-    def _build_layout(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
-
-        ttk.Label(
-            self,
-            text=(
-                "Use as colunas nesta ordem. Para importar, selecione primeiro a empresa na aba "
-                "e depois use a planilha com os documentos dessa empresa."
-            ),
-            justify="left",
-            wraplength=700,
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
-
-        list_frame = ttk.LabelFrame(self, text="Estrutura esperada", padding=10)
-        list_frame.grid(row=1, column=0, sticky="nsew", padx=12)
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
-
-        tree = ttk.Treeview(
-            list_frame,
-            columns=("ordem", "campo", "obrigatorio", "exemplo"),
-            show="headings",
-            selectmode="none",
-        )
-        tree.heading("ordem", text="Ordem")
-        tree.heading("campo", text="Coluna")
-        tree.heading("obrigatorio", text="Obrigatorio")
-        tree.heading("exemplo", text="Exemplo")
-        tree.column("ordem", width=70, anchor="center")
-        tree.column("campo", width=220)
-        tree.column("obrigatorio", width=110, anchor="center")
-        tree.column("exemplo", width=220)
-        tree.grid(row=0, column=0, sticky="nsew")
-
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        tree.configure(yscrollcommand=scrollbar.set)
-
-        layout = self.import_service.get_documento_import_layout()
-        for item in layout:
-            tree.insert(
-                "",
-                "end",
-                values=(
-                    item["index"],
-                    item["field"],
-                    "Sim" if item["required"] else "Nao",
-                    item["example"],
-                ),
-            )
-
-        sample_values = [item["example"] for item in layout]
-        sample_text = " | ".join(sample_values)
-        ttk.Label(
-            self,
-            text=(
-                "Exemplo de linha:\n"
-                f"{sample_text}\n\n"
-                "A primeira linha pode conter os cabecalhos acima. O sistema ignora esse cabecalho automaticamente."
-            ),
-            justify="left",
-            wraplength=700,
-        ).grid(row=2, column=0, sticky="ew", padx=12, pady=(12, 12))
-
-    def _center_on_parent(self) -> None:
-        self.update_idletasks()
-        parent = self.parent.winfo_toplevel()
-        x = parent.winfo_rootx() + max((parent.winfo_width() - self.winfo_width()) // 2, 0)
-        y = parent.winfo_rooty() + max((parent.winfo_height() - self.winfo_height()) // 2, 0)
-        self.geometry(f"+{x}+{y}")
 
 
 class DocumentoTab(ttk.Frame):
@@ -106,6 +18,7 @@ class DocumentoTab(ttk.Frame):
         self.nome_var = tk.StringVar()
         self.tipo_var = tk.StringVar()
         self.tipo_nome_var = tk.StringVar()
+        self.nome_sugestao_var = tk.StringVar(value="Selecione um tipo para reutilizar nomenclaturas ja cadastradas.")
         self.tipo_map: dict[str, int] = {}
 
         self._build_layout()
@@ -145,41 +58,38 @@ class DocumentoTab(ttk.Frame):
         field_row.columnconfigure(1, weight=1)
 
         ttk.Label(field_row, text="Nome do documento").grid(row=0, column=0, sticky="w")
-        ttk.Entry(field_row, textvariable=self.nome_var).grid(row=1, column=0, sticky="ew", padx=(0, 10))
+        self.nome_combo = ttk.Combobox(field_row, textvariable=self.nome_var)
+        self.nome_combo.grid(row=1, column=0, sticky="ew", padx=(0, 10))
+        self.nome_combo.bind("<KeyRelease>", self._on_document_name_typed)
+        self.nome_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_document_name_suggestions())
 
         ttk.Label(field_row, text="Tipo do documento").grid(row=0, column=1, sticky="w")
         self.tipo_combo = ttk.Combobox(field_row, textvariable=self.tipo_var, state="readonly")
         self.tipo_combo.grid(row=1, column=1, sticky="ew")
+        self.tipo_combo.bind("<<ComboboxSelected>>", self._on_document_type_changed)
 
         action_row = ttk.Frame(form)
         action_row.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         action_row.columnconfigure(0, weight=1)
         action_row.columnconfigure(1, weight=1)
-        action_row.columnconfigure(2, weight=1)
 
         self.save_button = ttk.Button(action_row, text="Cadastrar documento", command=self.save_document)
         self.save_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        ttk.Button(action_row, text="Limpar", command=self.clear_form).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        ttk.Button(action_row, text="Importar Excel", command=self.import_documents).grid(row=0, column=2, sticky="ew")
+        ttk.Button(action_row, text="Limpar", command=self.clear_form).grid(row=0, column=1, sticky="ew")
 
-        import_help_row = ttk.Frame(form)
-        import_help_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        import_help_row.columnconfigure(0, weight=1)
-        ttk.Button(import_help_row, text="Baixar modelo", command=self.download_import_template).grid(
-            row=0,
-            column=0,
-            sticky="w",
-        )
-        ttk.Button(import_help_row, text="Ver layout", command=self.show_import_layout).grid(
-            row=0, column=1, sticky="e"
-        )
+        ttk.Label(
+            form,
+            textvariable=self.nome_sugestao_var,
+            justify="left",
+            wraplength=560,
+        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
 
         ttk.Label(
             form,
             text="Os tipos podem ser cadastrados e mantidos no painel ao lado.",
             justify="left",
             wraplength=560,
-        ).grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=3, column=0, sticky="w", pady=(6, 0))
 
         form.columnconfigure(0, weight=1)
 
@@ -281,9 +191,11 @@ class DocumentoTab(ttk.Frame):
             self.tipo_tree.focus(str(self.selected_tipo_id))
             self.tipo_tree.see(str(self.selected_tipo_id))
             self._populate_tipo_form(self.services.tipo_service.get_tipo(self.selected_tipo_id))
+            self._refresh_document_name_suggestions()
             return
 
         self._clear_tipo_form_state(clear_selection=False)
+        self._refresh_document_name_suggestions()
 
     def refresh_document_list(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -317,6 +229,7 @@ class DocumentoTab(ttk.Frame):
         self.current_company_id = None
         self.tree.delete(*self.tree.get_children())
         self._clear_document_form(clear_selection=False)
+        self._refresh_document_name_suggestions()
 
     def clear_form(self) -> None:
         self._clear_document_form(clear_selection=True)
@@ -330,6 +243,7 @@ class DocumentoTab(ttk.Frame):
             selection = self.tree.selection()
             if selection:
                 self.tree.selection_remove(*selection)
+        self._refresh_document_name_suggestions()
 
     def load_selected_document(self, _event=None) -> None:
         selection = self.tree.selection()
@@ -346,6 +260,43 @@ class DocumentoTab(ttk.Frame):
         self.nome_var.set(documento["nome_documento"])
         self.tipo_var.set(tipo["nome_tipo"])
         self.save_button.configure(text="Salvar alteracoes")
+        self._refresh_document_name_suggestions()
+
+    def _on_document_type_changed(self, _event=None) -> None:
+        self._refresh_document_name_suggestions()
+
+    def _on_document_name_typed(self, _event=None) -> None:
+        self._refresh_document_name_suggestions()
+
+    def _refresh_document_name_suggestions(self) -> None:
+        tipo_id = self.tipo_map.get(self.tipo_var.get())
+        search = self.nome_var.get().strip()
+        suggestions = self.services.documento_service.list_document_name_suggestions(tipo_documento_id=tipo_id, search=search)
+        self.nome_combo["values"] = suggestions
+
+        if tipo_id:
+            if suggestions:
+                self.nome_sugestao_var.set(
+                    f"Sugestoes do tipo selecionado: {len(suggestions)} nomenclaturas ja usadas no sistema."
+                )
+            else:
+                self.nome_sugestao_var.set(
+                    "Nenhuma nomenclatura encontrada para esse tipo ainda. Voce pode cadastrar uma nova."
+                )
+            return
+
+        if search:
+            if suggestions:
+                self.nome_sugestao_var.set(
+                    f"Sugestoes globais encontradas: {len(suggestions)} nomenclaturas semelhantes no sistema."
+                )
+            else:
+                self.nome_sugestao_var.set(
+                    "Nenhuma nomenclatura semelhante encontrada. Selecione um tipo para filtrar melhor."
+                )
+            return
+
+        self.nome_sugestao_var.set("Selecione um tipo para reutilizar nomenclaturas ja cadastradas.")
 
     def save_document(self) -> None:
         company_id = self.company_selector.get_selected_company_id()
@@ -475,62 +426,3 @@ class DocumentoTab(ttk.Frame):
         self.clear_tipo_form()
         self.on_data_changed()
         messagebox.showinfo("Tipos", "Tipo excluido com sucesso.", parent=self)
-
-    def import_documents(self) -> None:
-        company_id = self.company_selector.get_selected_company_id()
-        if not company_id:
-            messagebox.showwarning("Documentos", "Selecione uma empresa antes de importar.", parent=self)
-            return
-
-        file_path = filedialog.askopenfilename(
-            parent=self,
-            title="Selecione o arquivo Excel",
-            filetypes=[("Arquivos Excel", "*.xlsx *.xlsm"), ("Todos os arquivos", "*.*")],
-        )
-        if not file_path:
-            return
-
-        try:
-            result = self.services.import_service.import_documentos(file_path, company_id)
-        except ValidationError as exc:
-            messagebox.showerror("Importacao de documentos", str(exc), parent=self)
-            return
-
-        self.on_data_changed()
-        self.company_selector.set_company(company_id)
-        summary = [
-            f'Documentos importados: {result["imported"]}',
-            f'Documentos com falha: {result["failed"]}',
-        ]
-        if result["errors"]:
-            summary.append("")
-            summary.append("Erros encontrados:")
-            summary.extend(result["errors"][:10])
-        messagebox.showinfo("Importacao de documentos", "\n".join(summary), parent=self)
-
-    def show_import_layout(self) -> None:
-        dialog = DocumentoImportLayoutDialog(self, self.services.import_service)
-        self.wait_window(dialog)
-
-    def download_import_template(self) -> None:
-        file_path = filedialog.asksaveasfilename(
-            parent=self,
-            title="Salvar modelo de importacao de documentos",
-            defaultextension=".xlsx",
-            initialfile="modelo_importacao_documentos.xlsx",
-            filetypes=[("Planilha Excel", "*.xlsx")],
-        )
-        if not file_path:
-            return
-
-        try:
-            self.services.import_service.export_documento_template(file_path)
-        except ValidationError as exc:
-            messagebox.showerror("Documentos", str(exc), parent=self)
-            return
-
-        messagebox.showinfo(
-            "Documentos",
-            f"Modelo salvo com sucesso em:\n{file_path}",
-            parent=self,
-        )

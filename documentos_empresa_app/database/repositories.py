@@ -425,6 +425,30 @@ class DocumentoRepository(BaseRepository):
             (documento_id,),
         )
 
+    def list_distinct_names(self, tipo_documento_id: int | None = None, search: str | None = None) -> list[str]:
+        filters: list[str] = []
+        params: list = []
+
+        if tipo_documento_id is not None:
+            filters.append("tipo_documento_id = ?")
+            params.append(tipo_documento_id)
+
+        normalized_search = str(search or "").strip()
+        if normalized_search:
+            filters.append("nome_documento LIKE ? COLLATE NOCASE")
+            params.append(f"%{normalized_search}%")
+
+        query = """
+            SELECT DISTINCT nome_documento
+            FROM documentos_empresa
+        """
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
+        query += " ORDER BY nome_documento"
+
+        rows = self._fetchall(query, tuple(params))
+        return [row["nome_documento"] for row in rows]
+
     def find_duplicate(
         self,
         empresa_id: int,

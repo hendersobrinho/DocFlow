@@ -1,5 +1,5 @@
 #define AppName "G-docs"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppPublisher "G-docs"
 #define AppExeName "G-docs.exe"
 
@@ -12,13 +12,14 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist_installer
-OutputBaseFilename=G-docs-Setup
+OutputBaseFilename=G-docs-Setup-{#AppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=..\assets\icons\icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 ArchitecturesInstallIn64BitMode=x64compatible
+VersionInfoVersion={#AppVersion}
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"

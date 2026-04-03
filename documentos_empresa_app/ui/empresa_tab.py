@@ -7,16 +7,16 @@ from documentos_empresa_app.ui.delivery_methods_field import DeliveryMethodsFiel
 from documentos_empresa_app.utils.helpers import CompanySelector, ValidationError
 
 
-class EmpresaImportLayoutDialog(tk.Toplevel):
+class CadastroCompletoImportLayoutDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc, import_service) -> None:
         super().__init__(parent.winfo_toplevel())
         self.parent = parent
         self.import_service = import_service
 
-        self.title("Empresas - Layout de importacao")
+        self.title("Cadastro completo - Layout de importacao")
         self.transient(parent.winfo_toplevel())
         self.resizable(True, True)
-        self.minsize(620, 360)
+        self.minsize(780, 400)
 
         self._build_layout()
         self.grab_set()
@@ -29,8 +29,10 @@ class EmpresaImportLayoutDialog(tk.Toplevel):
         ttk.Label(
             self,
             text=(
-                "Use as colunas nesta ordem. Os dois primeiros campos sao obrigatorios. "
-                "Os demais podem ficar em branco."
+                "Use uma linha por documento. As cinco primeiras colunas identificam a empresa, "
+                "e as duas ultimas cadastram o documento e o tipo. Para importar so a empresa, "
+                "deixe as colunas de documento em branco. Para continuar a mesma empresa em linhas "
+                "seguidas, voce pode deixar as cinco primeiras colunas em branco depois da primeira linha."
             ),
             justify="left",
             wraplength=760,
@@ -52,7 +54,7 @@ class EmpresaImportLayoutDialog(tk.Toplevel):
         tree.heading("obrigatorio", text="Obrigatorio")
         tree.heading("exemplo", text="Exemplo")
         tree.column("ordem", width=70, anchor="center")
-        tree.column("campo", width=220)
+        tree.column("campo", width=240)
         tree.column("obrigatorio", width=110, anchor="center")
         tree.column("exemplo", width=260)
         tree.grid(row=0, column=0, sticky="nsew")
@@ -61,7 +63,7 @@ class EmpresaImportLayoutDialog(tk.Toplevel):
         scrollbar.grid(row=0, column=1, sticky="ns")
         tree.configure(yscrollcommand=scrollbar.set)
 
-        layout = self.import_service.get_empresa_import_layout()
+        layout = self.import_service.get_cadastro_completo_import_layout()
         for item in layout:
             tree.insert(
                 "",
@@ -160,33 +162,34 @@ class EmpresaTab(ttk.Frame):
         action_row.grid(row=3, column=0, sticky="ew")
         action_row.columnconfigure(0, weight=1)
         action_row.columnconfigure(1, weight=1)
-        action_row.columnconfigure(2, weight=1)
-        action_row.columnconfigure(3, weight=1)
-        action_row.columnconfigure(4, weight=1)
 
         self.save_button = ttk.Button(action_row, text="Cadastrar empresa", command=self.save_company)
         self.save_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         ttk.Button(action_row, text="Novo cadastro", command=self.clear_form).grid(
-            row=0, column=1, sticky="ew", padx=(0, 8)
+            row=0, column=1, sticky="ew"
         )
-        ttk.Button(action_row, text="Importar Excel", command=self.import_companies).grid(
-            row=0, column=2, sticky="ew", padx=(0, 8)
-        )
-        ttk.Button(action_row, text="Ver layout", command=self.show_import_layout).grid(
-            row=0,
-            column=3,
-            sticky="ew",
-            padx=(0, 8),
-        )
-        ttk.Button(action_row, text="Baixar modelo", command=self.download_import_template).grid(
-            row=0,
-            column=4,
-            sticky="ew",
-        )
+
+        import_row = ttk.Frame(form)
+        import_row.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        import_row.columnconfigure(1, weight=1)
+
+        ttk.Label(import_row, text="Importacao completa").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Button(
+            import_row,
+            text="Importar planilha",
+            command=self.import_full_registrations,
+        ).grid(row=0, column=1, sticky="w")
+
+        import_menu_button = ttk.Menubutton(import_row, text="Layout e modelo")
+        import_menu = tk.Menu(import_menu_button, tearoff=False)
+        import_menu.add_command(label="Ver layout", command=self.show_complete_import_layout)
+        import_menu.add_command(label="Baixar modelo", command=self.download_complete_import_template)
+        import_menu_button["menu"] = import_menu
+        import_menu_button.grid(row=0, column=2, sticky="e")
 
         form.columnconfigure(0, weight=1)
 
-        consultation = ttk.LabelFrame(self, text="Consulta e resumo da empresa", padding=12)
+        consultation = ttk.LabelFrame(self, text="Detalhes do cadastro da empresa", padding=12)
         consultation.grid(row=1, column=0, sticky="nsew")
         consultation.columnconfigure(0, weight=1)
         consultation.rowconfigure(2, weight=1)
@@ -197,7 +200,7 @@ class EmpresaTab(ttk.Frame):
             active_only=False,
             on_selected=self.on_company_selected,
             on_cleared=self._on_company_selector_cleared,
-            title="Consulta por codigo ou nome",
+            title="Localizar empresa para consultar",
         )
         self.company_selector.grid(row=0, column=0, sticky="ew")
 
@@ -397,49 +400,54 @@ class EmpresaTab(ttk.Frame):
         self.on_data_changed()
         messagebox.showinfo("Empresas", "Empresa excluida com sucesso.", parent=self)
 
-    def import_companies(self) -> None:
+    def show_complete_import_layout(self) -> None:
+        dialog = CadastroCompletoImportLayoutDialog(self, self.services.import_service)
+        self.wait_window(dialog)
+
+    def import_full_registrations(self) -> None:
         file_path = filedialog.askopenfilename(
             parent=self,
-            title="Selecione o arquivo Excel",
+            title="Selecione o arquivo Excel do cadastro completo",
             filetypes=[("Arquivos Excel", "*.xlsx *.xlsm"), ("Todos os arquivos", "*.*")],
         )
         if not file_path:
             return
 
         try:
-            result = self.services.import_service.import_empresas(file_path)
+            result = self.services.import_service.import_cadastros_completos(file_path)
         except ValidationError as exc:
-            messagebox.showerror("Importacao de empresas", str(exc), parent=self)
+            messagebox.showerror("Importacao de cadastro completo", str(exc), parent=self)
             return
 
         self.on_data_changed()
         summary = [
-            f'Registros importados: {result["imported"]}',
-            f'Registros com falha: {result["failed"]}',
+            f'Linhas processadas: {result["processed_rows"]}',
+            f'Empresas criadas: {result["companies_created"]}',
+            f'Empresas atualizadas: {result["companies_updated"]}',
+            f'Empresas reutilizadas: {result["companies_reused"]}',
+            f'Tipos criados: {result["types_created"]}',
+            f'Documentos importados: {result["documents_imported"]}',
+            f'Linhas com falha: {result["failed"]}',
         ]
         if result["errors"]:
             summary.append("")
             summary.append("Erros encontrados:")
             summary.extend(result["errors"][:10])
-        messagebox.showinfo("Importacao de empresas", "\n".join(summary), parent=self)
+        messagebox.showinfo("Importacao de cadastro completo", "\n".join(summary), parent=self)
 
-    def show_import_layout(self) -> None:
-        dialog = EmpresaImportLayoutDialog(self, self.services.import_service)
-        self.wait_window(dialog)
-
-    def download_import_template(self) -> None:
+    def download_complete_import_template(self) -> None:
         file_path = filedialog.asksaveasfilename(
             parent=self,
-            title="Salvar modelo de importacao de empresas",
+            title="Salvar modelo de importacao completa",
             defaultextension=".xlsx",
-            initialfile="modelo_importacao_empresas.xlsx",
+            initialfile="modelo_importacao_cadastro_completo.xlsx",
             filetypes=[("Planilha Excel", "*.xlsx")],
         )
         if not file_path:
             return
 
         try:
-            self.services.import_service.export_empresa_template(file_path)
+            self.services.import_service.export_cadastro_completo_template(file_path)
         except ValidationError as exc:
             messagebox.showerror("Empresas", str(exc), parent=self)
             return

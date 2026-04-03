@@ -31,6 +31,11 @@ class DocumentoService:
             raise ValidationError("Documento nao encontrado.")
         return documento
 
+    def list_document_name_suggestions(self, tipo_documento_id: int | None = None, search: str = "") -> list[str]:
+        if tipo_documento_id is not None:
+            self._ensure_tipo(tipo_documento_id)
+        return self.documento_repository.list_distinct_names(tipo_documento_id=tipo_documento_id, search=search)
+
     def create_documento(self, empresa_id: int, tipo_documento_id: int, nome_documento: str) -> int:
         nome = self._normalize_name(nome_documento)
         with self.documento_repository.db_manager.connect():

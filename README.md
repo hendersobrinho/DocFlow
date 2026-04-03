@@ -6,6 +6,8 @@
 
 Sistema desktop local para controle de recebimento de documentos por empresa.
 
+Versao atual: `1.1.0`
+
 O G-docs foi pensado para organizar uma rotina operacional que normalmente fica espalhada entre planilhas, e-mails, mensagens e controles manuais. A proposta do projeto e oferecer uma aplicacao simples, clara e funcional para acompanhar documentos recorrentes, registrar pendencias, marcar recebimentos e manter historico operacional com mais seguranca.
 
 ## Objetivo
@@ -32,10 +34,11 @@ Reduzir o trabalho manual e a desorganizacao operacional, transformando um proce
 - login de usuarios com senha protegida por hash e opcao de lembrar credencial
 - perfis `admin` e `comum`
 - logs das alteracoes mais importantes
-- importacao por Excel para empresas e documentos
+- importacao completa por Excel para empresas, tipos e documentos no mesmo arquivo
 - relatorio de pendencias em Excel por empresa e periodo
 - backup do banco pela interface e restauracao restrita a admin
 - vinculo opcional de pasta local para documentos por empresa
+- reaproveitamento de tipos e nomenclaturas de documentos ja usados no sistema
 - preparacao para empacotamento e instalacao
 
 ## O que o sistema entrega
@@ -43,7 +46,7 @@ Reduzir o trabalho manual e a desorganizacao operacional, transformando um proce
 - cadastro de empresas
 - manutencao de meios de recebimento por empresa
 - cadastro de tipos de documento no painel lateral da aba `Documentos`
-- cadastro de documentos vinculados a cada empresa
+- cadastro de documentos vinculados a cada empresa com sugestoes reutilizaveis por tipo
 - geracao de periodos mensais por ano
 - consulta por intervalo de ate 12 meses
 - atualizacao de status como `Recebido`, `Pendente` e `Encerrado`
@@ -57,8 +60,8 @@ Reduzir o trabalho manual e a desorganizacao operacional, transformando um proce
 ## Fluxo principal de uso
 
 1. O usuario faz login no sistema.
-2. Cadastra ou importa empresas.
-3. Cadastra os tipos e documentos necessarios na aba `Documentos`.
+2. Cadastra empresas manualmente ou usa a importacao completa para trazer empresas, tipos e documentos de uma vez.
+3. Complementa os documentos necessarios na aba `Documentos`, reutilizando tipos e nomenclaturas ja existentes quando fizer sentido.
 4. Gera os periodos anuais de controle.
 5. Consulta uma empresa por periodo na aba `Controle`.
 6. Atualiza os status mensais dos documentos.
@@ -99,4 +102,3 @@ Este `README` funciona como apresentacao geral do projeto. A documentacao tecnic
 - [18. Icones E Empacotamento Por Sistema Operacional](docs/18-icones-e-empacotamento-por-sistema-operacional.md)
 - [19. Observacoes Importantes Para Git E Empacotamento](docs/19-observacoes-importantes-para-git-e-empacotamento.md)
 - [20. Encerramento](docs/20-encerramento.md)
-

@@ -68,6 +68,10 @@ Ele usa `cairosvg` se estiver disponivel. Quando `cairosvg` nao esta instalado, 
 2. rodar `scripts\\build_release.bat`
 3. gerar o instalador com `installer\\G-docs.iss`
 
+Saida esperada do instalador Windows:
+
+- `dist_installer/G-docs-Setup-<versao>.exe`
+
 ### macOS
 
 1. garantir que `assets/icons/icon.icns` existe
@@ -92,6 +96,6 @@ Observacao importante:
 - `documentos_empresa_app.spec`: define o build PyInstaller por plataforma
 - `scripts/build_release.sh`: build Linux/macOS
 - `scripts/build_release.bat`: build Windows
-- `installer/G-docs.iss`: instalador Windows usando `icon.ico`
+- `installer/G-docs.iss`: instalador Windows usando `icon.ico` e versionando o arquivo final do setup
 
 ---

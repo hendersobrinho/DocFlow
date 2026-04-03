@@ -21,12 +21,16 @@ class TipoService:
         return tipo
 
     def get_or_create_tipo(self, nome_tipo: str) -> dict:
+        tipo, _created = self.ensure_tipo(nome_tipo)
+        return tipo
+
+    def ensure_tipo(self, nome_tipo: str) -> tuple[dict, bool]:
         nome = self._normalize_name(nome_tipo)
         existing = self.tipo_repository.get_by_name(nome)
         if existing:
-            return existing
+            return existing, False
         tipo_id = self.create_tipo(nome)
-        return self.get_tipo(tipo_id)
+        return self.get_tipo(tipo_id), True
 
     def create_tipo(self, nome_tipo: str) -> int:
         nome = self._normalize_name(nome_tipo)

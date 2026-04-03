@@ -22,6 +22,8 @@ dist_installer/
 *.tmp
 *.swp
 *.swo
+modelo_importacao_*.xlsx
+relatorio_*.xlsx
 .DS_Store
 Thumbs.db
 *.egg-info/
