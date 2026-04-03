@@ -1,20 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from documentos_empresa_app.app_context import ApplicationServices
 from documentos_empresa_app.ui.controle_tab import ControleTab
 from documentos_empresa_app.ui.documento_tab import DocumentoTab
-from documentos_empresa_app.ui.edicao_tab import EdicaoTab
 from documentos_empresa_app.ui.empresa_tab import EmpresaTab
 from documentos_empresa_app.ui.log_tab import LogTab
 from documentos_empresa_app.ui.periodo_tab import PeriodoTab
-from documentos_empresa_app.ui.tipo_tab import TipoTab
 from documentos_empresa_app.ui.user_tab import UserTab
+from documentos_empresa_app.utils.common import ValidationError
 from documentos_empresa_app.utils.display import get_preferred_screen_bounds
-from documentos_empresa_app.utils.helpers import APP_NAME
+from documentos_empresa_app.utils.helpers import APP_NAME, save_login_preferences
 from documentos_empresa_app.utils.resources import apply_window_icon
 
 
@@ -24,6 +24,7 @@ class MainWindow(tk.Tk):
         self.db_path = Path(db_path)
         self.services = services
         self.logout_requested = False
+        self.restart_requested = False
         self.title(APP_NAME)
 
         self._configure_style()
@@ -64,7 +65,7 @@ class MainWindow(tk.Tk):
         y = origin_y + max((available_height - height) // 2, 0)
 
         self.geometry(f"{width}x{height}+{x}+{y}")
-        self.minsize(min(1200, width), min(760, height))
+        self.minsize(min(1024, width), min(720, height))
 
     def _configure_icon(self) -> None:
         apply_window_icon(self)
@@ -82,6 +83,14 @@ class MainWindow(tk.Tk):
         header_right.pack(side="right")
 
         ttk.Button(header_right, text="Logout", command=self.logout).pack(side="right")
+        self.database_menu_button = ttk.Menubutton(header_right, text="Banco")
+        self.database_menu = tk.Menu(self.database_menu_button, tearoff=False)
+        self.database_menu.add_command(label="Fazer backup...", command=self.backup_database)
+        self.database_menu.add_command(label="Restaurar backup...", command=self.restore_database)
+        if not self.services.session_service.is_admin():
+            self.database_menu.entryconfigure("Restaurar backup...", state="disabled")
+        self.database_menu_button["menu"] = self.database_menu
+        self.database_menu_button.pack(side="right", padx=(0, 8))
         ttk.Label(header_right, text=f"Banco: {self.db_path}", foreground="#4F4F4F").pack(side="right", padx=(0, 12))
         self.user_info_label = ttk.Label(header_right, foreground="#4F4F4F")
         self.user_info_label.pack(side="right", padx=(0, 12))
@@ -93,8 +102,6 @@ class MainWindow(tk.Tk):
             ControleTab(self.notebook, self.services, self.refresh_all_tabs),
             EmpresaTab(self.notebook, self.services, self.refresh_all_tabs),
             DocumentoTab(self.notebook, self.services, self.refresh_all_tabs),
-            TipoTab(self.notebook, self.services, self.refresh_all_tabs),
-            EdicaoTab(self.notebook, self.services, self.refresh_all_tabs),
             PeriodoTab(self.notebook, self.services, self.refresh_all_tabs),
         ]
 
@@ -102,8 +109,6 @@ class MainWindow(tk.Tk):
             "Controle",
             "Empresas",
             "Documentos",
-            "Tipos",
-            "Edicao",
             "Periodos",
         ]
 
@@ -139,6 +144,88 @@ class MainWindow(tk.Tk):
     def logout(self) -> None:
         if not messagebox.askyesno(APP_NAME, "Deseja encerrar a sessao atual e voltar para o login?", parent=self):
             return
+        current_user = self.services.session_service.current_user
+        current_username = current_user["username"] if current_user else ""
+        self.services.auth_service.revoke_remembered_session(self.services.session_service.get_remembered_token())
+        save_login_preferences(
+            current_username,
+            remember_credential=False,
+            remembered_token=None,
+        )
         self.logout_requested = True
         self.services.session_service.logout()
+        self.destroy()
+
+    def backup_database(self) -> None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Salvar backup do banco",
+            defaultextension=".db",
+            initialdir=str(self.db_path.parent),
+            initialfile=f"{self.db_path.stem}_backup_{timestamp}.db",
+            filetypes=[
+                ("Banco SQLite", "*.db"),
+                ("Todos os arquivos", "*.*"),
+            ],
+        )
+        if not file_path:
+            return
+
+        try:
+            result = self.services.database_maintenance_service.create_backup(file_path)
+        except ValidationError as exc:
+            messagebox.showerror(APP_NAME, str(exc), parent=self)
+            return
+
+        messagebox.showinfo(
+            APP_NAME,
+            (
+                "Backup gerado com sucesso.\n\n"
+                f'Arquivo: {result["path"]}\n'
+                f'Tamanho: {result["size_bytes"]} bytes'
+            ),
+            parent=self,
+        )
+
+    def restore_database(self) -> None:
+        file_path = filedialog.askopenfilename(
+            parent=self,
+            title="Selecionar backup para restaurar",
+            initialdir=str(self.db_path.parent),
+            filetypes=[
+                ("Banco SQLite", "*.db"),
+                ("Todos os arquivos", "*.*"),
+            ],
+        )
+        if not file_path:
+            return
+        if not messagebox.askyesno(
+            APP_NAME,
+            (
+                "A restauracao substituira os dados atuais do banco em uso.\n\n"
+                "Deseja continuar?"
+            ),
+            parent=self,
+        ):
+            return
+        if not messagebox.askyesno(
+            APP_NAME,
+            "Confirma a restauracao definitiva desse backup?",
+            parent=self,
+        ):
+            return
+
+        try:
+            self.services.database_maintenance_service.restore_backup(file_path)
+        except ValidationError as exc:
+            messagebox.showerror(APP_NAME, str(exc), parent=self)
+            return
+
+        messagebox.showinfo(
+            APP_NAME,
+            "Backup restaurado com sucesso. O sistema sera recarregado para aplicar os dados restaurados.",
+            parent=self,
+        )
+        self.restart_requested = True
         self.destroy()

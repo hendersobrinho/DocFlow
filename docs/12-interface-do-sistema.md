@@ -16,6 +16,7 @@
 - mostra nome do sistema
 - mostra banco atual
 - mostra usuario logado
+- oferece menu `Banco` com backup e restauracao
 - oferece `Logout`
 - abre abas conforme permissao
 
@@ -29,6 +30,7 @@
   - limpeza de filtros
   - clique para expandir/recolher grupo
   - alteracao de status
+  - abertura da pasta vinculada da empresa
 - conversa com:
   - `CompanySelector`
   - `PeriodoService`
@@ -38,40 +40,29 @@
 
 - trata:
   - cadastro/edicao de empresa
-  - selecao na `Treeview`
+  - consulta por seletor reutilizavel
   - inativacao/reativacao
   - exclusao
   - importacao Excel
+  - download de modelo de planilha
 
 ### `DocumentoTab`
 
 - trata:
   - selecao de empresa
   - cadastro/edicao de documento
-  - criacao rapida de tipo
-  - exclusao
+  - manutencao de tipos de documento no painel lateral
+  - exclusao de um ou varios documentos
   - importacao Excel
-
-### `TipoTab`
-
-- trata:
-  - CRUD de tipos
-  - bloqueio de exclusao em uso
-
-### `EdicaoTab`
-
-- concentra:
-  - selecao de empresa
-  - atualizacao de dados da empresa
-  - ativacao/inativacao
-  - exclusao da empresa
-  - edicao e exclusao de documentos vinculados
+  - download de modelo de planilha
 
 ### `PeriodoTab`
 
 - subaba `Gerar periodos`
 - subaba `Excluir ano`
+- subaba `Relatorio de pendencias`
 - faz dupla confirmacao em exclusao
+- permite exportar pendencias em Excel por empresa(s) e periodo
 
 ### `UserTab`
 
@@ -91,6 +82,8 @@
 
 - busca por codigo
 - filtra sugestoes por nome
+- abre janela de lista com `F2` ou `...`
+- a lista faz filtro em tempo real conforme digitacao
 - limpa contexto quando a selecao fica invalida
 - evita auto-selecao arriscada por substring
 
@@ -100,7 +93,7 @@
 
 ### `DeliveryMethodsField`
 
-- encapsula combobox + listbox para meios de recebimento
+- encapsula combobox + acoes compactas para meios de recebimento
 - evita duplicacao em duas abas
 
 ### `DatabasePathDialog`

@@ -92,8 +92,4 @@ Este `README` funciona como apresentacao geral do projeto. A documentacao tecnic
 - [19. Observacoes Importantes Para Git E Empacotamento](docs/19-observacoes-importantes-para-git-e-empacotamento.md)
 - [20. Encerramento](docs/20-encerramento.md)
 
-## Observacoes
 
-- A capa deste arquivo esta em [`assets/capa.png`](assets/capa.png).
-- Os icones da aplicacao ficam em [`assets/icons`](assets/icons).
-- O projeto foi estruturado para evoluir sem complicar a arquitetura alem do necessario.

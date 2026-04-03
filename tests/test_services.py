@@ -7,10 +7,12 @@ from unittest.mock import patch
 
 from documentos_empresa_app.database.connection import DatabaseManager
 from documentos_empresa_app.database.repositories import (
+    DeliveryMethodRepository,
     DocumentoRepository,
     EmpresaRepository,
     LogRepository,
     PeriodoRepository,
+    RememberedSessionRepository,
     StatusRepository,
     TipoRepository,
     UsuarioRepository,
@@ -18,16 +20,24 @@ from documentos_empresa_app.database.repositories import (
 from documentos_empresa_app.database.schema import initialize_schema
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.auth_service import AuthService
+from documentos_empresa_app.services.database_maintenance_service import DatabaseMaintenanceService
+from documentos_empresa_app.services.delivery_method_service import DeliveryMethodService
 from documentos_empresa_app.services.documento_service import DocumentoService
 from documentos_empresa_app.services.empresa_service import EmpresaService
 from documentos_empresa_app.services.import_service import ImportService
 from documentos_empresa_app.services.log_service import LogService
+from documentos_empresa_app.services.pending_report_service import PendingReportService
 from documentos_empresa_app.services.periodo_service import PeriodoService
 from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.services.status_service import StatusService
 from documentos_empresa_app.services.tipo_service import TipoService
 from documentos_empresa_app.services.user_service import UserService
 from documentos_empresa_app.utils.common import ValidationError
+
+try:
+    from openpyxl import load_workbook
+except ImportError:  # pragma: no cover - depende do ambiente local
+    load_workbook = None
 
 
 class ApplicationServiceTests(unittest.TestCase):
@@ -39,17 +49,25 @@ class ApplicationServiceTests(unittest.TestCase):
         initialize_schema(db_manager)
 
         self.empresa_repository = EmpresaRepository(db_manager)
+        self.delivery_method_repository = DeliveryMethodRepository(db_manager)
         self.tipo_repository = TipoRepository(db_manager)
         self.documento_repository = DocumentoRepository(db_manager)
         self.periodo_repository = PeriodoRepository(db_manager)
         self.status_repository = StatusRepository(db_manager)
         self.usuario_repository = UsuarioRepository(db_manager)
+        self.remembered_session_repository = RememberedSessionRepository(db_manager)
         self.log_repository = LogRepository(db_manager)
 
         self.session_service = SessionService()
         self.audit_service = AuditService(self.log_repository, self.session_service)
 
         self.empresa_service = EmpresaService(
+            self.empresa_repository,
+            audit_service=self.audit_service,
+            session_service=self.session_service,
+        )
+        self.delivery_method_service = DeliveryMethodService(
+            self.delivery_method_repository,
             self.empresa_repository,
             audit_service=self.audit_service,
             session_service=self.session_service,
@@ -63,6 +81,12 @@ class ApplicationServiceTests(unittest.TestCase):
             session_service=self.session_service,
         )
         self.periodo_service = PeriodoService(self.periodo_repository)
+        self.pending_report_service = PendingReportService(
+            self.empresa_repository,
+            self.documento_repository,
+            self.periodo_repository,
+            self.status_repository,
+        )
         self.status_service = StatusService(
             self.empresa_repository,
             self.documento_repository,
@@ -76,11 +100,13 @@ class ApplicationServiceTests(unittest.TestCase):
             self.tipo_service,
             self.documento_service,
         )
-        self.auth_service = AuthService(self.usuario_repository)
+        self.database_maintenance_service = DatabaseMaintenanceService(db_manager)
+        self.auth_service = AuthService(self.usuario_repository, self.remembered_session_repository)
         self.user_service = UserService(
             self.usuario_repository,
             self.session_service,
             audit_service=self.audit_service,
+            auth_service=self.auth_service,
         )
         self.log_service = LogService(self.log_repository, self.session_service)
 
@@ -94,6 +120,11 @@ class ApplicationServiceTests(unittest.TestCase):
         tipos = [item["nome_tipo"] for item in self.tipo_service.list_tipos()]
         self.assertIn("Extratos CC", tipos)
         self.assertIn("Contratos", tipos)
+
+    def test_initial_delivery_methods_are_seeded(self) -> None:
+        methods = [item["nome_meio"] for item in self.delivery_method_service.list_methods()]
+        self.assertIn("WhatsApp", methods)
+        self.assertIn("Email", methods)
 
     def test_generate_year_does_not_duplicate_months(self) -> None:
         first_run = self.periodo_service.generate_year(2026)
@@ -129,6 +160,109 @@ class ApplicationServiceTests(unittest.TestCase):
         later_view = self.status_service.build_control_view(empresa_id, may["id"], jun["id"])
         self.assertEqual(later_view["groups"], [])
 
+    def test_pending_report_lists_only_pending_statuses(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(110, "Empresa Pendencias")
+        tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        documento_a_id = self.documento_service.create_documento(empresa_id, tipo_id, "Banco A")
+        documento_b_id = self.documento_service.create_documento(empresa_id, tipo_id, "Banco B")
+        self.periodo_service.generate_year(2026)
+
+        periodos = self.periodo_service.list_periodos()
+        jan = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 1)
+        feb = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 2)
+
+        self.status_service.update_status(documento_a_id, jan["id"], "Pendente")
+        self.status_service.update_status(documento_a_id, feb["id"], "Recebido")
+        self.status_service.update_status(documento_b_id, feb["id"], "Pendente")
+
+        report = self.pending_report_service.list_pending_rows([empresa_id], jan["id"], feb["id"])
+
+        self.assertEqual(len(report["rows"]), 2)
+        self.assertEqual(
+            [(row["nome_documento"], row["mes"], row["status"]) for row in report["rows"]],
+            [("Banco A", 1, "Pendente"), ("Banco B", 2, "Pendente")],
+        )
+
+    def test_status_view_includes_last_change_metadata(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(112, "Empresa Status")
+        tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        documento_id = self.documento_service.create_documento(empresa_id, tipo_id, "Banco Auditoria")
+        self.periodo_service.generate_year(2026)
+
+        periodos = self.periodo_service.list_periodos()
+        jan = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 1)
+
+        self.status_service.update_status(documento_id, jan["id"], "Recebido")
+
+        view = self.status_service.build_control_view(empresa_id, jan["id"], jan["id"])
+        cell = view["groups"][0]["documentos"][0]["cells"][0]
+
+        self.assertEqual(cell["status"], "Recebido")
+        self.assertEqual(cell["updated_by_username"], "admin")
+        self.assertTrue(cell["updated_at"])
+
+    @unittest.skipIf(load_workbook is None, "openpyxl nao esta disponivel no ambiente de teste")
+    def test_pending_report_exports_excel(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(111, "Empresa Excel")
+        tipo_id = self.tipo_service.get_or_create_tipo("Contratos")["id"]
+        documento_id = self.documento_service.create_documento(empresa_id, tipo_id, "Contrato Social")
+        self.periodo_service.generate_year(2026)
+        periodos = self.periodo_service.list_periodos()
+        mar = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 3)
+
+        self.status_service.update_status(documento_id, mar["id"], "Pendente")
+
+        file_path = Path(self.temp_dir.name) / "relatorio_pendencias.xlsx"
+        result = self.pending_report_service.export_pending_report(str(file_path), [empresa_id], mar["id"], mar["id"])
+
+        workbook = load_workbook(file_path)
+        worksheet = workbook["Pendencias"]
+
+        self.assertEqual(result["rows"], 1)
+        self.assertEqual(worksheet.max_row, 2)
+        self.assertEqual(worksheet["A2"].value, 111)
+        self.assertEqual(worksheet["B2"].value, "Empresa Excel")
+        self.assertEqual(worksheet["G2"].value, "Contrato Social")
+        self.assertEqual(worksheet["H2"].value, "Pendente")
+
+    def test_backup_restore_recovers_previous_database_state(self) -> None:
+        self.empresa_service.create_empresa(113, "Empresa Antes do Backup")
+        backup_path = Path(self.temp_dir.name) / "backup_teste.db"
+
+        self.database_maintenance_service.create_backup(backup_path)
+        self.empresa_service.create_empresa(114, "Empresa Depois do Backup")
+
+        self.database_maintenance_service.restore_backup(backup_path)
+        empresas = self.empresa_service.list_empresas(active_only=False)
+        codigos = [empresa["codigo_empresa"] for empresa in empresas]
+
+        self.assertIn(113, codigos)
+        self.assertNotIn(114, codigos)
+
+    @unittest.skipIf(load_workbook is None, "openpyxl nao esta disponivel no ambiente de teste")
+    def test_import_service_exports_empresa_template(self) -> None:
+        file_path = Path(self.temp_dir.name) / "modelo_empresas.xlsx"
+
+        result = self.import_service.export_empresa_template(str(file_path))
+        workbook = load_workbook(file_path)
+        worksheet = workbook["Empresas"]
+
+        self.assertEqual(result["columns"], 5)
+        self.assertEqual(worksheet["A1"].value, "Codigo da empresa")
+        self.assertEqual(worksheet["E2"].value, "Maria Silva")
+
+    @unittest.skipIf(load_workbook is None, "openpyxl nao esta disponivel no ambiente de teste")
+    def test_import_service_exports_document_template(self) -> None:
+        file_path = Path(self.temp_dir.name) / "modelo_documentos.xlsx"
+
+        result = self.import_service.export_documento_template(str(file_path))
+        workbook = load_workbook(file_path)
+        worksheet = workbook["Documentos"]
+
+        self.assertEqual(result["columns"], 2)
+        self.assertEqual(worksheet["A1"].value, "Nome do documento")
+        self.assertEqual(worksheet["B2"].value, "Extratos CC")
+
     def test_empresa_service_accepts_integer_like_numeric_codes(self) -> None:
         empresa_id = self.empresa_service.create_empresa("101.0", "Empresa Decimal")
         empresa = self.empresa_service.get_empresa(empresa_id)
@@ -161,6 +295,32 @@ class ApplicationServiceTests(unittest.TestCase):
 
         self.assertEqual(empresa["meios_recebimento"], "Portal, Email")
 
+    def test_empresa_service_can_save_company_directory(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(108, "Empresa Pasta")
+
+        self.empresa_service.set_empresa_directory(empresa_id, "~/Documentos/Empresa Pasta")
+        empresa = self.empresa_service.get_empresa(empresa_id)
+
+        self.assertTrue(empresa["diretorio_documentos"])
+        self.assertIn("Empresa Pasta", empresa["diretorio_documentos"])
+
+    def test_empresa_update_preserves_saved_directory(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(109, "Empresa Diretorio")
+        self.empresa_service.set_empresa_directory(empresa_id, "~/Documentos/Empresa Diretorio")
+
+        self.empresa_service.update_empresa(
+            empresa_id,
+            "Empresa Diretorio Atualizada",
+            ["Email"],
+            "diretorio@empresa.com",
+            "Rita",
+        )
+        empresa = self.empresa_service.get_empresa(empresa_id)
+
+        self.assertEqual(empresa["nome_empresa"], "Empresa Diretorio Atualizada")
+        self.assertTrue(empresa["diretorio_documentos"])
+        self.assertIn("Empresa Diretorio", empresa["diretorio_documentos"])
+
     def test_empresa_service_rejects_invalid_optional_email(self) -> None:
         with self.assertRaises(ValidationError):
             self.empresa_service.create_empresa(
@@ -169,6 +329,47 @@ class ApplicationServiceTests(unittest.TestCase):
                 meios_recebimento=["Email"],
                 email_contato="email_invalido",
             )
+
+    def test_tipo_service_blocks_delete_when_type_is_in_use(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(105, "Empresa Tipo Em Uso")
+        tipo_id = self.tipo_service.get_or_create_tipo("Comprovantes")["id"]
+        self.documento_service.create_documento(empresa_id, tipo_id, "Portal Fiscal")
+
+        with self.assertRaises(ValidationError):
+            self.tipo_service.delete_tipo(tipo_id)
+
+    def test_renaming_delivery_method_updates_companies_using_it(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(
+            106,
+            "Empresa Meio Global",
+            meios_recebimento=["Email", "Onvio"],
+        )
+        method = next(item for item in self.delivery_method_service.list_methods() if item["nome_meio"] == "Email")
+
+        affected = self.delivery_method_service.update_method(method["id"], "E-mail")
+        empresa = self.empresa_service.get_empresa(empresa_id)
+        methods = [item["nome_meio"] for item in self.delivery_method_service.list_methods()]
+
+        self.assertEqual(affected, 1)
+        self.assertEqual(empresa["meios_recebimento"], "E-mail, Onvio")
+        self.assertIn("E-mail", methods)
+        self.assertNotIn("Email", methods)
+
+    def test_deleting_delivery_method_only_removes_it_from_system_list(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(
+            107,
+            "Empresa Meio Removido",
+            meios_recebimento=["Onvio"],
+        )
+        method = next(item for item in self.delivery_method_service.list_methods() if item["nome_meio"] == "Onvio")
+
+        affected = self.delivery_method_service.delete_method(method["id"])
+        empresa = self.empresa_service.get_empresa(empresa_id)
+        methods = [item["nome_meio"] for item in self.delivery_method_service.list_methods()]
+
+        self.assertEqual(affected, 1)
+        self.assertEqual(empresa["meios_recebimento"], "Onvio")
+        self.assertNotIn("Onvio", methods)
 
     def test_sparse_period_range_still_blocks_more_than_twelve_months(self) -> None:
         start_id = self.periodo_repository.create(2026, 1)
@@ -181,6 +382,98 @@ class ApplicationServiceTests(unittest.TestCase):
         with patch("documentos_empresa_app.services.import_service.load_workbook", side_effect=OSError("boom")):
             with self.assertRaises(ValidationError):
                 self.import_service.import_empresas("arquivo_invalido.xlsx")
+
+    def test_import_service_imports_company_optional_fields_and_skips_header(self) -> None:
+        class FakeWorksheet:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def iter_rows(self, min_row=1, values_only=True):
+                return iter(self._rows)
+
+        class FakeWorkbook:
+            def __init__(self, rows):
+                self.active = FakeWorksheet(rows)
+
+        workbook = FakeWorkbook(
+            [
+                ("codigo_empresa", "nome_empresa", "meios_recebimento", "email_contato", "nome_contato"),
+                (201, "Empresa Importada", "Email, Onvio", "importacao@empresa.com", "Joana"),
+            ]
+        )
+
+        with patch.object(self.import_service, "_load_workbook", return_value=workbook):
+            result = self.import_service.import_empresas("empresas.xlsx")
+
+        empresa = self.empresa_service.get_empresa_by_code(201)
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(empresa["nome_empresa"], "Empresa Importada")
+        self.assertEqual(empresa["meios_recebimento"], "Email, Onvio")
+        self.assertEqual(empresa["email_contato"], "importacao@empresa.com")
+        self.assertEqual(empresa["nome_contato"], "Joana")
+
+    def test_import_service_keeps_legacy_company_two_column_layout(self) -> None:
+        class FakeWorksheet:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def iter_rows(self, min_row=1, values_only=True):
+                return iter(self._rows)
+
+        class FakeWorkbook:
+            def __init__(self, rows):
+                self.active = FakeWorksheet(rows)
+
+        workbook = FakeWorkbook(
+            [
+                (301, "Empresa Antiga"),
+            ]
+        )
+
+        with patch.object(self.import_service, "_load_workbook", return_value=workbook):
+            result = self.import_service.import_empresas("empresas_antigas.xlsx")
+
+        empresa = self.empresa_service.get_empresa_by_code(301)
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(empresa["nome_empresa"], "Empresa Antiga")
+        self.assertIsNone(empresa["meios_recebimento"])
+        self.assertIsNone(empresa["email_contato"])
+        self.assertIsNone(empresa["nome_contato"])
+
+    def test_import_service_imports_documents_and_skips_header(self) -> None:
+        class FakeWorksheet:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def iter_rows(self, min_row=1, values_only=True):
+                return iter(self._rows)
+
+        class FakeWorkbook:
+            def __init__(self, rows):
+                self.active = FakeWorksheet(rows)
+
+        empresa_id = self.empresa_service.create_empresa(401, "Empresa Docs")
+        workbook = FakeWorkbook(
+            [
+                ("nome_documento", "nome_tipo"),
+                ("Banco XP", "Extratos CC"),
+            ]
+        )
+
+        with patch.object(self.import_service, "_load_workbook", return_value=workbook):
+            result = self.import_service.import_documentos("documentos.xlsx", empresa_id)
+
+        documentos = self.documento_service.list_documentos_empresa(empresa_id)
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(len(documentos), 1)
+        self.assertEqual(documentos[0]["nome_documento"], "Banco XP")
+        self.assertEqual(documentos[0]["nome_tipo"], "Extratos CC")
 
     def test_alias_type_name_is_normalized_to_existing_canonical_type(self) -> None:
         tipo = self.tipo_service.get_or_create_tipo("Extrato CC")
@@ -225,6 +518,31 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(user["username"], "admin")
         self.assertEqual(user["tipo_usuario"], "admin")
         self.assertEqual(user["ativa"], 1)
+
+    def test_auth_service_can_authenticate_with_remembered_session(self) -> None:
+        token = self.auth_service.create_remembered_session(self.session_service.get_user_id())
+
+        user = self.auth_service.authenticate_with_remembered_session(token)
+
+        self.assertEqual(user["username"], "admin")
+        self.assertEqual(user["tipo_usuario"], "admin")
+
+    def test_revoked_remembered_session_cannot_authenticate(self) -> None:
+        token = self.auth_service.create_remembered_session(self.session_service.get_user_id())
+
+        self.auth_service.revoke_remembered_session(token)
+
+        with self.assertRaises(ValidationError):
+            self.auth_service.authenticate_with_remembered_session(token)
+
+    def test_password_change_revokes_user_remembered_sessions(self) -> None:
+        user_id = self.user_service.create_user("lembrado", "123456", "comum", ativo=True)
+        token = self.auth_service.create_remembered_session(user_id)
+
+        self.user_service.update_user(user_id, "lembrado", "comum", True, password="654321")
+
+        with self.assertRaises(ValidationError):
+            self.auth_service.authenticate_with_remembered_session(token)
 
     def test_inactive_user_cannot_login(self) -> None:
         user_id = self.user_service.create_user("maria", "123456", "comum", ativo=True)

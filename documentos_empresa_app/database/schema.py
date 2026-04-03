@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from documentos_empresa_app.database.connection import DatabaseManager
-from documentos_empresa_app.utils.common import normalize_delivery_methods
+from documentos_empresa_app.utils.common import DOCUMENT_DELIVERY_OPTIONS, normalize_delivery_methods
 from documentos_empresa_app.utils.security import hash_password
 from documentos_empresa_app.utils.type_names import canonicalize_tipo_name
 
@@ -16,6 +16,8 @@ INITIAL_TYPES = (
     "Outros",
 )
 
+INITIAL_DELIVERY_METHODS = DOCUMENT_DELIVERY_OPTIONS
+
 
 SCHEMA_STATEMENTS = (
     """
@@ -26,6 +28,7 @@ SCHEMA_STATEMENTS = (
         meios_recebimento TEXT NULL,
         email_contato TEXT NULL,
         nome_contato TEXT NULL,
+        diretorio_documentos TEXT NULL,
         ativa INTEGER NOT NULL DEFAULT 1 CHECK (ativa IN (0, 1))
     )
     """,
@@ -33,6 +36,12 @@ SCHEMA_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS tipos_documento (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nome_tipo TEXT NOT NULL UNIQUE COLLATE NOCASE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS meios_recebimento_sistema (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome_meio TEXT NOT NULL UNIQUE COLLATE NOCASE
     )
     """,
     """
@@ -60,6 +69,8 @@ SCHEMA_STATEMENTS = (
         documento_empresa_id INTEGER NOT NULL,
         periodo_id INTEGER NOT NULL,
         status TEXT NULL CHECK (status IN ('Recebido', 'Pendente', 'Encerrado') OR status IS NULL),
+        updated_by_user_id INTEGER NULL,
+        updated_at TEXT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (documento_empresa_id) REFERENCES documentos_empresa(id) ON DELETE CASCADE,
         FOREIGN KEY (periodo_id) REFERENCES periodos(id) ON DELETE CASCADE,
         CONSTRAINT uq_status UNIQUE (documento_empresa_id, periodo_id)
@@ -73,6 +84,17 @@ SCHEMA_STATEMENTS = (
         tipo_usuario TEXT NOT NULL CHECK (tipo_usuario IN ('admin', 'comum')),
         ativa INTEGER NOT NULL DEFAULT 1 CHECK (ativa IN (0, 1)),
         criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sessoes_lembradas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario_id INTEGER NOT NULL,
+        selector TEXT NOT NULL UNIQUE,
+        token_hash TEXT NOT NULL,
+        criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ultimo_uso_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
     )
     """,
     """
@@ -95,6 +117,7 @@ SCHEMA_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_periodos_ano_mes ON periodos (ano, mes)",
     "CREATE INDEX IF NOT EXISTS idx_status_documento_periodo ON status_documento_mensal (documento_empresa_id, periodo_id)",
     "CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios (username)",
+    "CREATE INDEX IF NOT EXISTS idx_sessoes_lembradas_usuario ON sessoes_lembradas (usuario_id)",
     "CREATE INDEX IF NOT EXISTS idx_logs_data_hora ON logs (data_hora DESC)",
     "CREATE INDEX IF NOT EXISTS idx_logs_usuario_id ON logs (usuario_id)",
 )
@@ -108,6 +131,7 @@ def initialize_schema(db_manager: DatabaseManager) -> None:
         ensure_empresa_extra_columns(connection)
         normalize_empresa_delivery_methods(connection)
         ensure_log_metadata_columns(connection)
+        ensure_status_audit_columns(connection)
         backfill_log_metadata(connection)
 
         for tipo in INITIAL_TYPES:
@@ -118,6 +142,16 @@ def initialize_schema(db_manager: DatabaseManager) -> None:
                 ON CONFLICT(nome_tipo) DO NOTHING
                 """,
                 (tipo,),
+            )
+
+        for method in INITIAL_DELIVERY_METHODS:
+            connection.execute(
+                """
+                INSERT INTO meios_recebimento_sistema (nome_meio)
+                VALUES (?)
+                ON CONFLICT(nome_meio) DO NOTHING
+                """,
+                (method,),
             )
 
         ensure_default_admin(connection)
@@ -133,6 +167,7 @@ def ensure_empresa_extra_columns(connection) -> None:
         "meios_recebimento": "TEXT NULL",
         "email_contato": "TEXT NULL",
         "nome_contato": "TEXT NULL",
+        "diretorio_documentos": "TEXT NULL",
     }
     for column_name, column_definition in required_columns.items():
         if column_name in columns:
@@ -182,6 +217,30 @@ def ensure_log_metadata_columns(connection) -> None:
 
     connection.execute("CREATE INDEX IF NOT EXISTS idx_logs_empresa_id ON logs (empresa_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_logs_periodo ON logs (periodo_ano, periodo_mes)")
+
+
+def ensure_status_audit_columns(connection) -> None:
+    columns = {
+        row["name"]: row
+        for row in connection.execute("PRAGMA table_info(status_documento_mensal)").fetchall()
+    }
+    required_columns = {
+        "updated_by_user_id": "INTEGER NULL",
+        "updated_at": "TEXT NULL",
+    }
+
+    for column_name, column_definition in required_columns.items():
+        if column_name in columns:
+            continue
+        connection.execute(f"ALTER TABLE status_documento_mensal ADD COLUMN {column_name} {column_definition}")
+
+    connection.execute(
+        """
+        UPDATE status_documento_mensal
+        SET updated_at = CURRENT_TIMESTAMP
+        WHERE updated_at IS NULL
+        """
+    )
 
 
 def backfill_log_metadata(connection) -> None:

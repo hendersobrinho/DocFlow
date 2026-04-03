@@ -6,7 +6,7 @@ from tkinter import messagebox, ttk
 from documentos_empresa_app.app_context import ApplicationServices
 from documentos_empresa_app.utils.common import APP_NAME
 from documentos_empresa_app.utils.display import get_preferred_screen_bounds
-from documentos_empresa_app.utils.helpers import ValidationError
+from documentos_empresa_app.utils.helpers import ValidationError, load_login_preferences, save_login_preferences
 from documentos_empresa_app.utils.resources import apply_window_icon
 
 
@@ -18,6 +18,7 @@ class LoginWindow(tk.Tk):
 
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
+        self.remember_credential_var = tk.BooleanVar(value=False)
 
         self.title(f"{APP_NAME} - Login")
         self.resizable(False, False)
@@ -35,7 +36,7 @@ class LoginWindow(tk.Tk):
 
     def _configure_geometry(self) -> None:
         width = 420
-        height = 250
+        height = 290
         bounds = get_preferred_screen_bounds(self.winfo_pointerx(), self.winfo_pointery())
         if bounds:
             x = bounds.x + max((bounds.width - width) // 2, 0)
@@ -68,21 +69,31 @@ class LoginWindow(tk.Tk):
         password_entry = ttk.Entry(form, textvariable=self.password_var, show="*")
         password_entry.grid(row=3, column=0, sticky="ew", pady=(0, 14))
 
+        ttk.Checkbutton(
+            form,
+            text="Lembrar credencial neste usuario do computador",
+            variable=self.remember_credential_var,
+        ).grid(row=4, column=0, sticky="w", pady=(0, 8))
+
         actions = ttk.Frame(container)
         actions.pack(fill="x")
         ttk.Button(actions, text="Entrar", command=self.login).pack(side="right")
         ttk.Button(actions, text="Sair", command=self.close).pack(side="right", padx=(0, 8))
 
-        ttk.Label(
-            container,
-            text='Usuario inicial padrao: "admin" / senha: "admin".',
-            foreground="#6A6A6A",
-        ).pack(anchor="w", pady=(14, 0))
-
-        username_entry.focus_set()
+        self._load_saved_preferences()
+        if self.username_var.get():
+            password_entry.focus_set()
+        else:
+            username_entry.focus_set()
         self.bind("<Return>", lambda _event: self.login())
 
+    def _load_saved_preferences(self) -> None:
+        preferences = load_login_preferences()
+        self.username_var.set(preferences["username"])
+        self.remember_credential_var.set(bool(preferences["remember_credential"]))
+
     def login(self) -> None:
+        previous_preferences = load_login_preferences()
         try:
             user = self.services.auth_service.authenticate(self.username_var.get(), self.password_var.get())
         except ValidationError as exc:
@@ -90,7 +101,19 @@ class LoginWindow(tk.Tk):
             self.password_var.set("")
             return
 
-        self.services.session_service.login(user)
+        self.services.auth_service.revoke_remembered_session(previous_preferences["remembered_token"])
+
+        remembered_token = None
+        if self.remember_credential_var.get():
+            remembered_token = self.services.auth_service.create_remembered_session(user["id"])
+
+        save_login_preferences(
+            user["username"],
+            remember_credential=self.remember_credential_var.get(),
+            remembered_token=remembered_token,
+        )
+
+        self.services.session_service.login(user, remembered_token=remembered_token)
         self.authenticated_user = user
         self.destroy()
 

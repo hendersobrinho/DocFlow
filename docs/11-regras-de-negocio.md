@@ -41,6 +41,7 @@
 - valores permitidos: `NULL`, `Recebido`, `Pendente`, `Encerrado`
 - cada documento pode ter apenas um status por periodo
 - alteracao para o mesmo valor nao faz nada
+- a ultima alteracao guarda usuario e data/hora para consulta posterior
 - implementacao principal: `StatusService`
 
 ## 11.6 Regra de encerramento
@@ -64,6 +65,7 @@
 - senha nao pode ficar vazia
 - senha e salva com hash PBKDF2
 - usuario inativo nao faz login
+- login pode ser lembrado por usuario do computador via token local
 - o proprio admin logado nao pode:
   - se inativar
   - remover o proprio perfil admin
@@ -85,7 +87,20 @@
 ## 11.11 Seletores e filtros
 
 - selecao de empresa por nome exige escolha explicita da sugestao
+- `F2` abre a lista de empresas com filtro em tempo real
 - filtros de logs podem usar empresa, ano e mes
 - consulta principal usa ano e mes separados para evitar listas longas
+
+## 11.12 Importacao e modelos
+
+- importacao de empresas aceita layout atual com campos opcionais e continua compativel com planilha antiga de 2 colunas
+- importacao de documentos exige empresa previamente selecionada
+- as abas de empresas e documentos permitem visualizar o layout e baixar um modelo `.xlsx`
+
+## 11.13 Backup e restauracao
+
+- backup gera uma copia completa do SQLite em outro arquivo
+- restauracao substitui o banco atual pelo backup escolhido
+- apos restaurar, o sistema reinicia para recarregar os dados com seguranca
 
 ---

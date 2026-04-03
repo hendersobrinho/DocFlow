@@ -32,7 +32,8 @@ class BaseRepository:
 class EmpresaRepository(BaseRepository):
     def list_all(self, active_only: bool = False) -> list[dict]:
         query = """
-            SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato, ativa
+            SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
+                   diretorio_documentos, ativa
             FROM empresas
         """
         params: tuple = ()
@@ -44,7 +45,8 @@ class EmpresaRepository(BaseRepository):
     def get_by_id(self, empresa_id: int) -> dict | None:
         return self._fetchone(
             """
-            SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato, ativa
+            SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
+                   diretorio_documentos, ativa
             FROM empresas
             WHERE id = ?
             """,
@@ -53,7 +55,8 @@ class EmpresaRepository(BaseRepository):
 
     def get_by_code(self, codigo_empresa: int, active_only: bool = False) -> dict | None:
         query = """
-            SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato, ativa
+            SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
+                   diretorio_documentos, ativa
             FROM empresas
             WHERE codigo_empresa = ?
         """
@@ -98,11 +101,49 @@ class EmpresaRepository(BaseRepository):
             (nome_empresa, meios_recebimento, email_contato, nome_contato, empresa_id),
         )
 
+    def update_directory(self, empresa_id: int, diretorio_documentos: str | None) -> None:
+        self._execute(
+            "UPDATE empresas SET diretorio_documentos = ? WHERE id = ?",
+            (diretorio_documentos, empresa_id),
+        )
+
     def update_active(self, empresa_id: int, ativa: int) -> None:
         self._execute("UPDATE empresas SET ativa = ? WHERE id = ?", (ativa, empresa_id))
 
     def delete(self, empresa_id: int) -> None:
         self._execute("DELETE FROM empresas WHERE id = ?", (empresa_id,))
+
+
+class DeliveryMethodRepository(BaseRepository):
+    def list_all(self) -> list[dict]:
+        return self._fetchall(
+            """
+            SELECT id, nome_meio
+            FROM meios_recebimento_sistema
+            ORDER BY nome_meio
+            """
+        )
+
+    def get_by_id(self, method_id: int) -> dict | None:
+        return self._fetchone(
+            "SELECT id, nome_meio FROM meios_recebimento_sistema WHERE id = ?",
+            (method_id,),
+        )
+
+    def get_by_name(self, nome_meio: str) -> dict | None:
+        return self._fetchone(
+            "SELECT id, nome_meio FROM meios_recebimento_sistema WHERE nome_meio = ?",
+            (nome_meio,),
+        )
+
+    def create(self, nome_meio: str) -> int:
+        return self._execute("INSERT INTO meios_recebimento_sistema (nome_meio) VALUES (?)", (nome_meio,))
+
+    def update(self, method_id: int, nome_meio: str) -> None:
+        self._execute("UPDATE meios_recebimento_sistema SET nome_meio = ? WHERE id = ?", (nome_meio, method_id))
+
+    def delete(self, method_id: int) -> None:
+        self._execute("DELETE FROM meios_recebimento_sistema WHERE id = ?", (method_id,))
 
 
 class TipoRepository(BaseRepository):
@@ -191,6 +232,43 @@ class UsuarioRepository(BaseRepository):
             query += " AND ativa = 1"
         row = self._fetchone(query)
         return int(row["total"]) if row else 0
+
+
+class RememberedSessionRepository(BaseRepository):
+    def get_by_selector(self, selector: str) -> dict | None:
+        return self._fetchone(
+            """
+            SELECT id, usuario_id, selector, token_hash, criado_em, ultimo_uso_em
+            FROM sessoes_lembradas
+            WHERE selector = ?
+            """,
+            (selector,),
+        )
+
+    def create(self, usuario_id: int, selector: str, token_hash: str) -> int:
+        return self._execute(
+            """
+            INSERT INTO sessoes_lembradas (usuario_id, selector, token_hash)
+            VALUES (?, ?, ?)
+            """,
+            (usuario_id, selector, token_hash),
+        )
+
+    def touch(self, session_id: int) -> None:
+        self._execute(
+            """
+            UPDATE sessoes_lembradas
+            SET ultimo_uso_em = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (session_id,),
+        )
+
+    def delete_by_selector(self, selector: str) -> None:
+        self._execute("DELETE FROM sessoes_lembradas WHERE selector = ?", (selector,))
+
+    def delete_by_user(self, usuario_id: int) -> None:
+        self._execute("DELETE FROM sessoes_lembradas WHERE usuario_id = ?", (usuario_id,))
 
 
 class LogRepository(BaseRepository):
@@ -447,22 +525,45 @@ class StatusRepository(BaseRepository):
     def get_by_document_and_period(self, documento_empresa_id: int, periodo_id: int) -> dict | None:
         return self._fetchone(
             """
-            SELECT id, documento_empresa_id, periodo_id, status
-            FROM status_documento_mensal
-            WHERE documento_empresa_id = ? AND periodo_id = ?
+            SELECT
+                s.id,
+                s.documento_empresa_id,
+                s.periodo_id,
+                s.status,
+                s.updated_by_user_id,
+                s.updated_at,
+                COALESCE(u.username, 'Sistema') AS updated_by_username
+            FROM status_documento_mensal s
+            LEFT JOIN usuarios u ON u.id = s.updated_by_user_id
+            WHERE s.documento_empresa_id = ? AND s.periodo_id = ?
             """,
             (documento_empresa_id, periodo_id),
         )
 
-    def upsert(self, documento_empresa_id: int, periodo_id: int, status: str | None) -> None:
+    def upsert(
+        self,
+        documento_empresa_id: int,
+        periodo_id: int,
+        status: str | None,
+        updated_by_user_id: int | None,
+    ) -> None:
         self._execute(
             """
-            INSERT INTO status_documento_mensal (documento_empresa_id, periodo_id, status)
-            VALUES (?, ?, ?)
+            INSERT INTO status_documento_mensal (
+                documento_empresa_id,
+                periodo_id,
+                status,
+                updated_by_user_id,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(documento_empresa_id, periodo_id)
-            DO UPDATE SET status = excluded.status
+            DO UPDATE SET
+                status = excluded.status,
+                updated_by_user_id = excluded.updated_by_user_id,
+                updated_at = CURRENT_TIMESTAMP
             """,
-            (documento_empresa_id, periodo_id, status),
+            (documento_empresa_id, periodo_id, status, updated_by_user_id),
         )
 
     def list_for_documents_and_periods(self, documento_ids: list[int], periodo_ids: list[int]) -> list[dict]:
@@ -473,10 +574,18 @@ class StatusRepository(BaseRepository):
         params = tuple(documento_ids + periodo_ids)
         return self._fetchall(
             f"""
-            SELECT id, documento_empresa_id, periodo_id, status
-            FROM status_documento_mensal
-            WHERE documento_empresa_id IN ({doc_placeholders})
-              AND periodo_id IN ({period_placeholders})
+            SELECT
+                s.id,
+                s.documento_empresa_id,
+                s.periodo_id,
+                s.status,
+                s.updated_by_user_id,
+                s.updated_at,
+                COALESCE(u.username, 'Sistema') AS updated_by_username
+            FROM status_documento_mensal s
+            LEFT JOIN usuarios u ON u.id = s.updated_by_user_id
+            WHERE s.documento_empresa_id IN ({doc_placeholders})
+              AND s.periodo_id IN ({period_placeholders})
             """,
             params,
         )

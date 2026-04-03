@@ -8,6 +8,8 @@ import os
 PBKDF2_ALGORITHM = "sha256"
 PBKDF2_ITERATIONS = 200_000
 SALT_BYTES = 16
+REMEMBER_TOKEN_BYTES = 32
+REMEMBER_SELECTOR_BYTES = 16
 
 
 def hash_password(password: str) -> str:
@@ -45,3 +47,20 @@ def verify_password(password: str, stored_hash: str) -> bool:
         iterations,
     )
     return hmac.compare_digest(calculated_digest, expected_digest)
+
+
+def generate_remember_selector() -> str:
+    return os.urandom(REMEMBER_SELECTOR_BYTES).hex()
+
+
+def generate_remember_secret() -> str:
+    return os.urandom(REMEMBER_TOKEN_BYTES).hex()
+
+
+def hash_remember_secret(secret: str) -> str:
+    return hashlib.sha256(str(secret).encode("utf-8")).hexdigest()
+
+
+def verify_remember_secret(secret: str, stored_hash: str) -> bool:
+    calculated_hash = hash_remember_secret(secret)
+    return hmac.compare_digest(calculated_hash, str(stored_hash))

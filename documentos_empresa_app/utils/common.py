@@ -60,20 +60,30 @@ class ValidationError(Exception):
     """Erro de validacao de negocio."""
 
 
-def parse_delivery_methods(raw_methods: str | list[str] | tuple[str, ...] | None) -> list[str]:
+def _coerce_delivery_method_items(raw_methods: str | list[str] | tuple[str, ...] | None) -> list[str]:
     if raw_methods is None:
         return []
     if isinstance(raw_methods, str):
-        items = [item.strip() for item in raw_methods.split(",")]
-    else:
-        items = [str(item).strip() for item in raw_methods]
+        return [item.strip() for item in raw_methods.split(",")]
+    return [str(item).strip() for item in raw_methods]
+
+
+def parse_delivery_methods(
+    raw_methods: str | list[str] | tuple[str, ...] | None,
+    known_options: str | list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    items = _coerce_delivery_method_items(raw_methods)
+    canonical_by_key = dict(DOCUMENT_DELIVERY_OPTION_BY_KEY)
+    for option in _coerce_delivery_method_items(known_options):
+        if option:
+            canonical_by_key[option.casefold()] = option
 
     normalized_items: list[str] = []
     seen_keys: set[str] = set()
     for item in items:
         if not item:
             continue
-        canonical = DOCUMENT_DELIVERY_OPTION_BY_KEY.get(item.casefold(), item)
+        canonical = canonical_by_key.get(item.casefold(), item)
         item_key = canonical.casefold()
         if item_key in seen_keys:
             continue
@@ -82,8 +92,11 @@ def parse_delivery_methods(raw_methods: str | list[str] | tuple[str, ...] | None
     return normalized_items
 
 
-def normalize_delivery_methods(raw_methods: str | list[str] | tuple[str, ...] | None) -> str | None:
-    normalized_items = parse_delivery_methods(raw_methods)
+def normalize_delivery_methods(
+    raw_methods: str | list[str] | tuple[str, ...] | None,
+    known_options: str | list[str] | tuple[str, ...] | None = None,
+) -> str | None:
+    normalized_items = parse_delivery_methods(raw_methods, known_options=known_options)
     return ", ".join(normalized_items) if normalized_items else None
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import re
 import sqlite3
 
@@ -143,6 +144,29 @@ class EmpresaService:
                     empresa_nome=empresa["nome_empresa"],
                 )
 
+    def set_empresa_directory(self, empresa_id: int, diretorio_documentos: str | None) -> None:
+        normalized_directory = self._normalize_optional_directory(diretorio_documentos)
+        with self.empresa_repository.db_manager.connect():
+            empresa = self.get_empresa(empresa_id)
+            previous_directory = empresa.get("diretorio_documentos")
+            if (previous_directory or "") == (normalized_directory or ""):
+                return
+
+            self.empresa_repository.update_directory(empresa_id, normalized_directory)
+            previous_label = previous_directory or "-"
+            current_label = normalized_directory or "-"
+            self._log(
+                "EDICAO_EMPRESA",
+                "empresa",
+                empresa_id,
+                (
+                    f'Usuario {self._actor_name()} atualizou a pasta vinculada da empresa '
+                    f'"{empresa["nome_empresa"]}" de "{previous_label}" para "{current_label}".'
+                ),
+                empresa_id=empresa_id,
+                empresa_nome=empresa["nome_empresa"],
+            )
+
     def delete_empresa(self, empresa_id: int) -> None:
         with self.empresa_repository.db_manager.connect():
             empresa = self.get_empresa(empresa_id)
@@ -191,6 +215,12 @@ class EmpresaService:
     def _normalize_optional_text(self, value: str | None) -> str | None:
         normalized = str(value or "").strip()
         return normalized or None
+
+    def _normalize_optional_directory(self, value: str | None) -> str | None:
+        normalized = self._normalize_optional_text(value)
+        if not normalized:
+            return None
+        return str(Path(normalized).expanduser())
 
     def _build_company_description(
         self,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from documentos_empresa_app.utils.helpers import (
     CompanySelector,
@@ -23,12 +25,13 @@ class ControleTab(ttk.Frame):
         self.current_filters: dict | None = None
         self.collapsed_groups: dict[str, bool] = {}
         self.status_vars: list[tk.StringVar] = []
+        self.default_message_text = "Selecione a empresa e o intervalo para consultar."
 
         self.start_year_var = tk.StringVar()
         self.start_month_var = tk.StringVar()
         self.end_year_var = tk.StringVar()
         self.end_month_var = tk.StringVar()
-        self.message_var = tk.StringVar(value="Selecione a empresa e o intervalo para consultar.")
+        self.message_var = tk.StringVar(value=self.default_message_text)
 
         self._build_layout()
 
@@ -40,7 +43,8 @@ class ControleTab(ttk.Frame):
             top,
             self.services.empresa_service,
             active_only=True,
-            on_selected=lambda _company: None,
+            on_selected=self.on_company_selected,
+            on_cleared=self._clear_company_directory_context,
         )
         self.company_selector.pack(fill="x", pady=(0, 10))
 
@@ -67,8 +71,14 @@ class ControleTab(ttk.Frame):
 
         ttk.Button(period_frame, text="Consultar", command=self.consult).grid(row=1, column=4, sticky="w", padx=(0, 8))
         ttk.Button(period_frame, text="Limpar filtros", command=self.clear_filters).grid(row=1, column=5, sticky="w")
+        self.directory_button = ttk.Button(
+            period_frame,
+            text="Abrir pasta...",
+            command=self.open_company_directory_browser,
+        )
+        self.directory_button.grid(row=1, column=6, sticky="w", padx=(8, 0))
         ttk.Label(period_frame, text="Limite maximo de 12 meses por consulta.").grid(
-            row=2, column=0, columnspan=6, sticky="w", pady=(8, 0)
+            row=2, column=0, columnspan=7, sticky="w", pady=(8, 0)
         )
 
         legend = ttk.Frame(self)
@@ -84,6 +94,7 @@ class ControleTab(ttk.Frame):
         result_frame.pack(fill="both", expand=True)
         self.scrollable = ScrollableFrame(result_frame)
         self.scrollable.pack(fill="both", expand=True)
+        self._set_directory_actions_enabled(False)
 
     def _legend_chip(self, master, text: str):
         chip = tk.Label(master, text=f" {text} ", bg=STATUS_COLORS[text], relief="solid", bd=1)
@@ -91,6 +102,7 @@ class ControleTab(ttk.Frame):
 
     def refresh_data(self) -> None:
         self.company_selector.refresh_companies()
+        self._set_directory_actions_enabled(bool(self.company_selector.get_selected_company_id()))
         self._load_period_options()
         if self.current_filters:
             company_id = self.current_filters.get("company_id")
@@ -102,10 +114,47 @@ class ControleTab(ttk.Frame):
                     self._set_period_filter_values(start_period_id, end_period_id)
                 except ValidationError:
                     self.current_filters = None
-                    self.message_var.set("Selecione a empresa e o intervalo para consultar.")
+                    self._set_default_message("Selecione a empresa e o intervalo para consultar.")
                     self._clear_result_area()
         else:
             self._clear_invalid_selections()
+
+    def on_company_selected(self, company: dict) -> None:
+        _ = company
+        self._set_directory_actions_enabled(True)
+
+    def _clear_company_directory_context(self) -> None:
+        self._set_directory_actions_enabled(False)
+
+    def _set_directory_actions_enabled(self, enabled: bool) -> None:
+        self.directory_button.configure(state="normal" if enabled else "disabled")
+
+    def _get_selected_company(self) -> dict | None:
+        company_id = self.company_selector.get_selected_company_id()
+        if not company_id:
+            return None
+        return self.services.empresa_service.get_empresa(company_id)
+
+    def open_company_directory_browser(self) -> None:
+        company = self._get_selected_company()
+        if not company:
+            messagebox.showwarning("Controle", "Selecione uma empresa antes de vincular uma pasta.", parent=self)
+            return
+
+        current_directory = str(company.get("diretorio_documentos") or "").strip()
+        initial_directory = (
+            current_directory if current_directory and Path(current_directory).is_dir() else str(Path.home())
+        )
+        selected_directory = filedialog.askdirectory(
+            parent=self,
+            title=f'Escolha a pasta para "{company["nome_empresa"]}"',
+            initialdir=initial_directory,
+            mustexist=True,
+        )
+        if not selected_directory:
+            return
+
+        self.services.empresa_service.set_empresa_directory(company["id"], selected_directory)
 
     def _load_period_options(self) -> None:
         periodos = self.services.periodo_service.list_periodos()
@@ -230,10 +279,15 @@ class ControleTab(ttk.Frame):
         self.end_month_var.set("")
         self._sync_month_values("start")
         self._sync_month_values("end")
-        self.message_var.set("Selecione a empresa e o intervalo para consultar.")
+        self._set_default_message("Selecione a empresa e o intervalo para consultar.")
         self._clear_result_area()
 
-    def consult(self) -> None:
+    def consult(
+        self,
+        *,
+        preserve_scroll: bool = False,
+        scroll_position: float | None = None,
+    ) -> None:
         company_id = self.company_selector.get_selected_company_id()
         if not company_id:
             messagebox.showwarning("Controle", "Selecione uma empresa ativa para consultar.", parent=self)
@@ -250,27 +304,31 @@ class ControleTab(ttk.Frame):
             messagebox.showerror("Controle", str(exc), parent=self)
             return
 
+        if preserve_scroll and scroll_position is None:
+            scroll_position = self._get_scroll_position()
+
         self.current_filters = {
             "company_id": company_id,
             "start_period_id": start_period_id,
             "end_period_id": end_period_id,
         }
-        self.render_result(view)
+        self.render_result(view, scroll_position=scroll_position)
 
-    def render_result(self, view: dict) -> None:
+    def render_result(self, view: dict, scroll_position: float | None = None) -> None:
         self._clear_result_area()
         self.status_vars = []
 
         periodos = view["periodos"]
         groups = view["groups"]
         if not groups:
-            self.message_var.set("Nenhum documento encontrado para a empresa e periodo informados.")
+            self._set_default_message("Nenhum documento encontrado para a empresa e periodo informados.")
             ttk.Label(self.scrollable.inner, text="Nenhum documento encontrado para a consulta.").grid(
                 row=0, column=0, sticky="w", padx=6, pady=6
             )
+            self._restore_scroll_position(scroll_position)
             return
 
-        self.message_var.set(
+        self._set_default_message(
             f'Empresa consultada: {view["empresa"]["nome_empresa"]}. Clique nos grupos para expandir ou recolher.'
         )
 
@@ -352,7 +410,11 @@ class ControleTab(ttk.Frame):
                             column_index,
                             document["id"],
                             cell["periodo_id"],
+                            document["nome_documento"],
+                            f'{periodos[column_index - 1]["mes"]:02d}/{periodos[column_index - 1]["ano"]}',
                             cell["status"],
+                            cell.get("updated_by_username"),
+                            cell.get("updated_at"),
                         )
                     else:
                         inactive = tk.Label(
@@ -370,13 +432,19 @@ class ControleTab(ttk.Frame):
         for column_index in range(len(periodos) + 1):
             self.scrollable.inner.grid_columnconfigure(column_index, weight=1 if column_index else 2)
 
+        self._restore_scroll_position(scroll_position)
+
     def _create_status_cell(
         self,
         row_index: int,
         column_index: int,
         document_id: int,
         period_id: int,
+        document_name: str,
+        period_label: str,
         current_status: str,
+        updated_by_username: str | None,
+        updated_at: str | None,
     ) -> None:
         color = STATUS_COLORS.get(current_status, STATUS_COLORS[""])
         cell_frame = tk.Frame(self.scrollable.inner, bg=color, relief="solid", bd=1)
@@ -400,20 +468,88 @@ class ControleTab(ttk.Frame):
         option["menu"].configure(tearoff=0)
         option.pack(fill="both", expand=True)
 
+        for widget in (cell_frame, option):
+            widget.bind(
+                "<Enter>",
+                lambda _event, doc_name=document_name, per_label=period_label, cell_status=current_status,
+                actor=updated_by_username, timestamp=updated_at: self._show_status_metadata(
+                    doc_name,
+                    per_label,
+                    cell_status,
+                    actor,
+                    timestamp,
+                ),
+            )
+            widget.bind("<Leave>", self._restore_default_message)
+
     def update_status(self, document_id: int, period_id: int, status: str) -> None:
+        scroll_position = self._get_scroll_position()
         try:
             self.services.status_service.update_status(document_id, period_id, status)
         except ValidationError as exc:
+            self.consult(scroll_position=scroll_position)
             messagebox.showerror("Controle", str(exc), parent=self)
             return
         self.on_data_changed()
-        self.consult()
+        self.consult(scroll_position=scroll_position)
 
     def toggle_group(self, group_name: str) -> None:
         self.collapsed_groups[group_name] = not self.collapsed_groups.get(group_name, False)
         if self.current_filters:
-            self.consult()
+            self.consult(preserve_scroll=True)
 
     def _clear_result_area(self) -> None:
         for child in self.scrollable.inner.winfo_children():
             child.destroy()
+
+    def _get_scroll_position(self) -> float:
+        yview = self.scrollable.canvas.yview()
+        if not yview:
+            return 0.0
+        return yview[0]
+
+    def _restore_scroll_position(self, scroll_position: float | None) -> None:
+        if scroll_position is None:
+            return
+
+        clamped_position = min(max(scroll_position, 0.0), 1.0)
+
+        def _apply() -> None:
+            if self.winfo_exists():
+                self.scrollable.canvas.yview_moveto(clamped_position)
+
+        self.after_idle(_apply)
+
+    def _show_status_metadata(
+        self,
+        document_name: str,
+        period_label: str,
+        status: str,
+        updated_by_username: str | None,
+        updated_at: str | None,
+    ) -> None:
+        if updated_at:
+            actor = updated_by_username or "Sistema"
+            self.message_var.set(
+                (
+                    f'Documento "{document_name}" em {period_label}: '
+                    f'status "{status or "vazio"}", alterado por {actor} em {self._format_timestamp(updated_at)}.'
+                )
+            )
+            return
+        self.message_var.set(
+            f'Documento "{document_name}" em {period_label}: nenhuma alteracao registrada ainda.'
+        )
+
+    def _restore_default_message(self, _event=None) -> None:
+        self.message_var.set(self.default_message_text)
+
+    def _set_default_message(self, text: str) -> None:
+        self.default_message_text = text
+        self.message_var.set(text)
+
+    def _format_timestamp(self, raw_value: str) -> str:
+        try:
+            return datetime.strptime(raw_value, "%Y-%m-%d %H:%M:%S").strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            return raw_value

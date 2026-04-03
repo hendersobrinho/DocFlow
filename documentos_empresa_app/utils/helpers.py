@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -25,7 +26,9 @@ from documentos_empresa_app.utils.common import (
 from documentos_empresa_app.utils.storage import (
     build_database_path,
     create_database_directory,
+    is_path_within_directory,
 )
+from documentos_empresa_app.utils.resources import get_executable_directory
 
 
 def ensure_config_dir() -> None:
@@ -84,6 +87,64 @@ def load_config() -> dict:
 def save_config(config: dict) -> None:
     ensure_config_dir()
     CONFIG_FILE.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_login_preferences() -> dict:
+    config = load_config()
+    stored = config.get("login_preferences")
+    if not isinstance(stored, dict):
+        return {
+            "username": "",
+            "remember_credential": False,
+            "remembered_token": None,
+        }
+
+    username = str(stored.get("username") or "").strip()
+    remembered_token = str(stored.get("remembered_token") or "").strip() or None
+    remember_credential = bool(stored.get("remember_credential") and remembered_token)
+    return {
+        "username": username,
+        "remember_credential": remember_credential,
+        "remembered_token": remembered_token,
+    }
+
+
+def save_login_preferences(
+    username: str | None,
+    *,
+    remember_credential: bool,
+    remembered_token: str | None,
+) -> None:
+    config = load_config()
+    normalized_username = str(username or "").strip()
+    normalized_token = str(remembered_token or "").strip() or None
+
+    if normalized_username or normalized_token or remember_credential:
+        config["login_preferences"] = {
+            "username": normalized_username,
+            "remember_credential": bool(remember_credential and normalized_token),
+            "remembered_token": normalized_token if remember_credential else None,
+        }
+    else:
+        config.pop("login_preferences", None)
+    save_config(config)
+
+
+def open_directory_in_file_manager(directory: str | Path) -> None:
+    path = Path(directory).expanduser()
+    if not path.exists() or not path.is_dir():
+        raise ValidationError("A pasta vinculada nao foi encontrada no computador.")
+
+    try:
+        if sys.platform.startswith("win") and hasattr(os, "startfile"):
+            os.startfile(str(path))
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+            return
+        subprocess.Popen(["xdg-open", str(path)])
+    except OSError as exc:
+        raise ValidationError("Nao foi possivel abrir a pasta vinculada.") from exc
 
 
 def get_install_root_directory() -> Path:
@@ -208,6 +269,17 @@ class DatabasePathDialog(tk.Toplevel):
             messagebox.showerror(APP_NAME, str(exc), parent=self)
             return
 
+        if getattr(sys, "frozen", False) and is_path_within_directory(db_path, get_executable_directory()):
+            messagebox.showerror(
+                APP_NAME,
+                (
+                    "Escolha uma pasta fora da instalacao do programa para salvar o banco.\n\n"
+                    "Isso protege os dados durante atualizacoes ou reinstalacoes."
+                ),
+                parent=self,
+            )
+            return
+
         if not is_database_path_usable(db_path):
             messagebox.showerror(
                 APP_NAME,
@@ -308,6 +380,8 @@ class ScrollableFrame(ttk.Frame):
         self.scrollbar.pack(side="right", fill="y")
 
         self.canvas.bind_all("<MouseWheel>", self._on_mouse_wheel, add="+")
+        self.canvas.bind_all("<Button-4>", self._on_mouse_wheel, add="+")
+        self.canvas.bind_all("<Button-5>", self._on_mouse_wheel, add="+")
 
     def _on_frame_configure(self, _event: tk.Event) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -316,8 +390,274 @@ class ScrollableFrame(ttk.Frame):
         self.canvas.itemconfigure(self.window_id, width=event.width)
 
     def _on_mouse_wheel(self, event: tk.Event) -> None:
-        if self.winfo_exists():
-            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        if not self.winfo_exists() or not self._pointer_is_over_scroll_area():
+            return
+
+        delta = self._normalize_mouse_wheel_delta(event)
+        if delta == 0:
+            return
+
+        self.canvas.yview_scroll(delta, "units")
+
+    def _pointer_is_over_scroll_area(self) -> bool:
+        widget_under_pointer = self.winfo_containing(*self.winfo_pointerxy())
+        current = widget_under_pointer
+        while current is not None:
+            if current in {self, self.canvas, self.inner, self.scrollbar}:
+                return True
+            current = getattr(current, "master", None)
+        return False
+
+    def _normalize_mouse_wheel_delta(self, event: tk.Event) -> int:
+        if getattr(event, "num", None) == 4:
+            return -1
+        if getattr(event, "num", None) == 5:
+            return 1
+
+        delta = int(getattr(event, "delta", 0))
+        if delta == 0:
+            return 0
+        if abs(delta) >= 120:
+            return int(-delta / 120)
+        return -1 if delta > 0 else 1
+
+
+class CompanyListDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: tk.Misc,
+        companies: list[dict],
+        initial_search: str = "",
+        title: str = "Empresas cadastradas",
+    ) -> None:
+        super().__init__(parent.winfo_toplevel())
+        self.parent = parent
+        self.title(title)
+        self.transient(parent.winfo_toplevel())
+        self.resizable(True, True)
+        self.minsize(640, 360)
+        self.selected_company_id: int | None = None
+        self.companies = companies
+        self.search_var = tk.StringVar(value=initial_search)
+
+        self._build_layout()
+        self._populate_tree()
+        self.grab_set()
+        self.after(10, self._center_on_parent)
+
+    def _build_layout(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        search_row = ttk.Frame(self, padding=(12, 12, 12, 8))
+        search_row.grid(row=0, column=0, sticky="ew")
+        search_row.columnconfigure(1, weight=1)
+
+        ttk.Label(search_row, text="Buscar na lista").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        search_entry = ttk.Entry(search_row, textvariable=self.search_var)
+        search_entry.grid(row=0, column=1, sticky="ew")
+        search_entry.bind("<KeyRelease>", lambda _event: self._populate_tree())
+
+        tree_frame = ttk.Frame(self, padding=(12, 0, 12, 0))
+        tree_frame.grid(row=1, column=0, sticky="nsew")
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        self.tree = ttk.Treeview(
+            tree_frame,
+            columns=("codigo", "nome", "situacao"),
+            show="headings",
+            selectmode="browse",
+        )
+        self.tree.heading("codigo", text="Codigo")
+        self.tree.heading("nome", text="Nome")
+        self.tree.heading("situacao", text="Situacao")
+        self.tree.column("codigo", width=120, anchor="center")
+        self.tree.column("nome", width=380)
+        self.tree.column("situacao", width=110, anchor="center")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<Double-1>", self._confirm_selection)
+        self.tree.bind("<Return>", self._confirm_selection)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        button_row = ttk.Frame(self, padding=12)
+        button_row.grid(row=2, column=0, sticky="e")
+        ttk.Button(button_row, text="Cancelar", command=self.destroy).pack(side="right")
+        ttk.Button(button_row, text="Selecionar", command=self._confirm_selection).pack(side="right", padx=(0, 8))
+
+        search_entry.focus_set()
+
+    def _populate_tree(self) -> None:
+        search = self.search_var.get().strip().casefold()
+        self.tree.delete(*self.tree.get_children())
+
+        ranked_companies: list[tuple[int, str, dict]] = []
+        for company in self.companies:
+            company_text = f'{company["codigo_empresa"]} {company["nome_empresa"]}'.casefold()
+            company_name = company["nome_empresa"].casefold()
+            company_code = str(company["codigo_empresa"]).casefold()
+            if search:
+                if company_name.startswith(search) or company_code.startswith(search):
+                    rank = 0
+                elif search in company_name:
+                    rank = 1
+                elif search in company_text:
+                    rank = 2
+                else:
+                    continue
+            else:
+                rank = 3
+            ranked_companies.append((rank, company_name, company))
+
+        ranked_companies.sort(key=lambda item: (item[0], item[1], item[2]["codigo_empresa"]))
+
+        for _rank, _company_name, company in ranked_companies:
+            situacao = "Ativa" if company["ativa"] else "Inativa"
+            self.tree.insert(
+                "",
+                "end",
+                iid=str(company["id"]),
+                values=(company["codigo_empresa"], company["nome_empresa"], situacao),
+            )
+
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self.tree.focus(children[0])
+
+    def _confirm_selection(self, _event=None) -> str | None:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        self.selected_company_id = int(selection[0])
+        self.destroy()
+        return "break"
+
+    def _center_on_parent(self) -> None:
+        self.update_idletasks()
+        parent = self.parent.winfo_toplevel()
+        x = parent.winfo_rootx() + max((parent.winfo_width() - self.winfo_width()) // 2, 0)
+        y = parent.winfo_rooty() + max((parent.winfo_height() - self.winfo_height()) // 2, 0)
+        self.geometry(f"+{x}+{y}")
+
+
+class CompanyMultiSelectDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: tk.Misc,
+        companies: list[dict],
+        selected_company_ids: list[int] | None = None,
+        title: str = "Selecionar empresas",
+    ) -> None:
+        super().__init__(parent.winfo_toplevel())
+        self.parent = parent
+        self.title(title)
+        self.transient(parent.winfo_toplevel())
+        self.resizable(True, True)
+        self.minsize(680, 380)
+        self.companies = companies
+        self.selected_company_ids = [int(company_id) for company_id in (selected_company_ids or [])]
+        self.search_var = tk.StringVar()
+
+        self._build_layout()
+        self._populate_tree()
+        self.grab_set()
+        self.after(10, self._center_on_parent)
+
+    def _build_layout(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        search_row = ttk.Frame(self, padding=(12, 12, 12, 8))
+        search_row.grid(row=0, column=0, sticky="ew")
+        search_row.columnconfigure(1, weight=1)
+
+        ttk.Label(search_row, text="Buscar empresas").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        search_entry = ttk.Entry(search_row, textvariable=self.search_var)
+        search_entry.grid(row=0, column=1, sticky="ew")
+        search_entry.bind("<KeyRelease>", lambda _event: self._populate_tree())
+
+        tree_frame = ttk.Frame(self, padding=(12, 0, 12, 0))
+        tree_frame.grid(row=1, column=0, sticky="nsew")
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        self.tree = ttk.Treeview(
+            tree_frame,
+            columns=("codigo", "nome", "situacao"),
+            show="headings",
+            selectmode="extended",
+        )
+        self.tree.heading("codigo", text="Codigo")
+        self.tree.heading("nome", text="Nome")
+        self.tree.heading("situacao", text="Situacao")
+        self.tree.column("codigo", width=120, anchor="center")
+        self.tree.column("nome", width=420)
+        self.tree.column("situacao", width=110, anchor="center")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<Return>", self._confirm_selection)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        button_row = ttk.Frame(self, padding=12)
+        button_row.grid(row=2, column=0, sticky="ew")
+        ttk.Button(button_row, text="Selecionar todas", command=self._select_all_visible).pack(side="left")
+        ttk.Button(button_row, text="Limpar", command=self._clear_selection).pack(side="left", padx=(8, 0))
+        ttk.Button(button_row, text="Cancelar", command=self.destroy).pack(side="right")
+        ttk.Button(button_row, text="Confirmar", command=self._confirm_selection).pack(side="right", padx=(0, 8))
+
+        search_entry.focus_set()
+
+    def _populate_tree(self) -> None:
+        selected_set = {int(company_id) for company_id in self.selected_company_ids}
+        search = self.search_var.get().strip().casefold()
+        self.tree.delete(*self.tree.get_children())
+
+        for company in self.companies:
+            company_text = f'{company["codigo_empresa"]} {company["nome_empresa"]}'.casefold()
+            if search and search not in company_text:
+                continue
+            situacao = "Ativa" if company["ativa"] else "Inativa"
+            company_id = str(company["id"])
+            self.tree.insert(
+                "",
+                "end",
+                iid=company_id,
+                values=(company["codigo_empresa"], company["nome_empresa"], situacao),
+            )
+            if int(company["id"]) in selected_set:
+                self.tree.selection_add(company_id)
+
+        children = self.tree.get_children()
+        if children:
+            self.tree.focus(children[0])
+
+    def _select_all_visible(self) -> None:
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children)
+
+    def _clear_selection(self) -> None:
+        selection = self.tree.selection()
+        if selection:
+            self.tree.selection_remove(selection)
+
+    def _confirm_selection(self, _event=None) -> str | None:
+        self.selected_company_ids = [int(item) for item in self.tree.selection()]
+        self.destroy()
+        return "break"
+
+    def _center_on_parent(self) -> None:
+        self.update_idletasks()
+        parent = self.parent.winfo_toplevel()
+        x = parent.winfo_rootx() + max((parent.winfo_width() - self.winfo_width()) // 2, 0)
+        y = parent.winfo_rooty() + max((parent.winfo_height() - self.winfo_height()) // 2, 0)
+        self.geometry(f"+{x}+{y}")
 
 
 class CompanySelector(ttk.LabelFrame):
@@ -340,6 +680,25 @@ class CompanySelector(ttk.LabelFrame):
         self.selected_company_id: int | None = None
         self.companies: list[dict] = []
         self.filtered_labels: list[str] = []
+        self._navigation_keys = {
+            "Return",
+            "Tab",
+            "Shift_L",
+            "Shift_R",
+            "Control_L",
+            "Control_R",
+            "Alt_L",
+            "Alt_R",
+            "Escape",
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "Home",
+            "End",
+            "Prior",
+            "Next",
+        }
 
         self.code_var = tk.StringVar()
         self.name_var = tk.StringVar()
@@ -351,6 +710,7 @@ class CompanySelector(ttk.LabelFrame):
         self.code_entry.bind("<KeyRelease>", self._on_code_typed)
         self.code_entry.bind("<Return>", self._on_code_search)
         self.code_entry.bind("<FocusOut>", self._on_code_search)
+        self.code_entry.bind("<F2>", self._open_company_list)
 
         ttk.Label(self, text="Buscar por nome").grid(row=0, column=1, sticky="w")
         self.name_combo = ttk.Combobox(self, textvariable=self.name_var)
@@ -359,9 +719,11 @@ class CompanySelector(ttk.LabelFrame):
         self.name_combo.bind("<<ComboboxSelected>>", self._on_name_selected)
         self.name_combo.bind("<Return>", self._on_name_selected)
         self.name_combo.bind("<FocusOut>", self._on_name_selected)
+        self.name_combo.bind("<F2>", self._open_company_list)
 
-        ttk.Button(self, text="Atualizar lista", command=self.refresh_companies).grid(row=1, column=2, sticky="ew")
-        ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Button(self, text="...", width=3, command=self.open_company_list).grid(row=1, column=2, sticky="ew")
+        ttk.Button(self, text="Atualizar lista", command=self.refresh_companies).grid(row=1, column=3, sticky="ew")
+        ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         self.columnconfigure(1, weight=1)
         self.refresh_companies()
@@ -420,14 +782,18 @@ class CompanySelector(ttk.LabelFrame):
             return
         self._apply_selection(company)
 
-    def _on_code_typed(self, _event=None) -> None:
+    def _on_code_typed(self, event=None) -> None:
+        if event is not None and getattr(event, "keysym", "") in self._navigation_keys:
+            return
         if self.selected_company_id is not None:
             self.selected_company_id = None
             self.name_var.set("")
             if self.on_cleared:
                 self.on_cleared()
 
-    def _on_name_typed(self, _event=None) -> None:
+    def _on_name_typed(self, event=None) -> None:
+        if event is not None and getattr(event, "keysym", "") in self._navigation_keys:
+            return
         if self.selected_company_id is not None:
             self.selected_company_id = None
             self.code_var.set("")
@@ -473,3 +839,28 @@ class CompanySelector(ttk.LabelFrame):
         self.status_var.set(f'Empresa selecionada: {company["nome_empresa"]} ({situacao}).')
         if self.on_selected:
             self.on_selected(company)
+
+    def open_company_list(self) -> None:
+        self.refresh_companies()
+        initial_search = self.name_var.get().strip() or self.code_var.get().strip()
+        dialog = CompanyListDialog(self, self.companies, initial_search=initial_search)
+        self.wait_window(dialog)
+        if dialog.selected_company_id is not None:
+            self.set_company(dialog.selected_company_id)
+
+    def _open_company_list(self, event=None) -> str:
+        initial_search = ""
+        if event is not None and getattr(event, "widget", None) is self.code_entry:
+            initial_search = self.code_var.get().strip()
+        elif event is not None and getattr(event, "widget", None) is self.name_combo:
+            initial_search = self.name_var.get().strip()
+        if initial_search:
+            self.refresh_companies()
+            dialog = CompanyListDialog(self, self.companies, initial_search=initial_search)
+            self.wait_window(dialog)
+            if dialog.selected_company_id is not None:
+                self.set_company(dialog.selected_company_id)
+            return "break"
+
+        self.open_company_list()
+        return "break"

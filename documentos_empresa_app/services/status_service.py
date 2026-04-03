@@ -62,7 +62,12 @@ class StatusService:
                     periodo["mes"],
                 )
 
-            self.status_repository.upsert(documento_id, periodo_id, normalized)
+            self.status_repository.upsert(
+                documento_id,
+                periodo_id,
+                normalized,
+                self.session_service.get_user_id() if self.session_service else None,
+            )
             if normalized == "Encerrado":
                 self.status_repository.delete_future_statuses(documento_id, periodo["ano"], periodo["mes"])
 
@@ -119,7 +124,7 @@ class StatusService:
 
         status_rows = self.status_repository.list_for_documents_and_periods(document_ids, period_ids)
         statuses = {
-            (row["documento_empresa_id"], row["periodo_id"]): row["status"] or ""
+            (row["documento_empresa_id"], row["periodo_id"]): row
             for row in status_rows
         }
         closures = {
@@ -137,11 +142,14 @@ class StatusService:
                 available = closure_key is None or current_key <= closure_key
                 if available:
                     appears_in_any_period = True
+                status_row = statuses.get((documento["id"], periodo["id"]))
                 cells.append(
                     {
                         "periodo_id": periodo["id"],
                         "available": available,
-                        "status": statuses.get((documento["id"], periodo["id"]), "") if available else "",
+                        "status": (status_row["status"] or "") if available and status_row else "",
+                        "updated_by_username": status_row["updated_by_username"] if available and status_row else "",
+                        "updated_at": status_row["updated_at"] if available and status_row else None,
                     }
                 )
 

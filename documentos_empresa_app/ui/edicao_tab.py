@@ -56,6 +56,7 @@ class EdicaoTab(ttk.Frame):
             company_frame,
             title="Meios de recebimento",
             dialog_title="Edicao",
+            delivery_method_service=self.services.delivery_method_service,
         )
         self.delivery_field.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(10, 8))
 

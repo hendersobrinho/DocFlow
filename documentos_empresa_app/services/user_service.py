@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from documentos_empresa_app.database.repositories import UsuarioRepository
+from documentos_empresa_app.services.auth_service import AuthService
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.utils.common import ValidationError
@@ -18,10 +19,12 @@ class UserService:
         usuario_repository: UsuarioRepository,
         session_service: SessionService,
         audit_service: AuditService | None = None,
+        auth_service: AuthService | None = None,
     ) -> None:
         self.usuario_repository = usuario_repository
         self.session_service = session_service
         self.audit_service = audit_service
+        self.auth_service = auth_service
 
     def list_users(self) -> list[dict]:
         self._ensure_admin()
@@ -77,6 +80,7 @@ class UserService:
         normalized_username = self._normalize_username(username)
         normalized_tipo = self._normalize_tipo(tipo_usuario)
         ativo_int = 1 if ativo else 0
+        should_revoke_remembered_sessions = not bool(ativo_int)
 
         with self.usuario_repository.db_manager.connect():
             existing = self.usuario_repository.get_by_username(normalized_username)
@@ -89,6 +93,7 @@ class UserService:
 
             if password is not None and str(password).strip():
                 self.usuario_repository.update_password(user_id, hash_password(self._normalize_new_password(password)))
+                should_revoke_remembered_sessions = True
                 if self.audit_service:
                     self.audit_service.log(
                         "ALTERACAO_SENHA_USUARIO",
@@ -122,6 +127,9 @@ class UserService:
                 self.audit_service.log(acao, "usuario", user_id, descricao)
 
             updated_user = self.usuario_repository.get_by_id(user_id)
+
+        if should_revoke_remembered_sessions and self.auth_service:
+            self.auth_service.revoke_user_remembered_sessions(user_id)
         if updated_user:
             self.session_service.refresh_user(updated_user)
 

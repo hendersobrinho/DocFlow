@@ -11,6 +11,7 @@ class Empresa:
     meios_recebimento: str | None = None
     email_contato: str | None = None
     nome_contato: str | None = None
+    diretorio_documentos: str | None = None
     ativa: int = 1
 
 
