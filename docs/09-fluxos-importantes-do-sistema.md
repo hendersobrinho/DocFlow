@@ -23,12 +23,15 @@ Gravacao de banco:
 
 ## 9.2 Login
 
-1. O usuario digita nome e senha em `LoginWindow`.
-2. `login()` chama `AuthService.authenticate()`.
-3. O servico busca usuario com `UsuarioRepository.get_by_username(include_password=True)`.
-4. A senha e validada por `verify_password()`.
-5. Se tudo estiver certo, `SessionService.login()` grava o usuario em memoria.
-6. A janela de login se fecha e `MainWindow` abre.
+1. `main.main()` tenta restaurar uma sessao lembrada com `try_restore_saved_login()`.
+2. Se houver token valido, `AuthService.authenticate_with_remembered_session()` autentica o usuario e o login visual e pulado.
+3. Se nao houver token valido, o usuario digita nome e senha em `LoginWindow`.
+4. `login()` chama `AuthService.authenticate()`.
+5. O servico busca usuario com `UsuarioRepository.get_by_username(include_password=True)`.
+6. A senha e validada por `verify_password()`.
+7. Se o usuario marcar lembrar credencial, `AuthService.create_remembered_session()` gera e persiste um token local.
+8. `SessionService.login()` grava o usuario em memoria.
+9. A janela de login se fecha e `MainWindow` abre.
 
 ## 9.3 Cadastro de usuario
 
@@ -52,12 +55,13 @@ Gravacao de banco:
 
 ## 9.5 Cadastro de tipo
 
-1. Usuario abre `TipoTab`.
+1. Usuario abre `DocumentoTab`.
 2. Informa nome do tipo.
-3. `save_tipo()` chama `TipoService.create_tipo()`.
-4. O servico canonicaliza o nome.
-5. O repositório persiste em `tipos_documento`.
-6. A lista e atualizada.
+3. Usa o painel lateral de tipos.
+4. `save_tipo()` chama `TipoService.create_tipo()`.
+5. O servico canonicaliza o nome.
+6. O repositório persiste em `tipos_documento`.
+7. A lista e atualizada.
 
 ## 9.6 Cadastro de documento
 
@@ -131,12 +135,36 @@ Gravacao de banco:
    - falhados
    - lista textual de erros
 
-## 9.13 Logout
+## 9.13 Vinculo de pasta da empresa
+
+1. Usuario seleciona uma empresa na `ControleTab`.
+2. Clica em `Abrir pasta...`.
+3. A interface abre um seletor de diretorio.
+4. `EmpresaService.set_empresa_directory()` normaliza e salva o caminho.
+5. `AuditService.log()` registra a alteracao da pasta vinculada.
+
+## 9.14 Relatorio de pendencias
+
+1. Usuario abre a subaba `Relatorio de pendencias` em `PeriodoTab`.
+2. Escolhe todas as empresas ou seleciona empresas especificas.
+3. Define o intervalo de ate 12 meses.
+4. `PendingReportService.export_pending_report()` monta as linhas com status `Pendente`.
+5. O sistema exporta a planilha Excel com cabecalho, filtro e colunas ajustadas.
+
+## 9.15 Backup e restauracao do banco
+
+1. Usuario usa o menu `Banco` na `MainWindow`.
+2. `create_backup()` gera uma copia SQLite do banco atual.
+3. `restore_backup()` valida o arquivo selecionado e sobrescreve o banco em uso.
+4. A restauracao exige confirmacao dupla e reinicia a janela principal.
+
+## 9.16 Logout
 
 1. Usuario clica em `Logout` na `MainWindow`.
 2. O sistema pede confirmacao.
-3. `SessionService.logout()` limpa a sessao.
-4. A janela principal e destruida.
-5. `main.main()` reabre o fluxo de login.
+3. O token de credencial lembrada atual e revogado.
+4. `SessionService.logout()` limpa a sessao.
+5. A janela principal e destruida.
+6. `main.main()` reabre o fluxo de login.
 
 ---

@@ -7,6 +7,7 @@
 ### `LoginWindow`
 
 - captura usuario e senha
+- permite lembrar credencial neste usuario do computador
 - mostra mensagem simples em erro
 - posiciona a janela no monitor preferencial
 - aplica icone do app
@@ -17,6 +18,7 @@
 - mostra banco atual
 - mostra usuario logado
 - oferece menu `Banco` com backup e restauracao
+- libera restauracao apenas para admin
 - oferece `Logout`
 - abre abas conforme permissao
 
@@ -30,7 +32,7 @@
   - limpeza de filtros
   - clique para expandir/recolher grupo
   - alteracao de status
-  - abertura da pasta vinculada da empresa
+  - vinculo/alteracao da pasta local da empresa
 - conversa com:
   - `CompanySelector`
   - `PeriodoService`
@@ -63,6 +65,7 @@
 - subaba `Relatorio de pendencias`
 - faz dupla confirmacao em exclusao
 - permite exportar pendencias em Excel por empresa(s) e periodo
+- aplica o mesmo limite de ate 12 meses nas consultas/exportacoes
 
 ### `UserTab`
 

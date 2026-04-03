@@ -64,11 +64,11 @@ Leia:
 3. `ui/controle_tab.py`
 4. `ui/empresa_tab.py`
 5. `ui/documento_tab.py`
-6. `ui/edicao_tab.py`
-7. `ui/periodo_tab.py`
-8. `ui/user_tab.py`
-9. `ui/log_tab.py`
-10. `ui/tipo_tab.py`
+6. `ui/periodo_tab.py`
+7. `ui/user_tab.py`
+8. `ui/log_tab.py`
+9. `ui/edicao_tab.py` (tela auxiliar/legada, nao montada pela `MainWindow` atual)
+10. `ui/tipo_tab.py` (tela auxiliar/legada, nao montada pela `MainWindow` atual)
 
 ### Etapa 6: entender utilitarios e empacotamento
 

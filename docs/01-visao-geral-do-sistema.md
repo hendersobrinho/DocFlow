@@ -62,8 +62,10 @@ As funcionalidades principais atualmente implementadas sao:
 
 - escolha e persistencia do caminho do banco
 - login com usuario e senha
+- login lembrado neste usuario do computador
 - criacao automatica do admin padrao
 - cadastro, edicao, inativacao, reativacao e exclusao de empresas
+- configuracao de meios de recebimento e pasta vinculada por empresa
 - cadastro, edicao e exclusao de tipos de documento
 - cadastro, edicao e exclusao de documentos vinculados a empresas
 - geracao de periodos mensais por ano
@@ -71,6 +73,8 @@ As funcionalidades principais atualmente implementadas sao:
 - controle de status mensal por documento
 - regra de encerramento que oculta meses futuros
 - importacao de empresas e documentos por Excel
+- exportacao de relatorio de pendencias por empresa e periodo
+- backup e restauracao do banco pela interface
 - cadastro e manutencao de usuarios
 - logs de operacoes relevantes
 - filtros de logs por empresa e periodo

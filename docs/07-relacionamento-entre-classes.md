@@ -26,11 +26,15 @@ Isso faz da janela principal um orquestrador visual, nao um concentrador de regr
 Cada aba usa o subconjunto minimo de servicos de que precisa:
 
 - `ControleTab` usa `empresa_service`, `periodo_service`, `status_service`
-- `EmpresaTab` usa `empresa_service` e `import_service`
+- `EmpresaTab` usa `empresa_service`, `import_service` e `delivery_method_service`
 - `DocumentoTab` usa `empresa_service`, `documento_service`, `tipo_service`, `import_service`
-- `EdicaoTab` usa `empresa_service`, `documento_service`, `tipo_service`
+- `PeriodoTab` usa `periodo_service`, `pending_report_service` e `empresa_service`
 - `UserTab` usa `user_service`
 - `LogTab` usa `log_service`
+
+Observacao:
+
+- `TipoTab` e `EdicaoTab` continuam existindo no codigo, mas nao sao montadas pela `MainWindow` atual
 
 ### Servicos -> repositórios
 

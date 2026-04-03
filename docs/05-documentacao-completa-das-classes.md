@@ -252,11 +252,12 @@
 ### `EmpresaTab`
 
 - Objetivo: cadastro de empresas
-- Dependencias: `EmpresaService`, `ImportService`, `DeliveryMethodsField`
+- Dependencias: `EmpresaService`, `ImportService`, `DeliveryMethodService`, `DeliveryMethodsField`
 - Papel:
   - criar/editar empresa
   - inativar/reativar/excluir
   - importar empresas por Excel
+  - manter meios de recebimento
 
 ### `DocumentoTab`
 
@@ -264,28 +265,31 @@
 - Dependencias: `DocumentoService`, `TipoService`, `ImportService`, `CompanySelector`
 - Papel:
   - criar/editar/excluir documento
-  - criar tipo rapidamente
+  - criar e manter tipo no painel lateral
   - importar documentos
 
 ### `TipoTab`
 
-- Objetivo: manter tipos de documento
+- Objetivo: manter tipos de documento em tela isolada de apoio
 - Dependencias: `TipoService`
 - Papel: CRUD simples de tipos
+- Observacao: a `MainWindow` atual nao monta essa tela; a manutencao principal de tipos acontece na lateral da `DocumentoTab`
 
 ### `EdicaoTab`
 
 - Objetivo: manutencao consolidada de empresa e documentos vinculados
 - Dependencias: `EmpresaService`, `DocumentoService`, `TipoService`, `CompanySelector`, `DeliveryMethodsField`
 - Papel: concentrar manutencao de empresa e lote de documentos ja vinculados
+- Observacao: a `MainWindow` atual nao monta essa tela
 
 ### `PeriodoTab`
 
 - Objetivo: administracao de periodos
-- Dependencias: `PeriodoService`
+- Dependencias: `PeriodoService`, `PendingReportService`
 - Papel:
   - gerar os 12 meses de um ano
   - excluir um ano inteiro com dupla confirmacao
+  - exportar relatorio de pendencias por empresa e periodo
 
 ### `UserTab`
 

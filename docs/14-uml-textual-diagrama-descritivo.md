@@ -190,11 +190,13 @@ Tabs : ttk.Frame
   - ControleTab
   - EmpresaTab
   - DocumentoTab
-  - TipoTab
-  - EdicaoTab
   - PeriodoTab
   - UserTab
   - LogTab
+
+Telas auxiliares nao montadas pela MainWindow atual
+  - TipoTab
+  - EdicaoTab
 
 Componentes auxiliares
   - CompanySelector : ttk.LabelFrame

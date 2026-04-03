@@ -29,20 +29,27 @@ Reduzir o trabalho manual e a desorganizacao operacional, transformando um proce
 - banco SQLite separado do programa, facilitando atualizacoes sem perda de dados
 - controle mensal por empresa, documento e periodo
 - regra de encerramento para retirar documentos dos meses futuros
-- login de usuarios com senha protegida por hash
+- login de usuarios com senha protegida por hash e opcao de lembrar credencial
 - perfis `admin` e `comum`
 - logs das alteracoes mais importantes
 - importacao por Excel para empresas e documentos
+- relatorio de pendencias em Excel por empresa e periodo
+- backup do banco pela interface e restauracao restrita a admin
+- vinculo opcional de pasta local para documentos por empresa
 - preparacao para empacotamento e instalacao
 
 ## O que o sistema entrega
 
 - cadastro de empresas
-- cadastro de tipos de documento
+- manutencao de meios de recebimento por empresa
+- cadastro de tipos de documento no painel lateral da aba `Documentos`
 - cadastro de documentos vinculados a cada empresa
 - geracao de periodos mensais por ano
 - consulta por intervalo de ate 12 meses
 - atualizacao de status como `Recebido`, `Pendente` e `Encerrado`
+- vinculo de pasta local para cada empresa
+- exportacao de relatorio de pendencias em Excel
+- backup do banco e restauracao por administradores
 - controle de usuarios
 - visualizacao de logs administrativos
 - estrutura pronta para build por Windows, macOS e Linux
@@ -51,11 +58,12 @@ Reduzir o trabalho manual e a desorganizacao operacional, transformando um proce
 
 1. O usuario faz login no sistema.
 2. Cadastra ou importa empresas.
-3. Cadastra os tipos e documentos necessarios.
+3. Cadastra os tipos e documentos necessarios na aba `Documentos`.
 4. Gera os periodos anuais de controle.
 5. Consulta uma empresa por periodo na aba `Controle`.
 6. Atualiza os status mensais dos documentos.
-7. O sistema registra logs das alteracoes relevantes.
+7. Exporta relatorios de pendencias ou faz backup quando necessario.
+8. O sistema registra logs das alteracoes relevantes.
 
 ## Tecnologias utilizadas
 
@@ -91,5 +99,4 @@ Este `README` funciona como apresentacao geral do projeto. A documentacao tecnic
 - [18. Icones E Empacotamento Por Sistema Operacional](docs/18-icones-e-empacotamento-por-sistema-operacional.md)
 - [19. Observacoes Importantes Para Git E Empacotamento](docs/19-observacoes-importantes-para-git-e-empacotamento.md)
 - [20. Encerramento](docs/20-encerramento.md)
-
 

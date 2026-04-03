@@ -31,10 +31,13 @@
 │   │   ├── __init__.py
 │   │   ├── audit_service.py
 │   │   ├── auth_service.py
+│   │   ├── database_maintenance_service.py
+│   │   ├── delivery_method_service.py
 │   │   ├── documento_service.py
 │   │   ├── empresa_service.py
 │   │   ├── import_service.py
 │   │   ├── log_service.py
+│   │   ├── pending_report_service.py
 │   │   ├── periodo_service.py
 │   │   ├── session_service.py
 │   │   ├── status_service.py
@@ -134,12 +137,15 @@ E a camada de regras de negocio.
 |---|---|
 | `auth_service.py` | autenticacao de usuario |
 | `audit_service.py` | gravacao centralizada de logs |
+| `database_maintenance_service.py` | backup e restauracao do banco |
+| `delivery_method_service.py` | regras dos meios de recebimento do sistema |
 | `empresa_service.py` | regras de empresas |
 | `tipo_service.py` | regras de tipos |
 | `documento_service.py` | regras de documentos |
 | `periodo_service.py` | regras de periodos |
 | `status_service.py` | status mensal, regra de encerramento e montagem da visao de controle |
 | `import_service.py` | importacao via Excel |
+| `pending_report_service.py` | exportacao do relatorio de pendencias |
 | `session_service.py` | sessao do usuario logado |
 | `user_service.py` | administracao de usuarios |
 | `log_service.py` | leitura e filtro de logs |
@@ -155,8 +161,8 @@ Contem a interface grafica Tkinter.
 | `controle_tab.py` | consulta e alteracao de status por periodo |
 | `empresa_tab.py` | cadastro de empresas |
 | `documento_tab.py` | cadastro de documentos por empresa |
-| `tipo_tab.py` | manutencao de tipos |
-| `edicao_tab.py` | manutencao mais ampla de empresa e documentos |
+| `tipo_tab.py` | tela auxiliar/legada para tipos; nao e montada pela `MainWindow` atual |
+| `edicao_tab.py` | tela auxiliar/legada para manutencao consolidada; nao e montada pela `MainWindow` atual |
 | `periodo_tab.py` | geracao de periodos e exclusao de ano |
 | `user_tab.py` | gestao de usuarios, restrita a admin |
 | `log_tab.py` | visualizacao de logs, restrita a admin |

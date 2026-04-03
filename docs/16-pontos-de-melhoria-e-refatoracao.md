@@ -37,7 +37,7 @@ Esse arquivo ja merece particionamento futuro.
 
 ### Algumas abas sao grandes e muito stateful
 
-`ControleTab`, `DocumentoTab` e `EdicaoTab` concentram bastante logica de estado visual. Isso e comum em Tkinter, mas com o crescimento do projeto pode dificultar testes e manutencao.
+`ControleTab`, `EmpresaTab` e `DocumentoTab` concentram bastante logica de estado visual. Isso e comum em Tkinter, mas com o crescimento do projeto pode dificultar testes e manutencao.
 
 ### Backfill de logs usa parsing textual como fallback
 
