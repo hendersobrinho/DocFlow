@@ -1,0 +1,1 @@
+"""Dialogos da interface Qt."""

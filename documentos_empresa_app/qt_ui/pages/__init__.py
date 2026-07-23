@@ -1,0 +1,1 @@
+"""Paginas da interface Qt."""
