@@ -17,6 +17,11 @@ from documentos_empresa_app.services.document_extraction_service import (
 from documentos_empresa_app.services.empresa_service import EmpresaService
 from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.utils.common import ValidationError
+from documentos_empresa_app.utils.document_agent_diagnostics import (
+    log_extraction_failure,
+    log_move_failure,
+    log_unmatched_cnpj,
+)
 
 
 @dataclass(slots=True)
@@ -80,9 +85,15 @@ class DocumentAgentService:
         try:
             text = self.extraction_service.extract_text(file_path)
         except DocumentExtractionError as exc:
+            log_extraction_failure(str(file_path), str(exc))
             return file_path, None, str(exc)
 
         result = self.classification_service.classify(text, empresa_cnpj_index, known_company_names)
+        if result.origem != "regex_cnpj":
+            # A camada local (sem IA) nao resolveu sozinha - registra pra permitir
+            # ajustar o regex/casamento de CNPJ depois, com o texto real que falhou.
+            candidates = self.classification_service.extract_cnpj_candidates(text)
+            log_unmatched_cnpj(str(file_path), candidates, text)
         return file_path, result, None
 
     # Fase 3 - thread principal, escrita de banco + filesystem
@@ -113,6 +124,7 @@ class DocumentAgentService:
                         shutil.move(str(file_path), str(destino))
                     except OSError as exc:
                         motivo = f"Falha ao mover arquivo automaticamente: {exc}"
+                        log_move_failure(str(file_path), diretorio, str(exc))
                         self.pendente_repository.create(
                             str(file_path),
                             file_path.name,

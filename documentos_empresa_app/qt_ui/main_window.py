@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -22,6 +24,7 @@ from documentos_empresa_app.app_context import ApplicationServices
 from documentos_empresa_app.qt_ui.dialogs.about_dialog import AboutDialog
 from documentos_empresa_app.qt_ui.dialogs.backup_settings_dialog import BackupSettingsDialog
 from documentos_empresa_app.qt_ui.icons import app_icon
+from documentos_empresa_app.qt_ui.pages.configuracoes_page import ConfiguracoesPage
 from documentos_empresa_app.qt_ui.pages.controle_page import ControlePage
 from documentos_empresa_app.qt_ui.pages.dashboard_page import DashboardPage
 from documentos_empresa_app.qt_ui.pages.documentos_page import DocumentosPage
@@ -32,14 +35,20 @@ from documentos_empresa_app.qt_ui.pages.revisao_page import RevisaoPage
 from documentos_empresa_app.qt_ui.pages.usuarios_page import UsuariosPage
 from documentos_empresa_app.qt_ui.theme import ThemeManager
 from documentos_empresa_app.qt_ui.widgets.common import make_button
+from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner, CallableWorker
 from documentos_empresa_app.utils.auto_backup import (
     load_auto_backup_settings,
     mark_auto_backup_created,
     save_auto_backup_settings,
     should_run_auto_backup,
 )
-from documentos_empresa_app.utils.common import APP_NAME, ValidationError
-from documentos_empresa_app.utils.helpers import open_directory_in_file_manager, save_login_preferences
+from documentos_empresa_app.utils.backup_encryption import is_encrypted_backup
+from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE, ValidationError
+from documentos_empresa_app.utils.helpers import (
+    load_backup_encryption_password,
+    open_directory_in_file_manager,
+    save_login_preferences,
+)
 
 SIDEBAR_WIDTH = 230
 
@@ -55,7 +64,7 @@ class MainWindow(QMainWindow):
         self.pages: list[QWidget] = []
         self._dirty_pages: set[int] = set()
 
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(app_icon())
         self.resize(1440, 880)
         self.setMinimumSize(1100, 720)
@@ -153,6 +162,7 @@ class MainWindow(QMainWindow):
             ("Empresas", EmpresasPage(self.services, self.refresh_all_tabs)),
             ("Documentos", DocumentosPage(self.services, self.refresh_all_tabs)),
             ("Revisao de Documentos", RevisaoPage(self.services, self.refresh_all_tabs)),
+            ("Configuracoes", ConfiguracoesPage(self.services, self.refresh_all_tabs)),
         ]
         if self.services.session_service.is_admin():
             page_defs.append(("Usuarios", UsuariosPage(self.services, self.refresh_all_tabs)))
@@ -244,12 +254,16 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        try:
-            result = self.services.database_maintenance_service.create_backup(file_path)
-        except ValidationError as exc:
-            QMessageBox.critical(self, APP_NAME, str(exc))
-            return
+        backup_password = load_backup_encryption_password()
+        runner = BlockingTaskRunner(self)
+        runner.run(
+            "Gerando backup do banco de dados...",
+            lambda: self.services.database_maintenance_service.create_backup(file_path, password=backup_password),
+            on_success=self._on_backup_created,
+            on_error=lambda message: QMessageBox.critical(self, APP_NAME, message),
+        )
 
+    def _on_backup_created(self, result: dict) -> None:
         QMessageBox.information(
             self,
             APP_NAME,
@@ -276,17 +290,33 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_NAME, str(exc))
 
     def run_auto_backup_if_due(self) -> None:
+        """Roda em thread de fundo, sem dialogo: o backup automatico deve ser
+        silencioso (so avisa em caso de falha) e nao pode travar a interface."""
         settings = load_auto_backup_settings()
         if not should_run_auto_backup(settings):
             return
 
-        try:
-            result = self.services.database_maintenance_service.create_timestamped_backup(
-                settings["directory"], keep_last=settings["keep_last"]
+        backup_password = load_backup_encryption_password()
+        self._auto_backup_thread = QThread(self)
+        self._auto_backup_worker = CallableWorker(
+            lambda: self.services.database_maintenance_service.create_timestamped_backup(
+                settings["directory"], keep_last=settings["keep_last"], password=backup_password
             )
-            mark_auto_backup_created(result)
-        except ValidationError as exc:
-            QMessageBox.warning(self, APP_NAME, f"Nao foi possivel gerar o backup automatico.\n\n{exc}")
+        )
+        self._auto_backup_worker.moveToThread(self._auto_backup_thread)
+        self._auto_backup_thread.started.connect(self._auto_backup_worker.run)
+        self._auto_backup_worker.finished.connect(self._on_auto_backup_finished)
+        self._auto_backup_worker.failed.connect(self._on_auto_backup_failed)
+        self._auto_backup_worker.finished.connect(self._auto_backup_thread.quit)
+        self._auto_backup_worker.failed.connect(self._auto_backup_thread.quit)
+        self._auto_backup_thread.finished.connect(self._auto_backup_worker.deleteLater)
+        self._auto_backup_thread.start()
+
+    def _on_auto_backup_finished(self, result: dict) -> None:
+        mark_auto_backup_created(result)
+
+    def _on_auto_backup_failed(self, message: str) -> None:
+        QMessageBox.warning(self, APP_NAME, f"Nao foi possivel gerar o backup automatico.\n\n{message}")
 
     def restore_database(self) -> None:
         file_path, _filter = QFileDialog.getOpenFileName(
@@ -308,12 +338,28 @@ class MainWindow(QMainWindow):
         if second != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            self.services.database_maintenance_service.restore_backup(file_path)
-        except ValidationError as exc:
-            QMessageBox.critical(self, APP_NAME, str(exc))
-            return
+        restore_password = None
+        if is_encrypted_backup(Path(file_path)):
+            restore_password = load_backup_encryption_password()
+            if not restore_password:
+                restore_password, confirmed = QInputDialog.getText(
+                    self,
+                    APP_NAME,
+                    "Este backup esta protegido por senha. Informe a senha de criptografia:",
+                    QLineEdit.EchoMode.Password,
+                )
+                if not confirmed or not restore_password:
+                    return
 
+        runner = BlockingTaskRunner(self)
+        runner.run(
+            "Restaurando backup do banco de dados...",
+            lambda: self.services.database_maintenance_service.restore_backup(file_path, password=restore_password),
+            on_success=self._on_backup_restored,
+            on_error=lambda message: QMessageBox.critical(self, APP_NAME, message),
+        )
+
+    def _on_backup_restored(self, result: dict) -> None:
         QMessageBox.information(
             self,
             APP_NAME,
@@ -327,4 +373,12 @@ class MainWindow(QMainWindow):
             shutdown = getattr(page, "shutdown", None)
             if callable(shutdown):
                 shutdown()
+        self._wait_for_auto_backup_thread()
         super().closeEvent(event)
+
+    def _wait_for_auto_backup_thread(self) -> None:
+        """Aguarda o backup automatico em segundo plano terminar antes de fechar -
+        destruir a QThread no meio de uma copia do banco poderia corromper o backup."""
+        thread = getattr(self, "_auto_backup_thread", None)
+        if thread is not None and thread.isRunning():
+            thread.wait(15000)

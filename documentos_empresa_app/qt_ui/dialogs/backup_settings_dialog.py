@@ -26,6 +26,7 @@ from documentos_empresa_app.utils.auto_backup import (
     normalize_auto_backup_settings,
 )
 from documentos_empresa_app.utils.common import APP_NAME
+from documentos_empresa_app.utils.helpers import load_backup_encryption_password, save_backup_encryption_password
 
 
 class BackupSettingsDialog(QDialog):
@@ -72,6 +73,20 @@ class BackupSettingsDialog(QDialog):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
+
+        layout.addWidget(QLabel("Senha de criptografia do backup (opcional)"))
+        self.password_edit = QLineEdit(load_backup_encryption_password() or "")
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit.setPlaceholderText("Deixe em branco para nao criptografar os backups")
+        layout.addWidget(self.password_edit)
+        password_hint = QLabel(
+            "Se preenchida, essa senha e usada para criptografar todos os backups (manuais e "
+            "automaticos) e sera exigida para restaurar qualquer um deles. Guarde-a em lugar seguro: "
+            "se for perdida, os backups criptografados ficam irrecuperaveis."
+        )
+        password_hint.setObjectName("Muted")
+        password_hint.setWordWrap(True)
+        layout.addWidget(password_hint)
 
         last_backup_at = self.original_settings.get("last_backup_at") or "Nunca"
         last_backup_path = self.original_settings.get("last_backup_path") or "-"
@@ -128,6 +143,7 @@ class BackupSettingsDialog(QDialog):
                 QMessageBox.critical(self, APP_NAME, "Informe uma pasta valida para o backup automatico.")
                 return
 
+        save_backup_encryption_password(self.password_edit.text())
         self.result = settings
         self.accept()
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from documentos_empresa_app.services.anthropic_document_classifier import LLMClassificationError
+from documentos_empresa_app.services.llm_types import LLMClassificationError
 
 CNPJ_REGEX = re.compile(r"\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}")
 

@@ -4,7 +4,9 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QHeaderView,
+    QInputDialog,
     QLabel,
+    QMessageBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from documentos_empresa_app.qt_ui.widgets.common import PageHeader, ToolbarRow, make_button
+from documentos_empresa_app.services.log_service import MIN_LOG_RETENTION_DAYS
 from documentos_empresa_app.utils.common import MONTH_NAMES, ValidationError
 
 
@@ -47,6 +50,13 @@ class LogsPage(QWidget):
         clear_button = make_button("Limpar filtros", "quiet")
         clear_button.clicked.connect(self.clear_filters)
         toolbar.add(clear_button)
+        purge_button = make_button("Expurgar logs antigos...", "danger")
+        purge_button.setToolTip(
+            "Remove logs mais antigos que o prazo informado - a LGPD pede que dado pessoal "
+            "(nome de usuarios, empresas) nao fique guardado indefinidamente sem necessidade."
+        )
+        purge_button.clicked.connect(self.purge_old_logs)
+        toolbar.add(purge_button)
         toolbar.add_stretch()
         self.info_label = QLabel("")
         self.info_label.setObjectName("Muted")
@@ -105,6 +115,45 @@ class LogsPage(QWidget):
                 if col == 5:
                     item.setToolTip(str(value))
                 self.table.setItem(row, col, item)
+
+    def purge_old_logs(self) -> None:
+        days, confirmed = QInputDialog.getInt(
+            self,
+            "Expurgar logs antigos",
+            f"Remover logs com mais de quantos dias? (minimo {MIN_LOG_RETENTION_DAYS})",
+            365,
+            MIN_LOG_RETENTION_DAYS,
+            3650,
+        )
+        if not confirmed:
+            return
+
+        try:
+            affected = self.services.log_service.count_logs_older_than(days)
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Logs", str(exc))
+            return
+
+        if affected == 0:
+            QMessageBox.information(self, "Logs", f"Nenhum log com mais de {days} dia(s) encontrado.")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Logs",
+            f"Isso vai apagar {affected} log(s) com mais de {days} dia(s), definitivamente. Continuar?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            removed = self.services.log_service.purge_logs_older_than(days)
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Logs", str(exc))
+            return
+
+        QMessageBox.information(self, "Logs", f"{removed} log(s) removido(s).")
+        self.refresh_data()
 
     def clear_filters(self) -> None:
         self.company_combo.setCurrentText("")

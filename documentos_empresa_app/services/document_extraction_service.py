@@ -4,6 +4,11 @@ from pathlib import Path
 
 SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
 
+# Limite defensivo contra arquivos manipulados pra causar consumo excessivo de memoria/CPU
+# na extracao (ex: PDF/planilha com compressao desproporcional - "decompression bomb").
+# Documentos legitimos de boleto/nota fiscal/extrato ficam bem abaixo disso.
+MAX_EXTRACTABLE_FILE_SIZE_BYTES = 50 * 1024 * 1024
+
 
 class DocumentExtractionError(Exception):
     """Erro ao extrair texto de um documento."""
@@ -16,11 +21,25 @@ class DocumentExtractionService:
     def extract_text(self, file_path: Path) -> str:
         path = Path(file_path)
         suffix = path.suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            raise DocumentExtractionError(f"Tipo de arquivo nao suportado: {suffix}")
+
+        self._check_file_size(path)
+
         if suffix == ".pdf":
             return self._extract_pdf_text(path)
-        if suffix in {".xlsx", ".xls"}:
-            return self._extract_spreadsheet_text(path)
-        raise DocumentExtractionError(f"Tipo de arquivo nao suportado: {suffix}")
+        return self._extract_spreadsheet_text(path)
+
+    def _check_file_size(self, file_path: Path) -> None:
+        try:
+            size_bytes = file_path.stat().st_size
+        except OSError as exc:
+            raise DocumentExtractionError(f"Nao foi possivel acessar o arquivo: {file_path.name}") from exc
+        if size_bytes > MAX_EXTRACTABLE_FILE_SIZE_BYTES:
+            raise DocumentExtractionError(
+                f"Arquivo maior que o limite suportado ({MAX_EXTRACTABLE_FILE_SIZE_BYTES // (1024 * 1024)} MB): "
+                f"{file_path.name}"
+            )
 
     def _extract_pdf_text(self, file_path: Path) -> str:
         try:

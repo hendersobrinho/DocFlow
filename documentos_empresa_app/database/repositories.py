@@ -51,7 +51,7 @@ class EmpresaRepository(BaseRepository):
         query = """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj
+                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
             FROM empresas
         """
         params: tuple = ()
@@ -65,7 +65,7 @@ class EmpresaRepository(BaseRepository):
             """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj
+                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
             FROM empresas
             WHERE id = ?
             """,
@@ -76,7 +76,7 @@ class EmpresaRepository(BaseRepository):
         query = """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj
+                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
             FROM empresas
             WHERE codigo_empresa = ?
         """
@@ -97,7 +97,7 @@ class EmpresaRepository(BaseRepository):
                     f"""
                     SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                            observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                           cobranca_alerta_dias, cnpj
+                           cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
                     FROM empresas
                     WHERE id IN ({placeholders})
                     """,
@@ -204,7 +204,7 @@ class EmpresaRepository(BaseRepository):
             """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj
+                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
             FROM empresas
             WHERE cnpj = ?
             """,
@@ -229,6 +229,18 @@ class EmpresaRepository(BaseRepository):
 
     def update_active(self, empresa_id: int, ativa: int) -> None:
         self._execute("UPDATE empresas SET ativa = ? WHERE id = ?", (ativa, empresa_id))
+
+    def update_nao_contatar_mala_direta(self, empresa_id: int, nao_contatar: bool) -> None:
+        self._execute(
+            "UPDATE empresas SET nao_contatar_mala_direta = ? WHERE id = ?",
+            (1 if nao_contatar else 0, empresa_id),
+        )
+
+    def clear_contact_info(self, empresa_id: int) -> None:
+        self._execute(
+            "UPDATE empresas SET email_contato = NULL, nome_contato = NULL WHERE id = ?",
+            (empresa_id,),
+        )
 
     def delete(self, empresa_id: int) -> None:
         self._execute("DELETE FROM empresas WHERE id = ?", (empresa_id,))
@@ -359,20 +371,20 @@ class UsuarioRepository(BaseRepository):
     def list_all(self) -> list[dict]:
         return self._fetchall(
             """
-            SELECT id, username, tipo_usuario, ativa, criado_em
+            SELECT id, username, tipo_usuario, ativa, deve_trocar_senha, criado_em
             FROM usuarios
             ORDER BY username
             """
         )
 
     def get_by_id(self, user_id: int, include_password: bool = False) -> dict | None:
-        fields = "id, username, tipo_usuario, ativa, criado_em"
+        fields = "id, username, tipo_usuario, ativa, deve_trocar_senha, criado_em"
         if include_password:
             fields += ", senha_hash"
         return self._fetchone(f"SELECT {fields} FROM usuarios WHERE id = ?", (user_id,))
 
     def get_by_username(self, username: str, include_password: bool = False) -> dict | None:
-        fields = "id, username, tipo_usuario, ativa, criado_em"
+        fields = "id, username, tipo_usuario, ativa, deve_trocar_senha, criado_em"
         if include_password:
             fields += ", senha_hash"
         return self._fetchone(f"SELECT {fields} FROM usuarios WHERE username = ?", (username,))
@@ -397,7 +409,12 @@ class UsuarioRepository(BaseRepository):
         )
 
     def update_password(self, user_id: int, senha_hash: str) -> None:
-        self._execute("UPDATE usuarios SET senha_hash = ? WHERE id = ?", (senha_hash, user_id))
+        # Trocar a senha sempre limpa a exigencia de troca obrigatoria, seja a troca
+        # feita pelo proprio usuario ou por um admin resetando a senha de outro.
+        self._execute(
+            "UPDATE usuarios SET senha_hash = ?, deve_trocar_senha = 0 WHERE id = ?",
+            (senha_hash, user_id),
+        )
 
     def count_admins(self, active_only: bool = True) -> int:
         query = "SELECT COUNT(*) AS total FROM usuarios WHERE tipo_usuario = 'admin'"
@@ -568,6 +585,15 @@ class LogRepository(BaseRepository):
             (ano,),
         )
         return [row["periodo_mes"] for row in rows]
+
+    def count_older_than(self, cutoff_iso: str) -> int:
+        row = self._fetchone("SELECT COUNT(*) AS total FROM logs WHERE data_hora < ?", (cutoff_iso,))
+        return int(row["total"]) if row else 0
+
+    def delete_older_than(self, cutoff_iso: str) -> int:
+        count = self.count_older_than(cutoff_iso)
+        self._execute("DELETE FROM logs WHERE data_hora < ?", (cutoff_iso,))
+        return count
 
 
 class DocumentoRepository(BaseRepository):
@@ -1203,3 +1229,26 @@ class DocumentoPendenteRevisaoRepository(BaseRepository):
             """,
             (pendente_id,),
         )
+
+
+class UserPreferenceRepository(BaseRepository):
+    def get_pasta_entrada(self, usuario_id: int) -> str | None:
+        row = self._fetchone(
+            "SELECT pasta_entrada FROM usuario_preferencias WHERE usuario_id = ?",
+            (usuario_id,),
+        )
+        return row["pasta_entrada"] if row else None
+
+    def set_pasta_entrada(self, usuario_id: int, pasta_entrada: str | None) -> None:
+        self._execute(
+            """
+            INSERT INTO usuario_preferencias (usuario_id, pasta_entrada)
+            VALUES (?, ?)
+            ON CONFLICT(usuario_id) DO UPDATE SET pasta_entrada = excluded.pasta_entrada
+            """,
+            (usuario_id, pasta_entrada),
+        )
+
+    def count_all(self) -> int:
+        row = self._fetchone("SELECT COUNT(*) AS total FROM usuario_preferencias")
+        return int(row["total"]) if row else 0

@@ -46,6 +46,19 @@ class StorageHelperTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 create_database_directory(temp_dir, "../fora")
 
+    def test_create_database_directory_rejects_rootless_absolute_path(self) -> None:
+        """Path.is_absolute() sozinho nao pega um caminho estilo POSIX sem letra de unidade
+        (ex: "/tmp/invalido") no Windows - isso permitia escapar da pasta-base escolhida e
+        criar a pasta na raiz da unidade atual. Ver create_database_directory/_is_rooted."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(ValidationError):
+                create_database_directory(temp_dir, "/rootless/invalido")
+
+    def test_create_database_directory_never_escapes_base_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            created = create_database_directory(temp_dir, "sub/pasta")
+            self.assertTrue(is_path_within_directory(created, temp_dir))
+
     def test_is_path_within_directory_detects_nested_path(self) -> None:
         self.assertTrue(is_path_within_directory("/tmp/app/dados/base.db", "/tmp/app"))
         self.assertFalse(is_path_within_directory("/tmp/dados/base.db", "/tmp/app"))
@@ -54,7 +67,7 @@ class StorageHelperTests(unittest.TestCase):
         settings = normalize_auto_backup_settings(None, default_directory="/tmp/docflow-backups")
 
         self.assertFalse(settings["enabled"])
-        self.assertEqual(settings["directory"], "/tmp/docflow-backups")
+        self.assertEqual(settings["directory"], str(Path("/tmp/docflow-backups")))
         self.assertEqual(settings["interval_days"], 1)
         self.assertEqual(settings["keep_last"], 10)
         self.assertIsNone(settings["last_backup_at"])

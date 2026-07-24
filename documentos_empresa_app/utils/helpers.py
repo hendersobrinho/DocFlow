@@ -15,6 +15,7 @@ from documentos_empresa_app.utils.common import (
     LEGACY_CONFIG_DIRS,
     ValidationError,
 )
+from documentos_empresa_app.utils.secret_protection import protect_secret, unprotect_secret
 
 
 def ensure_config_dir() -> None:
@@ -88,27 +89,133 @@ def save_config(config: dict) -> None:
     _harden_config_file_permissions(CONFIG_FILE)
 
 
-def resolve_anthropic_api_key() -> str | None:
-    env_key = os.environ.get("ANTHROPIC_API_KEY")
+AGENT_PROVIDER_ENV_VARS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+AGENT_PROVIDER_API_KEY_CONFIG_KEYS = {
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+}
+DEFAULT_AGENT_PROVIDER = "anthropic"
+
+
+def resolve_agent_api_key(provider: str) -> str | None:
+    env_var = AGENT_PROVIDER_ENV_VARS.get(provider)
+    env_key = os.environ.get(env_var) if env_var else None
     if env_key:
         return env_key
-    stored = str(load_config().get("anthropic_api_key") or "").strip()
+    config_key = AGENT_PROVIDER_API_KEY_CONFIG_KEYS.get(provider)
+    if not config_key:
+        return None
+    stored = str(unprotect_secret(load_config().get(config_key)) or "").strip()
     return stored or None
+
+
+def save_agent_api_key(provider: str, api_key: str | None) -> None:
+    config_key = AGENT_PROVIDER_API_KEY_CONFIG_KEYS.get(provider)
+    if not config_key:
+        return
+    config = load_config()
+    normalized = str(api_key or "").strip()
+    if normalized:
+        config[config_key] = protect_secret(normalized)
+    else:
+        config.pop(config_key, None)
+    save_config(config)
+
+
+def load_agent_provider() -> str:
+    stored = str(load_config().get("agente_provider") or "").strip().lower()
+    return stored if stored in AGENT_PROVIDER_ENV_VARS else DEFAULT_AGENT_PROVIDER
+
+
+def save_agent_provider(provider: str) -> None:
+    config = load_config()
+    normalized = str(provider or "").strip().lower()
+    if normalized in AGENT_PROVIDER_ENV_VARS:
+        config["agente_provider"] = normalized
+    else:
+        config.pop("agente_provider", None)
+    save_config(config)
+
+
+def load_agent_model(provider: str) -> str | None:
+    stored = str(load_config().get(f"agente_modelo_{provider}") or "").strip()
+    return stored or None
+
+
+def save_agent_model(provider: str, model: str | None) -> None:
+    config = load_config()
+    normalized = str(model or "").strip()
+    if normalized:
+        config[f"agente_modelo_{provider}"] = normalized
+    else:
+        config.pop(f"agente_modelo_{provider}", None)
+    save_config(config)
+
+
+def load_agent_confidence_threshold() -> float | None:
+    stored = load_config().get("agente_confianca_minima")
+    try:
+        return float(stored) if stored is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def save_agent_confidence_threshold(value: float | None) -> None:
+    config = load_config()
+    if value is None:
+        config.pop("agente_confianca_minima", None)
+    else:
+        config["agente_confianca_minima"] = float(value)
+    save_config(config)
+
+
+def load_agent_custom_instructions() -> str | None:
+    stored = str(load_config().get("agente_system_prompt_customizado") or "").strip()
+    return stored or None
+
+
+def save_agent_custom_instructions(value: str | None) -> None:
+    config = load_config()
+    normalized = str(value or "").strip()
+    if normalized:
+        config["agente_system_prompt_customizado"] = normalized
+    else:
+        config.pop("agente_system_prompt_customizado", None)
+    save_config(config)
+
+
+def load_backup_encryption_password() -> str | None:
+    stored = str(unprotect_secret(load_config().get("backup_encryption_password")) or "").strip()
+    return stored or None
+
+
+def save_backup_encryption_password(password: str | None) -> None:
+    config = load_config()
+    normalized = str(password or "").strip()
+    if normalized:
+        config["backup_encryption_password"] = protect_secret(normalized)
+    else:
+        config.pop("backup_encryption_password", None)
+    save_config(config)
+
+
+def load_mailing_campaign() -> dict:
+    stored = load_config().get("mala_direta_campanha")
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
+def save_mailing_campaign(campaign: dict) -> None:
+    config = load_config()
+    config["mala_direta_campanha"] = campaign
+    save_config(config)
 
 
 def load_document_agent_inbox_folder() -> str | None:
     stored = str(load_config().get("document_agent_inbox_folder") or "").strip()
     return stored or None
-
-
-def save_document_agent_inbox_folder(folder: str | None) -> None:
-    config = load_config()
-    normalized = str(folder or "").strip()
-    if normalized:
-        config["document_agent_inbox_folder"] = normalized
-    else:
-        config.pop("document_agent_inbox_folder", None)
-    save_config(config)
 
 
 def load_login_preferences() -> dict:
@@ -122,7 +229,7 @@ def load_login_preferences() -> dict:
         }
 
     username = str(stored.get("username") or "").strip()
-    remembered_token = str(stored.get("remembered_token") or "").strip() or None
+    remembered_token = str(unprotect_secret(stored.get("remembered_token")) or "").strip() or None
     remember_credential = bool(stored.get("remember_credential") and remembered_token)
     return {
         "username": username,
@@ -145,7 +252,7 @@ def save_login_preferences(
         config["login_preferences"] = {
             "username": normalized_username,
             "remember_credential": bool(remember_credential and normalized_token),
-            "remembered_token": normalized_token if remember_credential else None,
+            "remembered_token": protect_secret(normalized_token) if remember_credential else None,
         }
     else:
         config.pop("login_preferences", None)
@@ -185,6 +292,23 @@ def open_directory_in_file_manager(directory: str | Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
     except OSError as exc:
         raise ValidationError("Nao foi possivel abrir a pasta vinculada.") from exc
+
+
+def open_file_in_default_app(file_path: str | Path) -> None:
+    path = Path(file_path).expanduser()
+    if not path.exists() or not path.is_file():
+        raise ValidationError("O arquivo nao foi encontrado no computador.")
+
+    try:
+        if sys.platform.startswith("win") and hasattr(os, "startfile"):
+            os.startfile(str(path))
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+            return
+        subprocess.Popen(["xdg-open", str(path)])
+    except OSError as exc:
+        raise ValidationError("Nao foi possivel abrir o arquivo.") from exc
 
 
 def get_default_email_handler() -> str:
@@ -231,6 +355,44 @@ def open_email_draft(to_address: str, subject: str, body: str) -> str:
 
         linux_attempts = [
             ["xdg-email", "--utf8", "--subject", subject, "--body", body, to_value],
+            ["gio", "open", mailto_url],
+            ["xdg-open", mailto_url],
+        ]
+        for command in linux_attempts:
+            try:
+                subprocess.Popen(command)
+                return handler_name
+            except OSError:
+                continue
+    except OSError as exc:
+        raise ValidationError("Nao foi possivel abrir o cliente de email do sistema.") from exc
+
+    raise ValidationError("Nao foi possivel localizar um cliente de email compativel neste computador.")
+
+
+def open_bcc_email_draft(bcc_addresses: list[str], subject: str, body: str) -> str:
+    """Abre um rascunho no cliente de email padrao com todos os enderecos em BCC -
+    nenhum destinatario ve o email dos outros, e o envio em si fica por conta do
+    usuario dentro do proprio cliente de email (nada e enviado por aqui)."""
+    addresses = [str(address or "").strip() for address in bcc_addresses if str(address or "").strip()]
+    if not addresses:
+        raise ValidationError("Nao ha destinatarios para o rascunho de email.")
+
+    handler_name = get_default_email_handler()
+    bcc_value = ",".join(addresses)
+    mailto_url = f'mailto:?bcc={quote(bcc_value)}&subject={quote(subject)}&body={quote(body)}'
+
+    try:
+        if sys.platform.startswith("win") and hasattr(os, "startfile"):
+            os.startfile(mailto_url)
+            return handler_name
+
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", mailto_url])
+            return handler_name
+
+        linux_attempts = [
+            ["xdg-email", "--utf8", "--bcc", bcc_value, "--subject", subject, "--body", body],
             ["gio", "open", mailto_url],
             ["xdg-open", mailto_url],
         ]

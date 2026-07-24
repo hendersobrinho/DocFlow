@@ -17,9 +17,13 @@ from documentos_empresa_app.database.repositories import (
     RememberedSessionRepository,
     StatusRepository,
     TipoRepository,
+    UserPreferenceRepository,
     UsuarioRepository,
 )
 from documentos_empresa_app.database.schema import initialize_schema
+from documentos_empresa_app.services.agent_config_service import AgentConfigService, DEFAULT_CONFIDENCE_THRESHOLD
+from documentos_empresa_app.services.email_campaign_service import EmailCampaignService
+from documentos_empresa_app.utils import document_agent_diagnostics
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.auth_service import AuthService
 from documentos_empresa_app.services.collection_service import CollectionService
@@ -41,6 +45,7 @@ from documentos_empresa_app.utils.common import (
     TYPE_OCCURRENCE_MENSAL,
     TYPE_OCCURRENCE_TRIMESTRAL,
     ValidationError,
+    parse_period_label,
 )
 
 try:
@@ -65,6 +70,7 @@ class ApplicationServiceTests(unittest.TestCase):
         self.periodo_repository = PeriodoRepository(db_manager)
         self.status_repository = StatusRepository(db_manager)
         self.usuario_repository = UsuarioRepository(db_manager)
+        self.user_preference_repository = UserPreferenceRepository(db_manager)
         self.remembered_session_repository = RememberedSessionRepository(db_manager)
         self.log_repository = LogRepository(db_manager)
 
@@ -129,11 +135,13 @@ class ApplicationServiceTests(unittest.TestCase):
         self.auth_service = AuthService(self.usuario_repository, self.remembered_session_repository)
         self.user_service = UserService(
             self.usuario_repository,
+            self.user_preference_repository,
             self.session_service,
             audit_service=self.audit_service,
             auth_service=self.auth_service,
         )
         self.log_service = LogService(self.log_repository, self.session_service)
+        self.agent_config_service = AgentConfigService(self.session_service)
 
         admin_user = self.auth_service.authenticate("admin", "admin")
         self.session_service.login(admin_user)
@@ -1495,6 +1503,49 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(user["tipo_usuario"], "admin")
         self.assertEqual(user["ativa"], 1)
 
+    def test_default_admin_must_change_password_on_first_login(self) -> None:
+        self.assertTrue(self.session_service.must_change_password())
+
+    def test_change_own_password_clears_must_change_flag_and_revokes_sessions(self) -> None:
+        remembered_token = self.auth_service.create_remembered_session(self.session_service.get_user_id())
+        self.assertTrue(self.session_service.must_change_password())
+
+        self.user_service.change_own_password("admin", "novaSenhaForte123")
+
+        self.assertFalse(self.session_service.must_change_password())
+        with self.assertRaises(ValidationError):
+            self.auth_service.authenticate_with_remembered_session(remembered_token)
+
+        # A nova senha autentica; a antiga nao.
+        self.auth_service.authenticate("admin", "novaSenhaForte123")
+        with self.assertRaises(ValidationError):
+            self.auth_service.authenticate("admin", "admin")
+
+    def test_change_own_password_rejects_wrong_current_password(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.user_service.change_own_password("senhaErrada", "novaSenhaForte123")
+
+    def test_empresa_opt_out_of_mailing_is_persisted(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(10, "Empresa Opt Out", email_contato="a@b.com")
+
+        self.empresa_service.set_nao_contatar_mala_direta(empresa_id, True)
+        self.assertTrue(self.empresa_service.get_empresa(empresa_id)["nao_contatar_mala_direta"])
+
+        self.empresa_service.set_nao_contatar_mala_direta(empresa_id, False)
+        self.assertFalse(self.empresa_service.get_empresa(empresa_id)["nao_contatar_mala_direta"])
+
+    def test_clear_contact_info_removes_email_and_name_but_keeps_company(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(
+            11, "Empresa Titular", email_contato="titular@empresa.com", nome_contato="Fulano"
+        )
+
+        self.empresa_service.clear_contact_info(empresa_id)
+
+        empresa = self.empresa_service.get_empresa(empresa_id)
+        self.assertIsNone(empresa["email_contato"])
+        self.assertIsNone(empresa["nome_contato"])
+        self.assertEqual(empresa["nome_empresa"], "Empresa Titular")
+
     def test_auth_service_can_authenticate_with_remembered_session(self) -> None:
         token = self.auth_service.create_remembered_session(self.session_service.get_user_id())
 
@@ -1547,8 +1598,16 @@ class ApplicationServiceTests(unittest.TestCase):
 
         import sqlite3
 
-        with sqlite3.connect(invalid_backup) as connection:
-            connection.execute("CREATE TABLE exemplo (id INTEGER PRIMARY KEY)")
+        # 'with sqlite3.connect(...) as connection' so faz commit/rollback da transacao,
+        # nao fecha a conexao - sem o close() explicito, o handle do arquivo fica aberto
+        # (o SQLite mantem lock no arquivo no Windows) ate o GC coletar o objeto, o que pode
+        # nao acontecer antes do tearDown tentar apagar o diretorio temporario.
+        connection = sqlite3.connect(invalid_backup)
+        try:
+            with connection:
+                connection.execute("CREATE TABLE exemplo (id INTEGER PRIMARY KEY)")
+        finally:
+            connection.close()
 
         with self.assertRaises(ValidationError):
             self.database_maintenance_service.restore_backup(invalid_backup)
@@ -1559,6 +1618,22 @@ class ApplicationServiceTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             self.auth_service.authenticate("maria", "123456")
+
+    def test_own_inbox_folder_is_scoped_per_user(self) -> None:
+        second_user_id = self.user_service.create_user("carla", "123456", "comum", ativo=True)
+
+        self.user_service.set_own_inbox_folder("C:/pasta-admin")
+        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/pasta-admin")
+
+        second_user = self.usuario_repository.get_by_id(second_user_id)
+        self.session_service.login(second_user)
+        self.assertIsNone(self.user_service.get_own_inbox_folder())
+
+        self.user_service.set_own_inbox_folder("C:/pasta-carla")
+        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/pasta-carla")
+
+        self.session_service.login(self.usuario_repository.get_by_username("admin"))
+        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/pasta-admin")
 
     def test_logs_are_created_for_empresa_documento_e_status(self) -> None:
         empresa_id = self.empresa_service.create_empresa(777, "HND TEC")
@@ -1629,6 +1704,292 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertTrue(period_logs)
         self.assertTrue(all(log["periodo_ano"] == 2026 and log["periodo_mes"] == 2 for log in period_logs))
         self.assertTrue(any("Empresa B" in log["descricao"] for log in period_logs))
+
+
+class AgentConfigServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        config_dir = Path(self.temp_dir.name) / "config"
+        self.config_patcher = patch.multiple(
+            "documentos_empresa_app.utils.helpers",
+            CONFIG_DIR=config_dir,
+            CONFIG_FILE=config_dir / "config.json",
+        )
+        self.config_patcher.start()
+
+        self.admin_session = SessionService()
+        self.admin_session.login({"id": 1, "username": "admin", "tipo_usuario": "admin", "ativa": 1})
+        self.common_session = SessionService()
+        self.common_session.login({"id": 2, "username": "comum", "tipo_usuario": "comum", "ativa": 1})
+
+        self.service = AgentConfigService(self.admin_session)
+
+    def tearDown(self) -> None:
+        self.config_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_get_settings_returns_defaults_when_nothing_saved(self) -> None:
+        settings = self.service.get_settings()
+
+        self.assertEqual(settings.provider, "anthropic")
+        self.assertIsNone(settings.api_key)
+        self.assertEqual(settings.confidence_threshold, DEFAULT_CONFIDENCE_THRESHOLD)
+        self.assertIsNone(settings.custom_instructions)
+
+    def test_save_settings_persists_and_is_read_back(self) -> None:
+        saved = self.service.save_settings(
+            "anthropic", "sk-teste-123", "claude-sonnet-5", 0.6, "Documentos da empresa X vem sem CNPJ."
+        )
+
+        self.assertEqual(saved.provider, "anthropic")
+        self.assertEqual(saved.api_key, "sk-teste-123")
+        self.assertEqual(saved.model, "claude-sonnet-5")
+        self.assertEqual(saved.confidence_threshold, 0.6)
+        self.assertEqual(saved.custom_instructions, "Documentos da empresa X vem sem CNPJ.")
+
+        reloaded = self.service.get_settings()
+        self.assertEqual(reloaded.api_key, "sk-teste-123")
+        self.assertEqual(reloaded.model, "claude-sonnet-5")
+
+    def test_save_settings_rejects_threshold_out_of_range(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.service.save_settings("anthropic", "sk-teste", "claude-haiku-4-5", 1.5, None)
+
+    def test_save_settings_rejects_invalid_provider(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.service.save_settings("gemini", "sk-teste", "algum-modelo", 0.75, None)
+
+    def test_switching_provider_keeps_each_api_key_and_model_independent(self) -> None:
+        self.service.save_settings("anthropic", "sk-anthropic", "claude-sonnet-5", 0.75, None)
+        self.service.save_settings("openai", "sk-openai", "gpt-4o", 0.75, None)
+
+        anthropic_settings = self.service.get_settings("anthropic")
+        openai_settings = self.service.get_settings("openai")
+
+        self.assertEqual(anthropic_settings.api_key, "sk-anthropic")
+        self.assertEqual(anthropic_settings.model, "claude-sonnet-5")
+        self.assertEqual(openai_settings.api_key, "sk-openai")
+        self.assertEqual(openai_settings.model, "gpt-4o")
+
+        # o provedor ativo (usado por get_settings sem argumento) e o ultimo salvo
+        self.assertEqual(self.service.get_settings().provider, "openai")
+
+    def test_non_admin_cannot_read_or_save_settings(self) -> None:
+        service = AgentConfigService(self.common_session)
+
+        with self.assertRaises(ValidationError):
+            service.get_settings()
+        with self.assertRaises(ValidationError):
+            service.save_settings("anthropic", "sk-teste", "claude-haiku-4-5", 0.75, None)
+
+
+class EmailCampaignServiceTests(unittest.TestCase):
+    """open_bcc_email_draft e sempre mockado aqui - nenhum cliente de email real
+    e aberto durante os testes."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        config_dir = Path(self.temp_dir.name) / "config"
+        self.config_patcher = patch.multiple(
+            "documentos_empresa_app.utils.helpers",
+            CONFIG_DIR=config_dir,
+            CONFIG_FILE=config_dir / "config.json",
+        )
+        self.config_patcher.start()
+
+        db_path = Path(self.temp_dir.name) / "test_mailing.db"
+        db_manager = DatabaseManager(db_path)
+        initialize_schema(db_manager)
+        self.empresa_repository = EmpresaRepository(db_manager)
+
+        self.admin_session = SessionService()
+        self.admin_session.login({"id": 1, "username": "admin", "tipo_usuario": "admin", "ativa": 1})
+        self.common_session = SessionService()
+        self.common_session.login({"id": 2, "username": "comum", "tipo_usuario": "comum", "ativa": 1})
+
+        self.service = EmailCampaignService(self.admin_session, self.empresa_repository)
+
+        self.empresa_com_email_id = self.empresa_repository.create(
+            1, "Empresa Com Email", email_contato="joao@empresa.com"
+        )
+        self.empresa_com_email_2_id = self.empresa_repository.create(
+            2, "Empresa Com Email 2", email_contato="maria@empresa.com"
+        )
+        self.empresa_sem_email_id = self.empresa_repository.create(3, "Empresa Sem Email")
+
+    def tearDown(self) -> None:
+        self.config_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_get_campaign_returns_defaults_when_nothing_saved(self) -> None:
+        campaign = self.service.get_campaign()
+
+        self.assertEqual(campaign.subject, "")
+        self.assertEqual(campaign.body, "")
+        self.assertEqual(campaign.empresa_ids, [])
+
+    def test_save_campaign_persists_and_is_read_back(self) -> None:
+        saved = self.service.save_campaign(
+            "Cobranca mensal", "Ola, segue a cobranca.", [self.empresa_com_email_id, self.empresa_sem_email_id]
+        )
+
+        self.assertEqual(saved.subject, "Cobranca mensal")
+        self.assertEqual(saved.empresa_ids, [self.empresa_com_email_id, self.empresa_sem_email_id])
+
+        reloaded = self.service.get_campaign()
+        self.assertEqual(reloaded.body, "Ola, segue a cobranca.")
+        self.assertEqual(reloaded.empresa_ids, [self.empresa_com_email_id, self.empresa_sem_email_id])
+
+    def test_build_recipients_separates_companies_with_and_without_email(self) -> None:
+        emails, missing, opted_out = self.service.build_recipients(
+            [self.empresa_com_email_id, self.empresa_sem_email_id, self.empresa_com_email_2_id]
+        )
+
+        self.assertEqual(sorted(emails), ["joao@empresa.com", "maria@empresa.com"])
+        self.assertEqual(missing, ["Empresa Sem Email"])
+        self.assertEqual(opted_out, [])
+
+    def test_build_recipients_dedupes_same_email(self) -> None:
+        duplicate_id = self.empresa_repository.create(4, "Empresa Duplicada", email_contato="JOAO@empresa.com")
+
+        emails, _missing, _opted_out = self.service.build_recipients([self.empresa_com_email_id, duplicate_id])
+
+        self.assertEqual(emails, ["joao@empresa.com"])
+
+    def test_build_recipients_skips_companies_opted_out_of_mailing(self) -> None:
+        self.empresa_repository.update_nao_contatar_mala_direta(self.empresa_com_email_id, True)
+
+        emails, missing, opted_out = self.service.build_recipients(
+            [self.empresa_com_email_id, self.empresa_com_email_2_id]
+        )
+
+        self.assertEqual(emails, ["maria@empresa.com"])
+        self.assertEqual(missing, [])
+        self.assertEqual(opted_out, ["Empresa Com Email"])
+
+    def test_non_admin_cannot_manage_campaign(self) -> None:
+        service = EmailCampaignService(self.common_session, self.empresa_repository)
+
+        with self.assertRaises(ValidationError):
+            service.get_campaign()
+        with self.assertRaises(ValidationError):
+            service.save_campaign("assunto", "corpo", [])
+        with self.assertRaises(ValidationError):
+            service.build_recipients([])
+        with self.assertRaises(ValidationError):
+            service.open_draft("assunto", "corpo", [self.empresa_com_email_id])
+
+    def test_open_draft_raises_without_selected_companies(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.service.open_draft("Assunto", "Corpo", [])
+
+    def test_open_draft_raises_without_subject(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.service.open_draft("   ", "Corpo", [self.empresa_com_email_id])
+
+    def test_open_draft_raises_when_no_selected_company_has_email(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.service.open_draft("Assunto", "Corpo", [self.empresa_sem_email_id])
+
+    @patch("documentos_empresa_app.services.email_campaign_service.open_bcc_email_draft")
+    def test_open_draft_calls_bcc_helper_with_valid_emails_only(self, mock_open_draft) -> None:
+        result = self.service.open_draft(
+            "Cobranca de documentos",
+            "Ola, seguem os documentos pendentes.",
+            [self.empresa_com_email_id, self.empresa_sem_email_id, self.empresa_com_email_2_id],
+        )
+
+        self.assertEqual(result["recipient_count"], 2)
+        self.assertEqual(result["missing_companies"], ["Empresa Sem Email"])
+
+        mock_open_draft.assert_called_once()
+        bcc_addresses, subject, body = mock_open_draft.call_args[0]
+        self.assertEqual(sorted(bcc_addresses), ["joao@empresa.com", "maria@empresa.com"])
+        self.assertEqual(subject, "Cobranca de documentos")
+        self.assertEqual(body, "Ola, seguem os documentos pendentes.")
+
+
+class ParsePeriodLabelTests(unittest.TestCase):
+    def test_parses_mm_slash_yyyy(self) -> None:
+        self.assertEqual(parse_period_label("07/2026"), (2026, 7))
+
+    def test_parses_yyyy_dash_mm(self) -> None:
+        self.assertEqual(parse_period_label("2026-07"), (2026, 7))
+
+    def test_parses_full_format_period_label_text(self) -> None:
+        self.assertEqual(parse_period_label("07/2026 - Julho"), (2026, 7))
+
+    def test_parses_digits_without_separator(self) -> None:
+        self.assertEqual(parse_period_label("072026"), (2026, 7))
+
+    def test_rejects_invalid_month(self) -> None:
+        self.assertIsNone(parse_period_label("13/2026"))
+
+    def test_rejects_garbage_input(self) -> None:
+        self.assertIsNone(parse_period_label("nao e um periodo"))
+
+    def test_rejects_empty_input(self) -> None:
+        self.assertIsNone(parse_period_label(""))
+        self.assertIsNone(parse_period_label(None))
+
+
+class DocumentAgentDiagnosticsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        config_dir = Path(self.temp_dir.name) / "config"
+        self.config_patcher = patch.multiple(
+            "documentos_empresa_app.utils.document_agent_diagnostics",
+            CONFIG_DIR=config_dir,
+        )
+        self.config_patcher.start()
+        document_agent_diagnostics._reset_for_tests()
+
+    def tearDown(self) -> None:
+        document_agent_diagnostics._reset_for_tests()
+        self.config_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def _read_log(self) -> str:
+        log_path = document_agent_diagnostics.get_document_agent_log_path()
+        return log_path.read_text(encoding="utf-8")
+
+    def test_log_path_lives_under_config_dir(self) -> None:
+        log_path = document_agent_diagnostics.get_document_agent_log_path()
+        self.assertEqual(log_path.name, document_agent_diagnostics.LOG_FILE_NAME)
+        self.assertEqual(log_path.parent, Path(self.temp_dir.name) / "config")
+
+    def test_log_extraction_failure_writes_entry(self) -> None:
+        document_agent_diagnostics.log_extraction_failure("boleto.pdf", "arquivo corrompido")
+        content = self._read_log()
+        self.assertIn("EXTRACAO_FALHOU", content)
+        self.assertIn("boleto.pdf", content)
+        self.assertIn("arquivo corrompido", content)
+
+    def test_log_unmatched_cnpj_with_candidates(self) -> None:
+        document_agent_diagnostics.log_unmatched_cnpj(
+            "boleto.pdf", ["12345678000190"], "texto do boleto com CNPJ 12.345.678/0001-90"
+        )
+        content = self._read_log()
+        self.assertIn("CNPJ_NAO_CADASTRADO", content)
+        self.assertIn("12345678000190", content)
+
+    def test_log_unmatched_cnpj_without_candidates(self) -> None:
+        document_agent_diagnostics.log_unmatched_cnpj("boleto.pdf", [], "texto sem nenhum cnpj reconhecivel")
+        content = self._read_log()
+        self.assertIn("CNPJ_NAO_ENCONTRADO", content)
+
+    def test_log_unmatched_cnpj_truncates_long_text(self) -> None:
+        long_text = "A" * 1000
+        document_agent_diagnostics.log_unmatched_cnpj("boleto.pdf", [], long_text)
+        content = self._read_log()
+        self.assertIn("...", content)
+        self.assertLess(len(content), len(long_text))
+
+    def test_log_move_failure_writes_entry(self) -> None:
+        document_agent_diagnostics.log_move_failure("boleto.pdf", "C:/destino", "permissao negada")
+        content = self._read_log()
+        self.assertIn("MOVER_ARQUIVO_FALHOU", content)
+        self.assertIn("permissao negada", content)
 
 
 if __name__ == "__main__":

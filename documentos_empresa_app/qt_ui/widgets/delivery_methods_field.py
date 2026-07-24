@@ -88,12 +88,15 @@ class DeliveryMethodsField(QGroupBox):
         value = self.combo.currentText().strip()
         if not value:
             return
+        self._add_value(value)
+        self.combo.setCurrentText("")
+
+    def _add_value(self, value: str) -> None:
         existing = {self.chosen_list.item(i).text().casefold(): i for i in range(self.chosen_list.count())}
         if value.casefold() in existing:
             self.chosen_list.takeItem(existing[value.casefold()])
         else:
             self.chosen_list.addItem(value)
-        self.combo.setCurrentText("")
 
     def _remove_selected(self) -> None:
         for item in self.chosen_list.selectedItems():
@@ -108,7 +111,11 @@ class DeliveryMethodsField(QGroupBox):
     def _open_manager(self) -> None:
         if self.delivery_method_service is None:
             return
-        dialog = DeliveryMethodsManagerDialog(self.delivery_method_service, self)
+        dialog = DeliveryMethodsManagerDialog(
+            self.delivery_method_service, allow_apply=self.combo.isEnabled(), parent=self
+        )
         dialog.exec()
         if dialog.data_changed:
             self.refresh_available_values()
+        if dialog.applied_value is not None:
+            self._add_value(dialog.applied_value)

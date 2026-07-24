@@ -17,13 +17,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from documentos_empresa_app.qt_ui.dialogs.agent_chat_dialog import AgentChatDialog
 from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, make_button
 from documentos_empresa_app.qt_ui.widgets.company_selector import CompanySelector
 from documentos_empresa_app.utils.common import ValidationError
-from documentos_empresa_app.utils.helpers import (
-    load_document_agent_inbox_folder,
-    save_document_agent_inbox_folder,
-)
+from documentos_empresa_app.utils.document_agent_diagnostics import get_document_agent_log_path
+from documentos_empresa_app.utils.helpers import open_file_in_default_app
 
 ORIGEM_LABELS = {
     "regex_cnpj": "CNPJ local",
@@ -88,7 +87,7 @@ class RevisaoPage(QWidget):
         layout.addWidget(inbox_card)
 
         inbox_layout.addWidget(QLabel("Pasta de entrada:"))
-        self.inbox_edit = QLineEdit(load_document_agent_inbox_folder() or "")
+        self.inbox_edit = QLineEdit(self.services.user_service.get_own_inbox_folder() or "")
         self.inbox_edit.setReadOnly(True)
         inbox_layout.addWidget(self.inbox_edit, 1)
         self.choose_inbox_button = make_button("Escolher pasta...")
@@ -97,6 +96,13 @@ class RevisaoPage(QWidget):
         self.process_button = make_button("Processar novos documentos", "primary")
         self.process_button.clicked.connect(self.process_new_documents)
         inbox_layout.addWidget(self.process_button)
+        self.diagnostics_button = make_button("Ver log de diagnostico")
+        self.diagnostics_button.setToolTip(
+            "Abre o log tecnico das camadas sem IA (extracao de texto e casamento por CNPJ) - "
+            "util para revisar padroes de falha e ajustar o codigo depois."
+        )
+        self.diagnostics_button.clicked.connect(self.open_diagnostics_log)
+        inbox_layout.addWidget(self.diagnostics_button)
 
         self.status_label = QLabel("Pronto para processar.")
         self.status_label.setObjectName("Muted")
@@ -147,6 +153,9 @@ class RevisaoPage(QWidget):
         self.confirm_button = make_button("Confirmar", "primary")
         self.confirm_button.clicked.connect(self.confirm_selected)
         action_block.addWidget(self.confirm_button)
+        self.ask_agent_button = make_button("Perguntar ao agente")
+        self.ask_agent_button.clicked.connect(self.ask_agent)
+        action_block.addWidget(self.ask_agent_button)
         self.ignore_button = make_button("Ignorar", "danger")
         self.ignore_button.clicked.connect(self.ignore_selected)
         action_block.addWidget(self.ignore_button)
@@ -156,6 +165,7 @@ class RevisaoPage(QWidget):
         self._set_resolution_enabled(False)
 
     def refresh_data(self) -> None:
+        self.inbox_edit.setText(self.services.user_service.get_own_inbox_folder() or "")
         self.company_selector.refresh_companies()
         self.table.setRowCount(0)
         self.pendentes_by_id = {}
@@ -194,7 +204,22 @@ class RevisaoPage(QWidget):
         if not selected:
             return
         self.inbox_edit.setText(selected)
-        save_document_agent_inbox_folder(selected)
+        self.services.user_service.set_own_inbox_folder(selected)
+
+    def open_diagnostics_log(self) -> None:
+        log_path = get_document_agent_log_path()
+        if not log_path.exists():
+            QMessageBox.information(
+                self,
+                "Revisao de documentos",
+                "Nenhum log de diagnostico foi gerado ainda - ele so registra quando alguma camada "
+                "sem IA (extracao de texto ou casamento por CNPJ) nao consegue organizar um documento.",
+            )
+            return
+        try:
+            open_file_in_default_app(log_path)
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Revisao de documentos", str(exc))
 
     def process_new_documents(self) -> None:
         inbox_folder = self.inbox_edit.text().strip()
@@ -333,7 +358,17 @@ class RevisaoPage(QWidget):
 
         self.on_data_changed()
 
+    def ask_agent(self) -> None:
+        pendente_id = self._selected_pendente_id()
+        if pendente_id is None:
+            return
+        pendente = self.pendentes_by_id.get(pendente_id)
+        if not pendente:
+            return
+        AgentChatDialog(self.services, pendente, self).exec()
+
     def _set_resolution_enabled(self, enabled: bool) -> None:
         self.choose_target_button.setEnabled(enabled)
         self.confirm_button.setEnabled(enabled)
+        self.ask_agent_button.setEnabled(enabled)
         self.ignore_button.setEnabled(enabled)

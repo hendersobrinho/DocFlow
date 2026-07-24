@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 
-from documentos_empresa_app.database.repositories import UsuarioRepository
+from documentos_empresa_app.database.repositories import UserPreferenceRepository, UsuarioRepository
 from documentos_empresa_app.services.auth_service import AuthService
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.utils.common import ValidationError
-from documentos_empresa_app.utils.security import hash_password
+from documentos_empresa_app.utils.security import hash_password, verify_password
 
 
 VALID_USER_TYPES = {"admin", "comum"}
@@ -17,14 +17,57 @@ class UserService:
     def __init__(
         self,
         usuario_repository: UsuarioRepository,
+        user_preference_repository: UserPreferenceRepository,
         session_service: SessionService,
         audit_service: AuditService | None = None,
         auth_service: AuthService | None = None,
     ) -> None:
         self.usuario_repository = usuario_repository
+        self.user_preference_repository = user_preference_repository
         self.session_service = session_service
         self.audit_service = audit_service
         self.auth_service = auth_service
+
+    def get_own_inbox_folder(self) -> str | None:
+        usuario_id = self.session_service.get_user_id()
+        if usuario_id is None:
+            return None
+        return self.user_preference_repository.get_pasta_entrada(usuario_id)
+
+    def set_own_inbox_folder(self, pasta_entrada: str | None) -> None:
+        usuario_id = self.session_service.get_user_id()
+        if usuario_id is None:
+            raise ValidationError("Nenhum usuario autenticado.")
+        normalized = str(pasta_entrada or "").strip() or None
+        self.user_preference_repository.set_pasta_entrada(usuario_id, normalized)
+
+    def change_own_password(self, current_password: str, new_password: str) -> None:
+        user_id = self.session_service.get_user_id()
+        if user_id is None:
+            raise ValidationError("Nenhum usuario autenticado.")
+
+        with self.usuario_repository.db_manager.connect():
+            user = self.usuario_repository.get_by_id(user_id, include_password=True)
+            if not user:
+                raise ValidationError("Usuario nao encontrado.")
+            if not verify_password(str(current_password), user["senha_hash"]):
+                raise ValidationError("Senha atual incorreta.")
+
+            normalized_password = self._normalize_new_password(new_password)
+            self.usuario_repository.update_password(user_id, hash_password(normalized_password))
+            if self.audit_service:
+                self.audit_service.log(
+                    "ALTERACAO_SENHA_USUARIO",
+                    "usuario",
+                    user_id,
+                    f'Usuario {user["username"]} alterou a propria senha.',
+                )
+            updated_user = self.usuario_repository.get_by_id(user_id)
+
+        if self.auth_service:
+            self.auth_service.revoke_user_remembered_sessions(user_id)
+        if updated_user:
+            self.session_service.refresh_user(updated_user)
 
     def list_users(self) -> list[dict]:
         self._ensure_admin()

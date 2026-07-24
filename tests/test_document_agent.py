@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from documentos_empresa_app.database.connection import DatabaseManager
 from documentos_empresa_app.database.repositories import (
@@ -11,7 +12,7 @@ from documentos_empresa_app.database.repositories import (
     LogRepository,
 )
 from documentos_empresa_app.database.schema import initialize_schema
-from documentos_empresa_app.services.anthropic_document_classifier import LLMSuggestion
+from documentos_empresa_app.services.llm_types import LLMSuggestion
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.document_agent_service import DocumentAgentService
 from documentos_empresa_app.services.document_classification_service import (
@@ -24,6 +25,7 @@ from documentos_empresa_app.services.document_extraction_service import (
 )
 from documentos_empresa_app.services.empresa_service import EmpresaService
 from documentos_empresa_app.services.session_service import SessionService
+from documentos_empresa_app.utils import document_agent_diagnostics
 from documentos_empresa_app.utils.common import ValidationError
 
 try:
@@ -180,7 +182,18 @@ class DocumentAgentServiceTests(unittest.TestCase):
         self.dest_dir = Path(self.temp_dir.name) / "dest"
         self.dest_dir.mkdir()
 
+        # Isola o log de diagnostico do agente do config real do usuario.
+        self.diagnostics_config_dir = Path(self.temp_dir.name) / "config"
+        self.diagnostics_patcher = patch.multiple(
+            "documentos_empresa_app.utils.document_agent_diagnostics",
+            CONFIG_DIR=self.diagnostics_config_dir,
+        )
+        self.diagnostics_patcher.start()
+        document_agent_diagnostics._reset_for_tests()
+
     def tearDown(self) -> None:
+        document_agent_diagnostics._reset_for_tests()
+        self.diagnostics_patcher.stop()
         self.temp_dir.cleanup()
 
     def _create_empresa(self, cnpj: str | None = None, diretorio: str | None = None) -> dict:
@@ -202,6 +215,44 @@ class DocumentAgentServiceTests(unittest.TestCase):
 
         found_again = self.agent_service.scan_folder(self.inbox_dir)
         self.assertEqual(found_again, [])
+
+    @unittest.skipIf(Workbook is None, "openpyxl indisponivel neste ambiente")
+    def test_classify_file_logs_when_local_layer_finds_no_cnpj(self) -> None:
+        file_path = self.inbox_dir / "planilha_sem_cnpj.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Documento sem nenhum CNPJ reconhecivel"])
+        workbook.save(file_path)
+
+        cnpj_index = self.agent_service.build_cnpj_index()
+        known_names = self.agent_service.build_known_company_names()
+        _returned_path, result, extraction_error = self.agent_service.classify_file(
+            file_path, cnpj_index, known_names
+        )
+
+        self.assertIsNone(extraction_error)
+        self.assertEqual(result.origem, "nenhuma")
+
+        log_content = document_agent_diagnostics.get_document_agent_log_path().read_text(encoding="utf-8")
+        self.assertIn("CNPJ_NAO_ENCONTRADO", log_content)
+        self.assertIn(str(file_path), log_content)
+
+    @unittest.skipIf(not HAS_PYPDF, "pypdf indisponivel neste ambiente")
+    def test_classify_file_logs_extraction_failures(self) -> None:
+        file_path = self.inbox_dir / "arquivo_corrompido.pdf"
+        file_path.write_bytes(b"isto nao e um pdf valido")
+
+        cnpj_index = self.agent_service.build_cnpj_index()
+        known_names = self.agent_service.build_known_company_names()
+        _returned_path, result, extraction_error = self.agent_service.classify_file(
+            file_path, cnpj_index, known_names
+        )
+
+        self.assertIsNotNone(extraction_error)
+        self.assertIsNone(result)
+
+        log_content = document_agent_diagnostics.get_document_agent_log_path().read_text(encoding="utf-8")
+        self.assertIn("EXTRACAO_FALHOU", log_content)
 
     def test_apply_result_moves_matched_file_with_directory(self) -> None:
         empresa = self._create_empresa(cnpj="12345678000190", diretorio=str(self.dest_dir))
