@@ -129,10 +129,13 @@ class EmpresaService:
                 changes = []
                 if empresa["nome_empresa"] != nome:
                     changes.append(f'nome: "{empresa["nome_empresa"]}" -> "{nome}"')
+                # Email e nome de contato sao dado pessoal de uma pessoa fisica (LGPD) - o log
+                # registra que o campo mudou, mas nao guarda o valor em si, pra nao deixar
+                # dado pessoal preso pra sempre em texto livre e sem possibilidade de expurgo.
                 if (empresa.get("email_contato") or "") != (email or ""):
-                    changes.append(f'email: "{empresa.get("email_contato") or "-"}" -> "{email or "-"}"')
+                    changes.append("email de contato alterado")
                 if (empresa.get("nome_contato") or "") != (contato or ""):
-                    changes.append(f'contato: "{empresa.get("nome_contato") or "-"}" -> "{contato or "-"}"')
+                    changes.append("nome de contato alterado")
                 if (empresa.get("observacao") or "") != (obs or ""):
                     changes.append(f'observacao: "{empresa.get("observacao") or "-"}" -> "{obs or "-"}"')
                 if (empresa.get("cnpj") or "") != (cnpj_normalizado or ""):
@@ -210,6 +213,51 @@ class EmpresaService:
                 empresa_nome=empresa["nome_empresa"],
             )
 
+    def set_nao_contatar_mala_direta(self, empresa_id: int, nao_contatar: bool) -> None:
+        with self.empresa_repository.db_manager.connect():
+            empresa = self.get_empresa(empresa_id)
+            if bool(empresa.get("nao_contatar_mala_direta")) == bool(nao_contatar):
+                return
+            self.empresa_repository.update_nao_contatar_mala_direta(empresa_id, nao_contatar)
+            descricao = (
+                f'Usuario {self._actor_name()} marcou a empresa "{empresa["nome_empresa"]}" '
+                "para nao receber mala direta por email."
+                if nao_contatar
+                else (
+                    f'Usuario {self._actor_name()} removeu o bloqueio de mala direta por email '
+                    f'da empresa "{empresa["nome_empresa"]}".'
+                )
+            )
+            self._log(
+                "EDICAO_EMPRESA",
+                "empresa",
+                empresa_id,
+                descricao,
+                empresa_id=empresa_id,
+                empresa_nome=empresa["nome_empresa"],
+            )
+
+    def clear_contact_info(self, empresa_id: int) -> None:
+        """Remove email/nome de contato sem excluir o cadastro da empresa -
+        atende ao direito ao esquecimento da LGPD para dados de uma pessoa
+        fisica de contato, mantendo o historico fiscal/documental da empresa."""
+        with self.empresa_repository.db_manager.connect():
+            empresa = self.get_empresa(empresa_id)
+            if not empresa.get("email_contato") and not empresa.get("nome_contato"):
+                return
+            self.empresa_repository.clear_contact_info(empresa_id)
+            self._log(
+                "EDICAO_EMPRESA",
+                "empresa",
+                empresa_id,
+                (
+                    f'Usuario {self._actor_name()} removeu os dados de contato (email/nome) '
+                    f'da empresa "{empresa["nome_empresa"]}" a pedido do titular.'
+                ),
+                empresa_id=empresa_id,
+                empresa_nome=empresa["nome_empresa"],
+            )
+
     def _parse_codigo(self, codigo_empresa) -> int:
         if isinstance(codigo_empresa, bool):
             raise ValidationError("O codigo da empresa deve ser um numero inteiro.")
@@ -275,10 +323,12 @@ class EmpresaService:
         observacao: str | None = None,
     ) -> str:
         details = [f'Usuario {self._actor_name()} {action_text} a empresa "{nome_empresa}" de codigo {codigo_empresa}.']
+        # Nao embutir o email/nome de contato em si no log (dado pessoal - LGPD), so
+        # registrar que foram informados.
         if email_contato:
-            details.append(f"Email: {email_contato}.")
+            details.append("Email de contato informado.")
         if nome_contato:
-            details.append(f"Contato: {nome_contato}.")
+            details.append("Nome de contato informado.")
         if observacao:
             details.append(f"Observacao: {observacao}.")
         return " ".join(details)

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMenu,
     QMessageBox,
     QTreeWidget,
@@ -20,7 +21,12 @@ from PySide6.QtWidgets import (
 from documentos_empresa_app.qt_ui.theme import status_colors, tokens
 from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, ToolbarRow, make_button
 from documentos_empresa_app.qt_ui.widgets.company_selector import CompanySelector
-from documentos_empresa_app.utils.common import MONTH_NAMES, STATUS_OPTIONS, ValidationError, parse_delivery_methods
+from documentos_empresa_app.utils.common import (
+    STATUS_OPTIONS,
+    ValidationError,
+    parse_delivery_methods,
+    parse_period_label,
+)
 
 BULK_STATUS_OPTIONS = {
     "Recebido": "Recebido",
@@ -54,22 +60,18 @@ class ControlePage(QWidget):
         layout.addWidget(self.company_selector)
 
         toolbar = ToolbarRow()
-        toolbar.add(QLabel("Ano inicial"))
-        self.start_year_combo = QComboBox()
-        self.start_year_combo.currentTextChanged.connect(lambda _t: self._sync_months("start"))
-        toolbar.add(self.start_year_combo)
-        toolbar.add(QLabel("Mes inicial"))
-        self.start_month_combo = QComboBox()
-        self.start_month_combo.setMinimumWidth(140)
-        toolbar.add(self.start_month_combo)
-        toolbar.add(QLabel("Mes final"))
-        self.end_month_combo = QComboBox()
-        self.end_month_combo.setMinimumWidth(140)
-        toolbar.add(self.end_month_combo)
-        toolbar.add(QLabel("Ano final"))
-        self.end_year_combo = QComboBox()
-        self.end_year_combo.currentTextChanged.connect(lambda _t: self._sync_months("end"))
-        toolbar.add(self.end_year_combo)
+        toolbar.add(QLabel("Periodo"))
+        self.start_period_edit = QLineEdit()
+        self.start_period_edit.setPlaceholderText("MM/AAAA")
+        self.start_period_edit.setMaximumWidth(90)
+        self.start_period_edit.returnPressed.connect(self.consult)
+        toolbar.add(self.start_period_edit)
+        toolbar.add(QLabel("ate"))
+        self.end_period_edit = QLineEdit()
+        self.end_period_edit.setPlaceholderText("MM/AAAA (opcional)")
+        self.end_period_edit.setMaximumWidth(130)
+        self.end_period_edit.returnPressed.connect(self.consult)
+        toolbar.add(self.end_period_edit)
         consult_button = make_button("Consultar", "primary")
         consult_button.clicked.connect(self.consult)
         toolbar.add(consult_button)
@@ -85,7 +87,7 @@ class ControlePage(QWidget):
         self.bulk_button.setEnabled(False)
         toolbar.add(self.bulk_button)
         toolbar.add_stretch()
-        hint = QLabel("Limite de 12 meses por consulta.")
+        hint = QLabel("Se o periodo final ficar em branco, consulta so o mes inicial. Limite de 12 meses.")
         hint.setObjectName("Muted")
         toolbar.add(hint)
         layout.addWidget(toolbar)
@@ -150,40 +152,10 @@ class ControlePage(QWidget):
         for periodo in periodos:
             self.periods_by_year.setdefault(periodo["ano"], []).append(periodo)
 
-        for combo, selected in (
-            (self.start_year_combo, self.start_year_combo.currentText()),
-            (self.end_year_combo, self.end_year_combo.currentText()),
-        ):
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem("")
-            combo.addItems([str(year) for year in sorted(self.periods_by_year)])
-            combo.setCurrentText(selected)
-            combo.blockSignals(False)
-        self._sync_months("start")
-        self._sync_months("end")
-
-    def _sync_months(self, side: str) -> None:
-        year_combo = self.start_year_combo if side == "start" else self.end_year_combo
-        month_combo = self.start_month_combo if side == "start" else self.end_month_combo
-        selected = month_combo.currentText()
-        month_combo.blockSignals(True)
-        month_combo.clear()
-        month_combo.addItem("")
-        year_text = year_combo.currentText()
-        if year_text:
-            try:
-                months = sorted(p["mes"] for p in self.periods_by_year.get(int(year_text), []))
-            except ValueError:
-                months = []
-            month_combo.addItems([f"{m:02d} - {MONTH_NAMES[m]}" for m in months])
-        month_combo.setCurrentText(selected)
-        month_combo.blockSignals(False)
-
     def clear_filters(self) -> None:
         self.company_selector.clear_selection()
-        for combo in (self.start_year_combo, self.start_month_combo, self.end_year_combo, self.end_month_combo):
-            combo.setCurrentText("")
+        self.start_period_edit.clear()
+        self.end_period_edit.clear()
         self.tree.clear()
         self.current_view = None
         self.bulk_button.setEnabled(False)
@@ -197,14 +169,11 @@ class ControlePage(QWidget):
     def _on_company_cleared(self) -> None:
         self.directory_button.setEnabled(False)
 
-    def _resolve_period_id(self, year_text: str, month_text: str) -> int | None:
-        if not year_text or not month_text:
+    def _resolve_period_id(self, raw: str) -> int | None:
+        parsed = parse_period_label(raw)
+        if not parsed:
             return None
-        try:
-            year = int(year_text)
-            month = int(month_text.split(" - ", 1)[0])
-        except ValueError:
-            return None
+        year, month = parsed
         return next((p["id"] for p in self.periods_by_year.get(year, []) if p["mes"] == month), None)
 
     # Consulta
@@ -216,12 +185,9 @@ class ControlePage(QWidget):
             QMessageBox.warning(self, "Controle", "A empresa nao esta ativa para consulta no Controle.")
             return False
         periodo = self.services.periodo_service.get_periodo(period_id)
-        self.start_year_combo.setCurrentText(str(periodo["ano"]))
-        self._sync_months("start")
-        self.start_month_combo.setCurrentText(f'{periodo["mes"]:02d} - {MONTH_NAMES[periodo["mes"]]}')
-        self.end_year_combo.setCurrentText(str(periodo["ano"]))
-        self._sync_months("end")
-        self.end_month_combo.setCurrentText(f'{periodo["mes"]:02d} - {MONTH_NAMES[periodo["mes"]]}')
+        period_text = f'{periodo["mes"]:02d}/{periodo["ano"]}'
+        self.start_period_edit.setText(period_text)
+        self.end_period_edit.setText(period_text)
         self.consult()
         return True
 
@@ -231,18 +197,16 @@ class ControlePage(QWidget):
             QMessageBox.warning(self, "Controle", "Selecione uma empresa para consultar.")
             return
 
-        start_year = self.start_year_combo.currentText()
-        start_month = self.start_month_combo.currentText()
-        end_year = self.end_year_combo.currentText() or start_year
-        end_month = self.end_month_combo.currentText() or start_month
-
-        start_id = self._resolve_period_id(start_year, start_month)
-        end_id = self._resolve_period_id(end_year, end_month)
+        start_id = self._resolve_period_id(self.start_period_edit.text())
         if start_id is None:
-            QMessageBox.warning(self, "Controle", "Escolha ao menos o ano e mes iniciais.")
+            QMessageBox.warning(self, "Controle", "Informe um periodo inicial valido no formato MM/AAAA.")
             return
+
+        end_raw = self.end_period_edit.text().strip()
+        end_id = self._resolve_period_id(end_raw) if end_raw else start_id
         if end_id is None:
-            end_id = start_id
+            QMessageBox.warning(self, "Controle", "Informe um periodo final valido no formato MM/AAAA.")
+            return
 
         try:
             view = self.services.status_service.build_control_view(company_id, start_id, end_id)

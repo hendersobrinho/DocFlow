@@ -12,6 +12,7 @@ class SessionService:
             "username": user["username"],
             "tipo_usuario": user["tipo_usuario"],
             "ativa": user["ativa"],
+            "deve_trocar_senha": bool(user.get("deve_trocar_senha")),
         }
         self.remembered_token = remembered_token
 
@@ -42,3 +43,6 @@ class SessionService:
 
     def get_remembered_token(self) -> str | None:
         return self.remembered_token
+
+    def must_change_password(self) -> bool:
+        return bool(self.current_user and self.current_user.get("deve_trocar_senha"))

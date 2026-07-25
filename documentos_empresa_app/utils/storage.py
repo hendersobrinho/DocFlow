@@ -5,12 +5,20 @@ from pathlib import Path
 from documentos_empresa_app.utils.common import ValidationError
 
 
+def _is_rooted(path: Path) -> bool:
+    """Path.is_absolute() sozinho nao basta: no Windows, um caminho estilo POSIX sem letra
+    de unidade (ex: "/tmp/algo") tem raiz mas 'is_absolute()' retorna False, o que deixava
+    essa validacao ser contornada e permitia escapar da pasta-base escolhida. 'anchor' cobre
+    tanto unidade+raiz (Windows absoluto), raiz sem unidade ("/tmp") e caminhos UNC."""
+    return bool(path.anchor)
+
+
 def normalize_database_filename(filename: str, default_name: str) -> str:
     normalized = str(filename).strip()
     if not normalized:
         normalized = default_name
     candidate = Path(normalized)
-    if candidate.is_absolute() or candidate.name != normalized:
+    if _is_rooted(candidate) or candidate.name != normalized:
         raise ValidationError("Informe apenas o nome do arquivo do banco, sem caminho.")
     if not Path(normalized).suffix:
         normalized = f"{normalized}.db"
@@ -36,9 +44,12 @@ def create_database_directory(base_folder: str | Path, new_folder_name: str) -> 
         raise ValidationError("Informe um nome para a nova pasta.")
 
     new_folder = Path(normalized_name)
-    if new_folder.is_absolute() or any(part in {".", ".."} for part in new_folder.parts):
+    if _is_rooted(new_folder) or any(part in {".", ".."} for part in new_folder.parts):
         raise ValidationError("Informe apenas o nome da pasta a ser criada.")
 
     target_folder = Path(base_folder).expanduser() / new_folder
+    if not is_path_within_directory(target_folder, Path(base_folder).expanduser()):
+        raise ValidationError("Informe apenas o nome da pasta a ser criada.")
+
     target_folder.mkdir(parents=True, exist_ok=True)
     return target_folder

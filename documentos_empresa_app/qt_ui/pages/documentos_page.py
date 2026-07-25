@@ -69,6 +69,10 @@ class DocumentosPage(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.itemSelectionChanged.connect(self._on_document_selected)
+        # activated cobre duplo-clique e Enter/Return sobre a linha selecionada -
+        # antes disso nao havia nenhum jeito de abrir um documento para edicao
+        # direto da lista, so pelo botao "Editar".
+        self.table.activated.connect(lambda _index: self._activate_selected_document())
         list_layout.addWidget(self.table, 1)
 
         # Formulario
@@ -262,6 +266,14 @@ class DocumentosPage(QWidget):
         self._on_document_selected()
         self._set_form_mode("edit")
 
+    def _activate_selected_document(self) -> None:
+        """Duplo-clique ou Enter numa linha abre o documento para edicao - se ja
+        houver um cadastro novo ou uma edicao em andamento, ignora para nao
+        descartar dados nao salvos."""
+        if self.form_mode in {"new", "edit"}:
+            return
+        self.start_edit()
+
     def cancel_edit(self) -> None:
         self._reset_form()
         self._set_form_mode("view" if self.company_selector.get_selected_company_id() else "idle")
@@ -331,9 +343,12 @@ class DocumentosPage(QWidget):
             self.services.tipo_service,
             "Documentos",
             self.tipo_combo.currentData(),
-            self,
+            allow_apply_to_document=self.form_mode in {"new", "edit"},
+            parent=self,
         )
         dialog.exec()
+        if dialog.applied_name is not None:
+            self.nome_combo.setCurrentText(dialog.applied_name)
         self._refresh_name_suggestions()
 
     def _open_type_manager(self) -> None:

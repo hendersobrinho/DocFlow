@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import sys
 
+from documentos_empresa_app import __version__
 
 APP_NAME = "DocFLow"
+APP_TITLE = f"{APP_NAME} {__version__}"
 LEGACY_CONFIG_DIRS = (
     Path.home() / ".g_docs",
     Path.home() / ".documentos_empresa_app",
@@ -179,5 +182,30 @@ def format_period_label(year: int, month: int) -> str:
     return f"{month:02d}/{year} - {MONTH_NAMES.get(month, str(month))}"
 
 
+def parse_period_label(raw: str) -> tuple[int, int] | None:
+    """Interpreta um periodo digitado livremente (MM/AAAA, AAAA-MM, ou o texto
+    completo de format_period_label) e retorna (ano, mes), ou None se invalido."""
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) == 6:
+        month, year = int(digits[:2]), int(digits[2:])
+        if 1 <= month <= 12:
+            return year, month
+    match = re.fullmatch(r"(\d{4})[-/](\d{1,2})", (raw or "").strip())
+    if match:
+        year, month = int(match.group(1)), int(match.group(2))
+        if 1 <= month <= 12:
+            return year, month
+    return None
+
+
 def count_months_between(start_year: int, start_month: int, end_year: int, end_month: int) -> int:
     return (end_year - start_year) * 12 + (end_month - start_month) + 1
+
+
+CPF_REGEX = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
+
+
+def redact_cpf(text: str) -> str:
+    """Remove numeros de CPF de um texto - CPF e dado pessoal (LGPD) e nao deve ser transmitido
+    pra servicos de terceiros (IA) nem gravado sem necessidade em logs locais."""
+    return CPF_REGEX.sub("[CPF removido]", text or "")

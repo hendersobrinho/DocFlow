@@ -12,10 +12,12 @@ from documentos_empresa_app.qt_ui.dialogs.database_path_dialog import (
     ensure_database_path_qt,
     prompt_database_path_qt,
 )
+from documentos_empresa_app.qt_ui.dialogs.change_password_dialog import ChangePasswordDialog
 from documentos_empresa_app.qt_ui.icons import app_icon
 from documentos_empresa_app.qt_ui.license_window import LicenseWindow
 from documentos_empresa_app.qt_ui.login_window import LoginWindow
 from documentos_empresa_app.qt_ui.main_window import MainWindow
+from documentos_empresa_app.qt_ui.splash_screen import SplashScreen
 from documentos_empresa_app.qt_ui.theme import ThemeManager
 from documentos_empresa_app.services.license_service import LicenseError, LicenseService
 from documentos_empresa_app.utils.common import APP_NAME, ValidationError
@@ -109,14 +111,21 @@ def main() -> None:
     _install_exception_handler()
     ThemeManager.instance().apply(app)
 
+    splash = SplashScreen()
+    splash.show_animated()
+
     while True:
+        splash.show_message("Verificando banco de dados...")
         db_path = ensure_database_path_qt()
         if db_path is None:
+            splash.close()
             return
 
         try:
+            splash.show_message("Preparando banco de dados...")
             services = build_application_services(db_path)
         except sqlite3.OperationalError:
+            splash.hide()
             QMessageBox.critical(
                 None,
                 APP_NAME,
@@ -124,27 +133,43 @@ def main() -> None:
             )
             new_path = prompt_database_path_qt()
             if new_path is None:
+                splash.close()
                 return
+            splash.show_animated()
             continue
 
+        splash.show_message("Validando licenca...")
         if not ensure_local_license():
+            splash.close()
             return
 
         while True:
             services.session_service.logout()
+            splash.show_message("Restaurando sessao...")
             authenticated_user = try_restore_saved_login(services)
             if authenticated_user is None:
+                splash.close()
                 login = LoginWindow(services)
                 login.exec()
                 if login.authenticated_user is None:
                     return
 
+            if services.session_service.must_change_password():
+                splash.close()
+                change_dialog = ChangePasswordDialog(services)
+                change_dialog.exec()
+                if not change_dialog.password_changed:
+                    splash.show_animated()
+                    continue
+
+            splash.show_message("Abrindo o sistema...")
             window = MainWindow(db_path, services)
-            window.show()
+            splash.finish(window)
             app.exec()
             if window.logout_requested:
                 continue
             if window.restart_requested:
+                splash.show_animated()
                 break
             return
 

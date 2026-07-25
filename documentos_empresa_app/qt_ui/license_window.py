@@ -17,7 +17,7 @@ from documentos_empresa_app.qt_ui.icons import app_icon
 from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.common import make_button
 from documentos_empresa_app.services.license_service import LicenseError, LicenseService
-from documentos_empresa_app.utils.common import APP_NAME
+from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE
 
 
 class LicenseWindow(QDialog):
@@ -31,7 +31,7 @@ class LicenseWindow(QDialog):
         self.license_service = license_service
         self.license_activated = False
 
-        self.setWindowTitle(f"{APP_NAME} - Licenca")
+        self.setWindowTitle(f"{APP_TITLE} - Licenca")
         self.setWindowIcon(app_icon())
         self.resize(620, 460)
 

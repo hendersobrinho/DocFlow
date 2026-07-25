@@ -61,6 +61,7 @@ O DocFLow permite:
 - `Pillow`
 - `pypdf`
 - `anthropic`
+- `cryptography`
 - `PyInstaller`
 
 ### Dependencias opcionais
@@ -285,6 +286,7 @@ Os documentos detalhados continuam na pasta [`docs/`](docs). Alguns refletem ain
 - [Dependencias e bibliotecas](docs/13-dependencias-e-bibliotecas-usadas.md)
 - [Icones e empacotamento](docs/18-icones-e-empacotamento-por-sistema-operacional.md)
 - [Git e empacotamento](docs/19-observacoes-importantes-para-git-e-empacotamento.md)
+- [Configuracao de seguranca, IA e backup](docs/21-configuracao-seguranca-ia-e-backup.md)
 
 ## O que nao deve ir para o Git
 

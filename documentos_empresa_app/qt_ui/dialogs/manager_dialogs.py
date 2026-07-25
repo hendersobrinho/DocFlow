@@ -200,6 +200,7 @@ class DocumentNameManagerDialog(QDialog):
         tipo_service,
         context_title: str = "Documentos",
         initial_tipo_id: int | None = None,
+        allow_apply_to_document: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -207,6 +208,8 @@ class DocumentNameManagerDialog(QDialog):
         self.tipo_service = tipo_service
         self.editing_name_id: int | None = None
         self.data_changed = False
+        self.allow_apply_to_document = allow_apply_to_document
+        self.applied_name: str | None = None
 
         self.setWindowTitle(f"{context_title} - Nomes padrao")
         self.resize(620, 460)
@@ -224,6 +227,7 @@ class DocumentNameManagerDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.doubleClicked.connect(lambda _index: self._apply_to_document())
         layout.addWidget(self.table, 1)
 
         editor = QGridLayout()
@@ -244,6 +248,11 @@ class DocumentNameManagerDialog(QDialog):
         clear_button.clicked.connect(self._clear_editor)
         buttons.addWidget(clear_button)
         buttons.addStretch(1)
+        self.apply_button = make_button("Usar no documento", "primary")
+        self.apply_button.clicked.connect(self._apply_to_document)
+        self.apply_button.setEnabled(False)
+        if allow_apply_to_document:
+            buttons.addWidget(self.apply_button)
         delete_button = make_button("Excluir do sistema", "danger")
         delete_button.clicked.connect(self._delete)
         buttons.addWidget(delete_button)
@@ -273,6 +282,7 @@ class DocumentNameManagerDialog(QDialog):
 
     def _on_selection_changed(self) -> None:
         rows = self.table.selectionModel().selectedRows()
+        self.apply_button.setEnabled(self.allow_apply_to_document and bool(rows))
         if not rows:
             return
         item = self.table.item(rows[0].row(), 0)
@@ -295,6 +305,18 @@ class DocumentNameManagerDialog(QDialog):
         self.nome_edit.clear()
         self.save_button.setText("Adicionar")
         self.table.clearSelection()
+
+    def _apply_to_document(self) -> None:
+        if not self.allow_apply_to_document:
+            return
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        item = self.table.item(rows[0].row(), 0)
+        if item is None:
+            return
+        self.applied_name = item.text()
+        self.accept()
 
     def _save(self) -> None:
         tipo_id = self.tipo_combo.currentData()
@@ -337,11 +359,13 @@ class DocumentNameManagerDialog(QDialog):
 class DeliveryMethodsManagerDialog(QDialog):
     """Gerencia os meios de recebimento do sistema."""
 
-    def __init__(self, delivery_method_service, parent: QWidget | None = None) -> None:
+    def __init__(self, delivery_method_service, allow_apply: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.delivery_method_service = delivery_method_service
         self.editing_method_id: int | None = None
         self.data_changed = False
+        self.allow_apply = allow_apply
+        self.applied_value: str | None = None
 
         self.setWindowTitle("Meios de recebimento do sistema")
         self.resize(480, 440)
@@ -359,6 +383,7 @@ class DeliveryMethodsManagerDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.doubleClicked.connect(lambda _index: self._apply_to_document())
         layout.addWidget(self.table, 1)
 
         editor = QHBoxLayout()
@@ -375,6 +400,11 @@ class DeliveryMethodsManagerDialog(QDialog):
         clear_button.clicked.connect(self._clear_editor)
         buttons.addWidget(clear_button)
         buttons.addStretch(1)
+        self.apply_button = make_button("Usar neste documento", "primary")
+        self.apply_button.clicked.connect(self._apply_to_document)
+        self.apply_button.setEnabled(False)
+        if allow_apply:
+            buttons.addWidget(self.apply_button)
         delete_button = make_button("Excluir do sistema", "danger")
         delete_button.clicked.connect(self._delete)
         buttons.addWidget(delete_button)
@@ -393,6 +423,7 @@ class DeliveryMethodsManagerDialog(QDialog):
 
     def _on_selection_changed(self) -> None:
         rows = self.table.selectionModel().selectedRows()
+        self.apply_button.setEnabled(self.allow_apply and bool(rows))
         if not rows:
             return
         item = self.table.item(rows[0].row(), 0)
@@ -407,6 +438,18 @@ class DeliveryMethodsManagerDialog(QDialog):
         self.nome_edit.clear()
         self.save_button.setText("Adicionar")
         self.table.clearSelection()
+
+    def _apply_to_document(self) -> None:
+        if not self.allow_apply:
+            return
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        item = self.table.item(rows[0].row(), 0)
+        if item is None:
+            return
+        self.applied_value = item.text()
+        self.accept()
 
     def _save(self) -> None:
         try:

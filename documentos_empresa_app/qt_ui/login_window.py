@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from documentos_empresa_app.qt_ui.icons import app_icon
 from documentos_empresa_app.qt_ui.widgets.common import Card, make_button
-from documentos_empresa_app.utils.common import APP_NAME
+from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE
 from documentos_empresa_app.utils.helpers import ValidationError, load_login_preferences, save_login_preferences
 
 
@@ -24,7 +24,7 @@ class LoginWindow(QDialog):
         self.services = services
         self.authenticated_user: dict | None = None
 
-        self.setWindowTitle(f"{APP_NAME} - Login")
+        self.setWindowTitle(f"{APP_TITLE} - Login")
         self.setWindowIcon(app_icon())
         self.setFixedWidth(420)
 

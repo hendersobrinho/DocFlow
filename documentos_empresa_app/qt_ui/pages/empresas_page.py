@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, make_button
 from documentos_empresa_app.qt_ui.widgets.company_selector import CompanySelector
+from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner
 from documentos_empresa_app.utils.common import MAX_COMPANY_OBSERVATION_LENGTH, ValidationError
 
 
@@ -137,6 +139,14 @@ class EmpresasPage(QWidget):
         summary_actions.addWidget(self.delete_button)
         left_layout.addLayout(summary_actions)
 
+        self.clear_contact_button = make_button("Remover dados de contato (LGPD)", "quiet")
+        self.clear_contact_button.setToolTip(
+            "Apaga o email e o nome de contato desta empresa, sem excluir o cadastro nem o "
+            "historico de documentos. Use quando o titular pedir a remocao dos dados dele."
+        )
+        self.clear_contact_button.clicked.connect(self.clear_contact_info)
+        left_layout.addWidget(self.clear_contact_button)
+
         # Coluna direita: formulario
         right_card = Card()
         right_layout = QVBoxLayout(right_card)
@@ -173,6 +183,12 @@ class EmpresasPage(QWidget):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         right_layout.addLayout(grid)
+
+        self.opt_out_checkbox = QCheckBox("Nao enviar mala direta por email para esta empresa")
+        self.opt_out_checkbox.setToolTip(
+            "A empresa fica de fora da lista de mala direta mesmo se estiver marcada em Configuracoes."
+        )
+        right_layout.addWidget(self.opt_out_checkbox)
 
         right_layout.addWidget(QLabel(f"Observacao livre (opcional, max {MAX_COMPANY_OBSERVATION_LENGTH} caracteres)"))
         self.observacao_edit = QTextEdit()
@@ -293,6 +309,7 @@ class EmpresasPage(QWidget):
         self.email_edit.setText(company.get("email_contato") or "")
         self.contato_edit.setText(company.get("nome_contato") or "")
         self.cnpj_edit.setText(company.get("cnpj") or "")
+        self.opt_out_checkbox.setChecked(bool(company.get("nao_contatar_mala_direta")))
         self.observacao_edit.setPlainText(company.get("observacao") or "")
         for edit, key in (
             (self.cobranca_inicio_edit, "cobranca_inicio_dia"),
@@ -315,6 +332,7 @@ class EmpresasPage(QWidget):
         ):
             edit.clear()
         self.observacao_edit.clear()
+        self.opt_out_checkbox.setChecked(False)
 
     def _set_form_mode(self, mode: str) -> None:
         self.form_mode = mode
@@ -333,12 +351,14 @@ class EmpresasPage(QWidget):
             self.cobranca_alerta_edit,
         ):
             widget.setEnabled(editable)
+        self.opt_out_checkbox.setEnabled(editable)
         self.save_button.setEnabled(editable)
         self.cancel_button.setEnabled(editable)
         self.new_button.setEnabled(not editable)
         self.edit_button.setEnabled(has_selection and not editable)
         self.delete_button.setEnabled(has_selection and not editable)
         self.toggle_active_button.setEnabled(has_selection and not editable)
+        self.clear_contact_button.setEnabled(has_selection and not editable)
 
     def _enforce_observacao_limit(self) -> None:
         text = self.observacao_edit.toPlainText()
@@ -402,6 +422,9 @@ class EmpresasPage(QWidget):
                     self.cobranca_fim_edit.text(),
                     self.cobranca_alerta_edit.text(),
                 )
+                self.services.empresa_service.set_nao_contatar_mala_direta(
+                    target_company_id, self.opt_out_checkbox.isChecked()
+                )
                 QMessageBox.information(self, "Empresas", "Empresa atualizada com sucesso.")
             else:
                 target_company_id = self.services.empresa_service.create_empresa(
@@ -417,6 +440,9 @@ class EmpresasPage(QWidget):
                     self.cobranca_inicio_edit.text(),
                     self.cobranca_fim_edit.text(),
                     self.cobranca_alerta_edit.text(),
+                )
+                self.services.empresa_service.set_nao_contatar_mala_direta(
+                    target_company_id, self.opt_out_checkbox.isChecked()
                 )
                 QMessageBox.information(self, "Empresas", "Empresa cadastrada com sucesso.")
         except ValidationError as exc:
@@ -454,6 +480,24 @@ class EmpresasPage(QWidget):
         self.on_data_changed()
         QMessageBox.information(self, "Empresas", "Empresa excluida com sucesso.")
 
+    def clear_contact_info(self) -> None:
+        if not self.selected_company:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remover dados de contato",
+            "Isso apaga o email e o nome de contato desta empresa (o cadastro e o historico de "
+            "documentos continuam intactos). Use quando o titular dos dados pedir a remocao. Continuar?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        company_id = self.selected_company["id"]
+        self.services.empresa_service.clear_contact_info(company_id)
+        self.on_data_changed()
+        self.company_selector.set_company(company_id)
+        QMessageBox.information(self, "Empresas", "Dados de contato removidos com sucesso.")
+
     # Importacao
 
     def show_import_layout(self) -> None:
@@ -485,12 +529,15 @@ class EmpresasPage(QWidget):
         if not file_path:
             return
 
-        try:
-            result = self.services.import_service.import_cadastros_completos(file_path)
-        except ValidationError as exc:
-            QMessageBox.critical(self, "Importacao de cadastro completo", str(exc))
-            return
+        runner = BlockingTaskRunner(self)
+        runner.run(
+            "Importando planilha de cadastro completo...",
+            lambda: self.services.import_service.import_cadastros_completos(file_path),
+            on_success=self._on_import_finished,
+            on_error=lambda message: QMessageBox.critical(self, "Importacao de cadastro completo", message),
+        )
 
+    def _on_import_finished(self, result: dict) -> None:
         self.on_data_changed()
         summary = [
             f'Linhas processadas: {result["processed_rows"]}',

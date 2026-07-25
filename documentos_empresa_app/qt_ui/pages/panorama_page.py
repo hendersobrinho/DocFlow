@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime
 
 from PySide6.QtCore import Qt
@@ -36,8 +35,9 @@ from documentos_empresa_app.qt_ui.viewmodels import (
 )
 from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSelectDialog
 from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, ToolbarRow, make_button
+from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner
 from documentos_empresa_app.services.collection_service import CollectionService
-from documentos_empresa_app.utils.common import MONTH_NAMES, ValidationError
+from documentos_empresa_app.utils.common import MONTH_NAMES, ValidationError, parse_period_label
 from documentos_empresa_app.utils.helpers import open_email_draft
 
 COLUMN_KEYS = ("codigo", "empresa", "situacao", "progresso", "cobranca", "historico", "ultima_marcacao")
@@ -46,24 +46,20 @@ COLUMN_HEADINGS = {
     "empresa": "Empresa",
     "situacao": "Situacao do mes",
     "progresso": "Progresso",
-    "cobranca": "Cobranca",
+    "cobranca": "Cobranca geral",
     "historico": "Pendencias anteriores",
     "ultima_marcacao": "Ultima marcacao",
 }
-
-
-def _parse_competence(raw: str) -> tuple[int, int] | None:
-    digits = re.sub(r"\D", "", raw or "")
-    if len(digits) == 6:
-        month, year = int(digits[:2]), int(digits[2:])
-        if 1 <= month <= 12:
-            return year, month
-    match = re.fullmatch(r"(\d{4})[-/](\d{1,2})", (raw or "").strip())
-    if match:
-        year, month = int(match.group(1)), int(match.group(2))
-        if 1 <= month <= 12:
-            return year, month
-    return None
+COLUMN_TOOLTIPS = {
+    "situacao": "Status apenas do mes selecionado no filtro de periodo acima.",
+    "cobranca": (
+        "Status combinando o mes selecionado com qualquer pendencia de meses anteriores.\n"
+        "Fica 'Em atraso' se houver documento pendente de QUALQUER mes anterior ao selecionado, "
+        "mesmo que o mes atual ainda esteja dentro do prazo de cobranca.\n"
+        "Sem pendencia anterior, reflete o prazo de cobranca do proprio mes selecionado."
+    ),
+    "historico": "Lista os meses anteriores ao selecionado que ainda tem documento pendente.",
+}
 
 
 class ExportReportDialog(QDialog):
@@ -139,7 +135,7 @@ class ExportReportDialog(QDialog):
             self.scope_manual.setChecked(True)
 
     def _resolve_period_id(self, raw: str) -> int | None:
-        parsed = _parse_competence(raw)
+        parsed = parse_period_label(raw)
         if not parsed:
             return None
         year, month = parsed
@@ -181,12 +177,15 @@ class ExportReportDialog(QDialog):
         if not file_path:
             return
 
-        try:
-            result = exporter(file_path, company_ids, start_id, end_id)
-        except ValidationError as exc:
-            QMessageBox.critical(self, "Exportar relatorio", str(exc))
-            return
+        runner = BlockingTaskRunner(self)
+        runner.run(
+            "Gerando relatorio de pendencias...",
+            lambda: exporter(file_path, company_ids, start_id, end_id),
+            on_success=self._on_export_finished,
+            on_error=lambda message: QMessageBox.critical(self, "Exportar relatorio", message),
+        )
 
+    def _on_export_finished(self, result: dict) -> None:
         QMessageBox.information(
             self,
             "Exportar relatorio",
@@ -272,6 +271,10 @@ class PanoramaPage(QWidget):
 
         self.table = QTableWidget(0, len(COLUMN_KEYS))
         self.table.setHorizontalHeaderLabels([COLUMN_HEADINGS[k] for k in COLUMN_KEYS])
+        for col, key in enumerate(COLUMN_KEYS):
+            tooltip = COLUMN_TOOLTIPS.get(key)
+            if tooltip:
+                self.table.horizontalHeaderItem(col).setToolTip(tooltip)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

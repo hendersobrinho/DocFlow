@@ -114,6 +114,7 @@ SCHEMA_STATEMENTS = (
         senha_hash TEXT NOT NULL,
         tipo_usuario TEXT NOT NULL CHECK (tipo_usuario IN ('admin', 'comum')),
         ativa INTEGER NOT NULL DEFAULT 1 CHECK (ativa IN (0, 1)),
+        deve_trocar_senha INTEGER NOT NULL DEFAULT 0 CHECK (deve_trocar_senha IN (0, 1)),
         criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
@@ -183,6 +184,13 @@ SCHEMA_STATEMENTS = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_pendentes_revisao_status ON documentos_pendentes_revisao (status)",
     "CREATE INDEX IF NOT EXISTS idx_pendentes_revisao_caminho ON documentos_pendentes_revisao (caminho_arquivo_original)",
+    """
+    CREATE TABLE IF NOT EXISTS usuario_preferencias (
+        usuario_id INTEGER PRIMARY KEY,
+        pasta_entrada TEXT NULL,
+        FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+    )
+    """,
 )
 
 
@@ -194,6 +202,8 @@ def initialize_schema(db_manager: DatabaseManager) -> None:
         ensure_empresa_extra_columns(connection)
         ensure_empresa_collection_columns(connection)
         ensure_empresa_cnpj_column(connection)
+        ensure_empresa_privacy_columns(connection)
+        ensure_usuario_extra_columns(connection)
         ensure_tipo_extra_columns(connection)
         ensure_documento_extra_columns(connection)
         ensure_empresa_observacao_constraints(connection)
@@ -285,6 +295,30 @@ def ensure_empresa_cnpj_column(connection) -> None:
     if "cnpj" not in columns:
         connection.execute("ALTER TABLE empresas ADD COLUMN cnpj TEXT NULL")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_empresas_cnpj ON empresas (cnpj)")
+
+
+def ensure_empresa_privacy_columns(connection) -> None:
+    columns = {
+        row["name"]: row
+        for row in connection.execute("PRAGMA table_info(empresas)").fetchall()
+    }
+    if "nao_contatar_mala_direta" not in columns:
+        connection.execute(
+            "ALTER TABLE empresas ADD COLUMN nao_contatar_mala_direta "
+            "INTEGER NOT NULL DEFAULT 0 CHECK (nao_contatar_mala_direta IN (0, 1))"
+        )
+
+
+def ensure_usuario_extra_columns(connection) -> None:
+    columns = {
+        row["name"]: row
+        for row in connection.execute("PRAGMA table_info(usuarios)").fetchall()
+    }
+    if "deve_trocar_senha" not in columns:
+        connection.execute(
+            "ALTER TABLE usuarios ADD COLUMN deve_trocar_senha "
+            "INTEGER NOT NULL DEFAULT 0 CHECK (deve_trocar_senha IN (0, 1))"
+        )
 
 
 def ensure_tipo_extra_columns(connection) -> None:
@@ -619,8 +653,8 @@ def ensure_default_admin(connection) -> None:
 
     connection.execute(
         """
-        INSERT INTO usuarios (username, senha_hash, tipo_usuario, ativa)
-        VALUES (?, ?, 'admin', 1)
+        INSERT INTO usuarios (username, senha_hash, tipo_usuario, ativa, deve_trocar_senha)
+        VALUES (?, ?, 'admin', 1, 1)
         """,
         ("admin", hash_password("admin")),
     )
