@@ -1635,6 +1635,33 @@ class ApplicationServiceTests(unittest.TestCase):
         self.session_service.login(self.usuario_repository.get_by_username("admin"))
         self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/pasta-admin")
 
+    def test_own_empresas_root_folder_is_scoped_per_user(self) -> None:
+        second_user_id = self.user_service.create_user("carla", "123456", "comum", ativo=True)
+
+        self.user_service.set_own_empresas_root_folder("C:/Empresas-admin")
+        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-admin")
+
+        second_user = self.usuario_repository.get_by_id(second_user_id)
+        self.session_service.login(second_user)
+        self.assertIsNone(self.user_service.get_own_empresas_root_folder())
+
+        self.user_service.set_own_empresas_root_folder("C:/Empresas-carla")
+        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-carla")
+
+        self.session_service.login(self.usuario_repository.get_by_username("admin"))
+        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-admin")
+
+    def test_inbox_folder_and_empresas_root_folder_are_independent(self) -> None:
+        self.user_service.set_own_inbox_folder("C:/entrada")
+        self.user_service.set_own_empresas_root_folder("C:/Empresas")
+
+        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/entrada")
+        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas")
+
+        self.user_service.set_own_empresas_root_folder("C:/Empresas-novo")
+        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/entrada")
+        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-novo")
+
     def test_logs_are_created_for_empresa_documento_e_status(self) -> None:
         empresa_id = self.empresa_service.create_empresa(777, "HND TEC")
         tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]

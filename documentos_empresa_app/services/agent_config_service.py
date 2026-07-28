@@ -117,7 +117,7 @@ class AgentConfigService:
         try:
             client.messages.create(model=model, max_tokens=1, messages=[{"role": "user", "content": "ping"}])
         except anthropic.APIError as exc:
-            raise ValidationError("Falha ao conectar com a Anthropic. Verifique a chave e o modelo.") from exc
+            raise ValidationError(f"Falha ao conectar com a Anthropic: {exc}") from exc
 
     def _test_openai_connection(self, api_key: str, model: str) -> None:
         import openai

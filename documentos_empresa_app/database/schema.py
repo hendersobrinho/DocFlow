@@ -204,6 +204,7 @@ def initialize_schema(db_manager: DatabaseManager) -> None:
         ensure_empresa_cnpj_column(connection)
         ensure_empresa_privacy_columns(connection)
         ensure_usuario_extra_columns(connection)
+        ensure_usuario_preferencia_extra_columns(connection)
         ensure_tipo_extra_columns(connection)
         ensure_documento_extra_columns(connection)
         ensure_empresa_observacao_constraints(connection)
@@ -319,6 +320,15 @@ def ensure_usuario_extra_columns(connection) -> None:
             "ALTER TABLE usuarios ADD COLUMN deve_trocar_senha "
             "INTEGER NOT NULL DEFAULT 0 CHECK (deve_trocar_senha IN (0, 1))"
         )
+
+
+def ensure_usuario_preferencia_extra_columns(connection) -> None:
+    columns = {
+        row["name"]: row
+        for row in connection.execute("PRAGMA table_info(usuario_preferencias)").fetchall()
+    }
+    if "pasta_raiz_empresas" not in columns:
+        connection.execute("ALTER TABLE usuario_preferencias ADD COLUMN pasta_raiz_empresas TEXT NULL")
 
 
 def ensure_tipo_extra_columns(connection) -> None:

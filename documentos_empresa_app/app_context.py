@@ -25,22 +25,26 @@ from documentos_empresa_app.services.agent_config_service import (
     DEFAULT_MODELS,
 )
 from documentos_empresa_app.services.anthropic_chat_service import AnthropicChatService
+from documentos_empresa_app.services.anthropic_competence_suggestion import AnthropicCompetenceSuggestionClient
 from documentos_empresa_app.services.anthropic_document_classifier import AnthropicDocumentClassifierClient
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.auth_service import AuthService
+from documentos_empresa_app.services.batch_organize_service import BatchOrganizeService
 from documentos_empresa_app.services.collection_service import CollectionService
 from documentos_empresa_app.services.database_maintenance_service import DatabaseMaintenanceService
 from documentos_empresa_app.services.delivery_method_service import DeliveryMethodService
 from documentos_empresa_app.services.document_agent_service import DocumentAgentService
 from documentos_empresa_app.services.document_classification_service import DocumentClassificationService
 from documentos_empresa_app.services.document_extraction_service import DocumentExtractionService
+from documentos_empresa_app.services.document_organizer_service import DocumentOrganizerService
 from documentos_empresa_app.services.documento_service import DocumentoService
 from documentos_empresa_app.services.email_campaign_service import EmailCampaignService
 from documentos_empresa_app.services.empresa_service import EmpresaService
 from documentos_empresa_app.services.import_service import ImportService
-from documentos_empresa_app.services.llm_types import DocumentChatClient
+from documentos_empresa_app.services.llm_types import CompetenceSuggestionClient, DocumentChatClient
 from documentos_empresa_app.services.log_service import LogService
 from documentos_empresa_app.services.openai_chat_service import OpenAIChatService
+from documentos_empresa_app.services.openai_competence_suggestion import OpenAICompetenceSuggestionClient
 from documentos_empresa_app.services.openai_document_classifier import OpenAIDocumentClassifierClient
 from documentos_empresa_app.services.panorama_service import PanoramaService
 from documentos_empresa_app.services.pending_report_service import PendingReportService
@@ -77,8 +81,11 @@ class ApplicationServices:
     collection_service: CollectionService
     session_service: SessionService
     document_agent_service: DocumentAgentService
+    document_organizer_service: DocumentOrganizerService
+    batch_organize_service: BatchOrganizeService
     agent_config_service: AgentConfigService
     document_chat_service: DocumentChatClient | None
+    competence_suggestion_client: CompetenceSuggestionClient | None
     email_campaign_service: EmailCampaignService
 
 
@@ -179,6 +186,13 @@ def build_application_services(db_path: str | Path, session_service: SessionServ
         audit_service=audit_service,
         session_service=session,
     )
+    document_organizer_service = DocumentOrganizerService(
+        empresa_repository,
+        pendente_revisao_repository,
+        audit_service=audit_service,
+        session_service=session,
+    )
+    batch_organize_service = BatchOrganizeService(document_agent_service, document_organizer_service)
 
     services = ApplicationServices(
         empresa_service=empresa_service,
@@ -197,8 +211,11 @@ def build_application_services(db_path: str | Path, session_service: SessionServ
         collection_service=collection_service,
         session_service=session,
         document_agent_service=document_agent_service,
+        document_organizer_service=document_organizer_service,
+        batch_organize_service=batch_organize_service,
         agent_config_service=agent_config_service,
         document_chat_service=None,
+        competence_suggestion_client=None,
         email_campaign_service=email_campaign_service,
     )
     refresh_agent_runtime(services)
@@ -240,6 +257,8 @@ def refresh_agent_runtime(services: ApplicationServices) -> None:
     if not api_key:
         classification_service.llm_client = None
         services.document_chat_service = None
+        services.competence_suggestion_client = None
+        services.batch_organize_service.competence_suggestion_client = None
         return
 
     if provider == "openai":
@@ -249,6 +268,10 @@ def refresh_agent_runtime(services: ApplicationServices) -> None:
         services.document_chat_service = OpenAIChatService(
             api_key, model=model, custom_instructions=custom_instructions
         )
+        services.competence_suggestion_client = OpenAICompetenceSuggestionClient(
+            api_key, model=model, custom_instructions=custom_instructions
+        )
+        services.batch_organize_service.competence_suggestion_client = services.competence_suggestion_client
         return
 
     classification_service.llm_client = AnthropicDocumentClassifierClient(
@@ -257,3 +280,7 @@ def refresh_agent_runtime(services: ApplicationServices) -> None:
     services.document_chat_service = AnthropicChatService(
         api_key, model=model, custom_instructions=custom_instructions
     )
+    services.competence_suggestion_client = AnthropicCompetenceSuggestionClient(
+        api_key, model=model, custom_instructions=custom_instructions
+    )
+    services.batch_organize_service.competence_suggestion_client = services.competence_suggestion_client

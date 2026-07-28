@@ -14,12 +14,10 @@ from documentos_empresa_app.qt_ui.dialogs.database_path_dialog import (
 )
 from documentos_empresa_app.qt_ui.dialogs.change_password_dialog import ChangePasswordDialog
 from documentos_empresa_app.qt_ui.icons import app_icon
-from documentos_empresa_app.qt_ui.license_window import LicenseWindow
 from documentos_empresa_app.qt_ui.login_window import LoginWindow
 from documentos_empresa_app.qt_ui.main_window import MainWindow
 from documentos_empresa_app.qt_ui.splash_screen import SplashScreen
 from documentos_empresa_app.qt_ui.theme import ThemeManager
-from documentos_empresa_app.services.license_service import LicenseError, LicenseService
 from documentos_empresa_app.utils.common import APP_NAME, ValidationError
 from documentos_empresa_app.utils.helpers import load_login_preferences, save_login_preferences
 
@@ -48,31 +46,6 @@ def try_restore_saved_login(services) -> dict | None:
     )
     services.session_service.login(user, remembered_token=refreshed_token)
     return user
-
-
-def ensure_local_license() -> bool:
-    try:
-        license_service = LicenseService()
-    except LicenseError as exc:
-        QMessageBox.critical(None, APP_NAME, str(exc))
-        return False
-
-    try:
-        license_service.load_and_save_if_valid()
-        return True
-    except LicenseError as exc:
-        if license_service.license_file_path.exists():
-            status_message = (
-                "A licenca encontrada neste computador esta invalida, expirada ou corrompida.\n"
-                f"Detalhe: {exc}\n\n"
-                "Cole ou importe uma nova licenca para continuar."
-            )
-        else:
-            status_message = "Nenhuma licenca foi encontrada. Cole ou importe uma licenca para continuar."
-
-    license_window = LicenseWindow(license_service, status_message=status_message)
-    license_window.exec()
-    return license_window.license_activated
 
 
 def _install_exception_handler() -> None:
@@ -137,11 +110,6 @@ def main() -> None:
                 return
             splash.show_animated()
             continue
-
-        splash.show_message("Validando licenca...")
-        if not ensure_local_license():
-            splash.close()
-            return
 
         while True:
             services.session_service.logout()

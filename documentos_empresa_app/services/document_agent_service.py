@@ -22,6 +22,7 @@ from documentos_empresa_app.utils.document_agent_diagnostics import (
     log_move_failure,
     log_unmatched_cnpj,
 )
+from documentos_empresa_app.utils.file_naming import resolve_unique_path
 
 
 @dataclass(slots=True)
@@ -120,7 +121,7 @@ class DocumentAgentService:
                     try:
                         destino_dir = Path(diretorio)
                         destino_dir.mkdir(parents=True, exist_ok=True)
-                        destino = self._resolve_destination_path(destino_dir, file_path)
+                        destino = resolve_unique_path(destino_dir, file_path.name)
                         shutil.move(str(file_path), str(destino))
                     except OSError as exc:
                         motivo = f"Falha ao mover arquivo automaticamente: {exc}"
@@ -214,7 +215,7 @@ class DocumentAgentService:
             destino_dir = Path(diretorio)
             try:
                 destino_dir.mkdir(parents=True, exist_ok=True)
-                destino = self._resolve_destination_path(destino_dir, origem)
+                destino = resolve_unique_path(destino_dir, origem.name)
                 shutil.move(str(origem), str(destino))
             except OSError as exc:
                 raise ValidationError(f"Nao foi possivel mover o arquivo: {exc}") from exc
@@ -246,19 +247,6 @@ class DocumentAgentService:
                 pendente_id,
                 f'Usuario {self._actor_name()} ignorou o documento "{pendente["nome_arquivo"]}" da fila de revisao.',
             )
-
-    def _resolve_destination_path(self, directory: Path, source_path: Path) -> Path:
-        candidate = directory / source_path.name
-        if not candidate.exists():
-            return candidate
-
-        stem, suffix = source_path.stem, source_path.suffix
-        counter = 1
-        while True:
-            candidate = directory / f"{stem} ({counter}){suffix}"
-            if not candidate.exists():
-                return candidate
-            counter += 1
 
     def _actor_name(self) -> str:
         if not self.session_service:

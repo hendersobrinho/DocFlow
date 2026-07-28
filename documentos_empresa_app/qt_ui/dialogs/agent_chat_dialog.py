@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import html
 from pathlib import Path
+import shutil
 
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -15,16 +17,31 @@ from PySide6.QtWidgets import (
 
 from documentos_empresa_app.qt_ui.icons import app_icon
 from documentos_empresa_app.qt_ui.widgets.common import make_button
+from documentos_empresa_app.qt_ui.dialogs.organize_confirmation_dialog import (
+    OrganizeConfirmationDialog,
+    apply_confirmation_overrides,
+)
 from documentos_empresa_app.services.document_extraction_service import DocumentExtractionError
-from documentos_empresa_app.services.llm_types import LLMChatError
-from documentos_empresa_app.utils.common import APP_NAME
+from documentos_empresa_app.services.document_organizer_service import OrganizeNeedsInput
+from documentos_empresa_app.services.llm_types import ChatReply, LLMChatError, ProposedFileCopy, ProposedOrganize
+from documentos_empresa_app.utils.common import APP_NAME, ValidationError
+from documentos_empresa_app.utils.file_naming import resolve_unique_path
 
 
 class AgentChatDialog(QDialog):
-    def __init__(self, services, pendente: dict, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        services,
+        pendente: dict,
+        empresa_id: int | None = None,
+        diretorio_documentos: str | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.services = services
         self.pendente = pendente
+        self.empresa_id = empresa_id
+        self.diretorio_documentos_override = diretorio_documentos
         self.history: list[dict] = []
 
         self.setWindowTitle(f'{APP_NAME} - Chat sobre "{pendente["nome_arquivo"]}"')
@@ -102,12 +119,154 @@ class AgentChatDialog(QDialog):
             self.send_button.setEnabled(True)
             return
 
-        self.history.append({"role": "user", "content": user_message})
-        self.history.append({"role": "assistant", "content": reply})
-        self._append_message("Agente", reply)
+        self._handle_reply(reply)
+
+    def _handle_reply(self, reply: ChatReply) -> None:
+        if reply.text:
+            self._append_message("Agente", reply.text)
+
+        if reply.proposed_copy is not None:
+            self._confirm_and_execute_copy(reply.proposed_copy)
+            return
+
+        if reply.proposed_organize is not None:
+            self._confirm_and_execute_organize(reply.proposed_organize)
+            return
+
         self.input_edit.setEnabled(True)
         self.send_button.setEnabled(True)
         self.input_edit.setFocus()
+
+    def _confirm_and_execute_copy(self, proposed_copy: ProposedFileCopy) -> None:
+        source = Path(self.pendente["caminho_arquivo_original"])
+        destination_dir = Path(proposed_copy.destination_folder).expanduser()
+        destination_name = proposed_copy.new_filename or source.name
+
+        confirmed = (
+            QMessageBox.question(
+                self,
+                APP_NAME,
+                (
+                    f'A IA quer copiar o arquivo "{source.name}" para:\n\n'
+                    f"{destination_dir / destination_name}\n\nConfirma a copia?"
+                ),
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
+        if not confirmed:
+            result_message = "O usuario cancelou a copia do arquivo."
+            self._append_system_message("Copia cancelada.")
+        else:
+            try:
+                destino = self._copy_file(source, destination_dir, destination_name)
+            except OSError as exc:
+                result_message = f"Falha ao copiar o arquivo: {exc}"
+                self._append_system_message(result_message)
+            else:
+                result_message = f"Arquivo copiado com sucesso para {destino}."
+                self._append_system_message(f"Arquivo copiado para {destino}.")
+
+        try:
+            follow_up = self.services.document_chat_service.resolve_proposed_copy(
+                self.document_text, self.history, proposed_copy, result_message
+            )
+        except LLMChatError as exc:
+            self._append_system_message(str(exc))
+        else:
+            if follow_up.text:
+                self._append_message("Agente", follow_up.text)
+
+        self.input_edit.setEnabled(True)
+        self.send_button.setEnabled(True)
+        self.input_edit.setFocus()
+
+    def _resolve_target_empresa_id(self) -> int | None:
+        if self.empresa_id is not None:
+            return self.empresa_id
+        return self.pendente.get("empresa_sugerida_id")
+
+    def _confirm_and_execute_organize(self, proposed_organize: ProposedOrganize) -> None:
+        empresa_id = self._resolve_target_empresa_id()
+        if empresa_id is None:
+            result_message = (
+                "Nao sei para qual empresa organizar este documento - selecione a empresa "
+                "sugerida na tela de Revisao antes de pedir para organizar."
+            )
+            self._append_system_message(result_message)
+            self._follow_up_organize(proposed_organize, result_message)
+            return
+
+        try:
+            proposal = self.services.document_organizer_service.propose(
+                self.pendente["id"],
+                empresa_id,
+                proposed_organize.mes,
+                proposed_organize.ano,
+                banco=proposed_organize.banco,
+                tipo_conta=proposed_organize.tipo_conta,
+                diretorio_documentos=self.diretorio_documentos_override,
+                empresas_root_dir=self.services.user_service.get_own_empresas_root_folder(),
+            )
+        except ValidationError as exc:
+            result_message = str(exc)
+            self._append_system_message(result_message)
+            self._follow_up_organize(proposed_organize, result_message)
+            return
+
+        if isinstance(proposal, OrganizeNeedsInput):
+            self._append_system_message(proposal.message)
+            self._follow_up_organize(proposed_organize, proposal.message)
+            return
+
+        dialog = OrganizeConfirmationDialog(
+            documento_nome=self.pendente["nome_arquivo"],
+            new_folders=proposal.new_folders,
+            new_filename=proposal.new_filename,
+            based_on_sibling=proposal.based_on_sibling,
+            filename_is_synthesized=proposal.filename_is_synthesized,
+            parent=self,
+        )
+        confirmed = dialog.exec() == QDialog.DialogCode.Accepted
+
+        if not confirmed:
+            result_message = "O usuario cancelou a organizacao do arquivo."
+            self._append_system_message("Organizacao cancelada.")
+        else:
+            apply_confirmation_overrides(proposal, dialog)
+            try:
+                destino = self.services.document_organizer_service.execute(
+                    self.pendente["id"], empresa_id, proposal
+                )
+            except ValidationError as exc:
+                result_message = f"Falha ao organizar o arquivo: {exc}"
+                self._append_system_message(result_message)
+            else:
+                result_message = f"Arquivo organizado com sucesso em {destino}."
+                self._append_system_message(f"Arquivo organizado em {destino}.")
+
+        self._follow_up_organize(proposed_organize, result_message)
+
+    def _follow_up_organize(self, proposed_organize: ProposedOrganize, result_message: str) -> None:
+        try:
+            follow_up = self.services.document_chat_service.resolve_proposed_organize(
+                self.document_text, self.history, proposed_organize, result_message
+            )
+        except LLMChatError as exc:
+            self._append_system_message(str(exc))
+        else:
+            if follow_up.text:
+                self._append_message("Agente", follow_up.text)
+
+        self.input_edit.setEnabled(True)
+        self.send_button.setEnabled(True)
+        self.input_edit.setFocus()
+
+    def _copy_file(self, source: Path, destination_dir: Path, filename: str) -> Path:
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination_path = resolve_unique_path(destination_dir, filename)
+        shutil.copy2(source, destination_path)
+        return destination_path
 
     def _append_message(self, author: str, text: str) -> None:
         self.transcript.append(f"<b>{html.escape(author)}:</b> {html.escape(text)}")

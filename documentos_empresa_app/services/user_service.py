@@ -41,6 +41,19 @@ class UserService:
         normalized = str(pasta_entrada or "").strip() or None
         self.user_preference_repository.set_pasta_entrada(usuario_id, normalized)
 
+    def get_own_empresas_root_folder(self) -> str | None:
+        usuario_id = self.session_service.get_user_id()
+        if usuario_id is None:
+            return None
+        return self.user_preference_repository.get_pasta_raiz_empresas(usuario_id)
+
+    def set_own_empresas_root_folder(self, pasta_raiz_empresas: str | None) -> None:
+        usuario_id = self.session_service.get_user_id()
+        if usuario_id is None:
+            raise ValidationError("Nenhum usuario autenticado.")
+        normalized = str(pasta_raiz_empresas or "").strip() or None
+        self.user_preference_repository.set_pasta_raiz_empresas(usuario_id, normalized)
+
     def change_own_password(self, current_password: str, new_password: str) -> None:
         user_id = self.session_service.get_user_id()
         if user_id is None:

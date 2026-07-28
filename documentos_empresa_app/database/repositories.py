@@ -1249,6 +1249,23 @@ class UserPreferenceRepository(BaseRepository):
             (usuario_id, pasta_entrada),
         )
 
+    def get_pasta_raiz_empresas(self, usuario_id: int) -> str | None:
+        row = self._fetchone(
+            "SELECT pasta_raiz_empresas FROM usuario_preferencias WHERE usuario_id = ?",
+            (usuario_id,),
+        )
+        return row["pasta_raiz_empresas"] if row else None
+
+    def set_pasta_raiz_empresas(self, usuario_id: int, pasta_raiz_empresas: str | None) -> None:
+        self._execute(
+            """
+            INSERT INTO usuario_preferencias (usuario_id, pasta_raiz_empresas)
+            VALUES (?, ?)
+            ON CONFLICT(usuario_id) DO UPDATE SET pasta_raiz_empresas = excluded.pasta_raiz_empresas
+            """,
+            (usuario_id, pasta_raiz_empresas),
+        )
+
     def count_all(self) -> int:
         row = self._fetchone("SELECT COUNT(*) AS total FROM usuario_preferencias")
         return int(row["total"]) if row else 0
