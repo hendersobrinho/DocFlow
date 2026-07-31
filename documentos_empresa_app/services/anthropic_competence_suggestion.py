@@ -5,21 +5,15 @@ from documentos_empresa_app.services.llm_types import (
     LLMCompetenceSuggestionError,
     ORGANIZE_TOOL_DESCRIPTION,
     ORGANIZE_TOOL_NAME,
-    ORGANIZE_TOOL_PARAMETERS,
     REQUEST_TIMEOUT_SECONDS,
     build_competence_suggestion_system_prompt,
+    build_organize_tool_parameters,
     clamp_suggestion_text,
     prepare_document_text_for_llm,
     wrap_untrusted_document_text,
 )
 
 DEFAULT_MODEL = "claude-haiku-4-5"
-
-COMPETENCE_SUGGESTION_TOOL = {
-    "name": ORGANIZE_TOOL_NAME,
-    "description": ORGANIZE_TOOL_DESCRIPTION,
-    "input_schema": ORGANIZE_TOOL_PARAMETERS,
-}
 
 
 class AnthropicCompetenceSuggestionClient:
@@ -31,10 +25,15 @@ class AnthropicCompetenceSuggestionClient:
         self._custom_instructions = custom_instructions
         self._anthropic = anthropic
 
-    def suggest(self, document_text: str) -> CompetenceSuggestion:
+    def suggest(self, document_text: str, registered_documents: list[dict]) -> CompetenceSuggestion:
         truncated_text = prepare_document_text_for_llm(document_text)
         message_content = wrap_untrusted_document_text(truncated_text)
-        system_prompt = build_competence_suggestion_system_prompt(self._custom_instructions)
+        system_prompt = build_competence_suggestion_system_prompt(self._custom_instructions, registered_documents)
+        tool = {
+            "name": ORGANIZE_TOOL_NAME,
+            "description": ORGANIZE_TOOL_DESCRIPTION,
+            "input_schema": build_organize_tool_parameters(registered_documents),
+        }
 
         try:
             response = self._client.messages.create(
@@ -42,7 +41,7 @@ class AnthropicCompetenceSuggestionClient:
                 max_tokens=300,
                 system=system_prompt,
                 messages=[{"role": "user", "content": message_content}],
-                tools=[COMPETENCE_SUGGESTION_TOOL],
+                tools=[tool],
                 tool_choice={"type": "tool", "name": ORGANIZE_TOOL_NAME},
             )
         except self._anthropic.APIError as exc:
@@ -68,9 +67,16 @@ class AnthropicCompetenceSuggestionClient:
         except (TypeError, ValueError) as exc:
             raise LLMCompetenceSuggestionError("O modelo retornou mes/ano em formato invalido.") from exc
 
+        raw_documento_id = payload.get("documento_registrado_id")
+        try:
+            documento_empresa_id = int(raw_documento_id) if raw_documento_id is not None else None
+        except (TypeError, ValueError):
+            documento_empresa_id = None
+
         return CompetenceSuggestion(
             mes=mes,
             ano=ano,
+            documento_empresa_id=documento_empresa_id,
             banco=clamp_suggestion_text(payload.get("banco")),
             tipo_conta=clamp_suggestion_text(payload.get("tipo_conta")),
         )

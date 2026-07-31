@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -17,6 +19,39 @@ def make_button(text: str, variant: str | None = None, parent: QWidget | None = 
         button.setProperty("variant", variant)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     return button
+
+
+def make_icon_button(
+    icon: QIcon,
+    tooltip: str,
+    size: int,
+    variant: str,
+    parent: QWidget | None = None,
+) -> QPushButton:
+    button = QPushButton(parent)
+    button.setProperty("variant", variant)
+    button.setIcon(icon)
+    button.setIconSize(QSize(int(size * 0.65), int(size * 0.65)))
+    button.setFixedSize(size, size)
+    button.setToolTip(tooltip)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    return button
+
+
+class SinglePageStackedWidget(QStackedWidget):
+    """QStackedWidget normal usa a maior largura/altura minima entre TODAS as paginas
+    para o proprio tamanho minimo, mesmo as escondidas - isso trava o redimensionamento
+    da janela (e do dock de chat) no tamanho da pagina mais larga (Panorama), mesmo
+    quando outra pagina bem mais estreita esta visivel. Aqui o minimo/preferido segue
+    so a pagina atual."""
+
+    def sizeHint(self) -> QSize:
+        current = self.currentWidget()
+        return current.sizeHint() if current is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        current = self.currentWidget()
+        return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
 
 
 class Card(QFrame):

@@ -9,6 +9,7 @@ from documentos_empresa_app import __version__
 
 APP_NAME = "DocFLow"
 APP_TITLE = f"{APP_NAME} {__version__}"
+AGENT_NAME = "Buba"
 LEGACY_CONFIG_DIRS = (
     Path.home() / ".g_docs",
     Path.home() / ".documentos_empresa_app",

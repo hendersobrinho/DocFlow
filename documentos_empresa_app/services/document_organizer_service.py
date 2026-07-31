@@ -7,7 +7,11 @@ import shutil
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.file_check_service import (
     detect_document_bank,
+    detect_document_type,
+    document_match_terms,
+    is_bank_statement_document,
     resolve_company_folder,
+    resolve_document_folder,
     resolve_extratos_folder,
     resolve_month_folder,
     resolve_type_subfolder,
@@ -48,11 +52,22 @@ def resolve_organize_target(
     *,
     bank_key: str | None = None,
     doc_type: str | None = None,
+    doc_terms: list[str] | None = None,
+    doc_label: str | None = None,
     original_filename: str | None = None,
 ) -> OrganizeProposal | OrganizeNeedsInput:
     year_dir, _score, _note = resolve_year_folder(company_dir, ano)
     if year_dir is None:
         leaf_dir = company_dir / str(ano)
+    elif doc_terms:
+        leaf_dir = year_dir
+        doc_dir, _score, _note = resolve_document_folder(year_dir, doc_terms)
+        if doc_dir is not None:
+            leaf_dir = doc_dir
+        else:
+            month_dir, _score, _note = resolve_month_folder(year_dir, mes, ano)
+            if month_dir is not None:
+                leaf_dir = month_dir
     else:
         leaf_dir = year_dir
         extratos_dir, _score, _note = resolve_extratos_folder(year_dir)
@@ -64,7 +79,9 @@ def resolve_organize_target(
             if month_dir is not None:
                 leaf_dir = month_dir
 
-    inferred = infer_filename_from_siblings(leaf_dir, mes, ano, bank_key=bank_key, doc_type=doc_type)
+    inferred = infer_filename_from_siblings(
+        leaf_dir, mes, ano, bank_key=bank_key, doc_type=doc_type, doc_terms=doc_terms
+    )
     if inferred is not None:
         return OrganizeProposal(
             destination_dir=leaf_dir,
@@ -74,7 +91,7 @@ def resolve_organize_target(
             new_folders=list_missing_ancestor_dirs(leaf_dir),
         )
 
-    if has_conflicting_naming_templates(leaf_dir, bank_key=bank_key, doc_type=doc_type):
+    if has_conflicting_naming_templates(leaf_dir, bank_key=bank_key, doc_type=doc_type, doc_terms=doc_terms):
         return OrganizeNeedsInput(
             reason="pasta_sem_padrao",
             candidate_dir=leaf_dir,
@@ -85,7 +102,7 @@ def resolve_organize_target(
         )
 
     new_filename = synthesize_default_filename(
-        mes, ano, bank_key=bank_key, doc_type=doc_type, original_filename=original_filename
+        mes, ano, bank_key=bank_key, doc_type=doc_type, doc_label=doc_label, original_filename=original_filename
     )
     return OrganizeProposal(
         destination_dir=leaf_dir,
@@ -121,6 +138,7 @@ class DocumentOrganizerService:
         tipo_conta: str | None = None,
         diretorio_documentos: str | None = None,
         empresas_root_dir: str | None = None,
+        documento_empresa: dict | None = None,
     ) -> OrganizeProposal | OrganizeNeedsInput:
         pendente = self.pendente_repository.get_by_id(pendente_id)
         if not pendente or pendente["status"] != "pendente":
@@ -134,8 +152,31 @@ class DocumentOrganizerService:
         if isinstance(company_dir, OrganizeNeedsInput):
             return company_dir
 
-        bank_key = detect_document_bank(banco) if banco else None
-        normalized_doc_type = tipo_conta if tipo_conta in ("cc", "aplicacao") else None
+        bank_key: str | None
+        normalized_doc_type: str | None
+        doc_terms: list[str] | None
+        doc_label: str | None
+
+        if documento_empresa is not None:
+            nome_tipo = documento_empresa.get("nome_tipo", "")
+            nome_documento = documento_empresa.get("nome_documento", "")
+            if is_bank_statement_document(nome_tipo, nome_documento):
+                bank_key = detect_document_bank(banco) if banco else detect_document_bank(nome_documento)
+                normalized_doc_type = (
+                    tipo_conta if tipo_conta in ("cc", "aplicacao") else detect_document_type(nome_documento)
+                )
+                doc_terms = None
+                doc_label = None
+            else:
+                bank_key = None
+                normalized_doc_type = None
+                doc_terms = document_match_terms(nome_tipo, nome_documento)
+                doc_label = nome_documento
+        else:
+            bank_key = detect_document_bank(banco) if banco else None
+            normalized_doc_type = tipo_conta if tipo_conta in ("cc", "aplicacao") else None
+            doc_terms = None
+            doc_label = None
 
         return resolve_organize_target(
             company_dir,
@@ -143,6 +184,8 @@ class DocumentOrganizerService:
             ano,
             bank_key=bank_key,
             doc_type=normalized_doc_type,
+            doc_terms=doc_terms,
+            doc_label=doc_label,
             original_filename=pendente["nome_arquivo"],
         )
 

@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from documentos_empresa_app.qt_ui.dialogs.agent_chat_dialog import AgentChatDialog
 from documentos_empresa_app.qt_ui.dialogs.organize_confirmation_dialog import (
     OrganizeConfirmationDialog,
     apply_confirmation_overrides,
@@ -253,23 +252,27 @@ class RevisaoPage(QWidget):
         resolve_layout.addWidget(self.company_selector, 1)
 
         folder_block = QVBoxLayout()
-        self.target_folder_label = QLabel("Nenhuma pasta escolhida.")
+        folder_block.setSpacing(4)
+        folder_title = QLabel("Pasta de destino (opcional)")
+        folder_title.setObjectName("Muted")
+        folder_block.addWidget(folder_title)
+        folder_row = QHBoxLayout()
+        folder_row.setSpacing(6)
+        self.target_folder_label = QLabel()
         self.target_folder_label.setObjectName("Muted")
-        self.target_folder_label.setWordWrap(True)
-        folder_block.addWidget(self.target_folder_label)
+        folder_row.addWidget(self.target_folder_label, 1)
         self.choose_target_button = make_button("Escolher pasta...")
         self.choose_target_button.clicked.connect(self.choose_target_folder)
-        folder_block.addWidget(self.choose_target_button)
+        folder_row.addWidget(self.choose_target_button)
+        folder_block.addLayout(folder_row)
         folder_block.addStretch(1)
-        resolve_layout.addLayout(folder_block)
+        resolve_layout.addLayout(folder_block, 1)
+        self._set_target_folder_display("Nenhuma pasta escolhida - usa a pasta padrao da empresa.")
 
         action_block = QVBoxLayout()
         self.confirm_button = make_button("Confirmar", "primary")
         self.confirm_button.clicked.connect(self.confirm_selected)
         action_block.addWidget(self.confirm_button)
-        self.ask_agent_button = make_button("Perguntar ao agente")
-        self.ask_agent_button.clicked.connect(self.ask_agent)
-        action_block.addWidget(self.ask_agent_button)
         self.ignore_button = make_button("Ignorar", "danger")
         self.ignore_button.clicked.connect(self.ignore_selected)
         action_block.addWidget(self.ignore_button)
@@ -304,7 +307,7 @@ class RevisaoPage(QWidget):
             if not eligible:
                 checkbox.setToolTip("Documento sem empresa sugerida - nao e possivel organizar em lote.")
             checkbox.stateChanged.connect(self._on_batch_checkbox_toggled)
-            self.table.setCellWidget(row, COL_CHECK, checkbox)
+            self.table.setCellWidget(row, COL_CHECK, self._wrap_checkbox_for_cell(checkbox))
 
             confianca = pendente.get("confianca_sugestao")
             values = (
@@ -331,7 +334,7 @@ class RevisaoPage(QWidget):
         self._populate_company_filter()
 
         self._chosen_target_folder = None
-        self.target_folder_label.setText("Nenhuma pasta escolhida.")
+        self._set_target_folder_display("Nenhuma pasta escolhida - usa a pasta padrao da empresa.")
         self._set_resolution_enabled(False)
 
         self.organize_ai_button.setEnabled(False)
@@ -451,7 +454,7 @@ class RevisaoPage(QWidget):
         pendente = self.pendentes_by_id.get(pendente_id) if pendente_id is not None else None
         self._set_resolution_enabled(True)
         self._chosen_target_folder = None
-        self.target_folder_label.setText("Nenhuma pasta escolhida.")
+        self._set_target_folder_display("Nenhuma pasta escolhida - usa a pasta padrao da empresa.")
         if pendente and pendente.get("empresa_sugerida_id"):
             self.company_selector.set_company(pendente["empresa_sugerida_id"])
         else:
@@ -462,7 +465,12 @@ class RevisaoPage(QWidget):
         if not selected:
             return
         self._chosen_target_folder = selected
-        self.target_folder_label.setText(selected)
+        self._set_target_folder_display(selected)
+
+    def _set_target_folder_display(self, text: str) -> None:
+        self.target_folder_label.setToolTip(text)
+        elided = self.target_folder_label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideMiddle, 260)
+        self.target_folder_label.setText(elided)
 
     def _pendente_id_for_row(self, row: int) -> int | None:
         item = self.table.item(row, COL_ARQUIVO)
@@ -482,11 +490,29 @@ class RevisaoPage(QWidget):
             return None
         return self._pendente_id_for_row(rows[0].row())
 
+    def _wrap_checkbox_for_cell(self, checkbox: QCheckBox) -> QWidget:
+        """Centraliza o checkbox numa celula da tabela - um QCheckBox "cru" esticado pra
+        preencher a celula so responde a clique perto do proprio indicador (a area vazia
+        ao redor nao ativa o toggle), o que faz parecer que so a primeira marcacao funciona.
+        Um container com layout centralizado devolve um alvo de clique pequeno e previsivel."""
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(checkbox)
+        return container
+
+    def _checkbox_for_row(self, row: int) -> QCheckBox | None:
+        container = self.table.cellWidget(row, COL_CHECK)
+        if container is None:
+            return None
+        return container.findChild(QCheckBox)
+
     def _checked_pendente_ids(self) -> list[int]:
         ids = []
         for row in range(self.table.rowCount()):
-            checkbox = self.table.cellWidget(row, COL_CHECK)
-            if isinstance(checkbox, QCheckBox) and checkbox.isChecked():
+            checkbox = self._checkbox_for_row(row)
+            if checkbox is not None and checkbox.isChecked():
                 pendente_id = self._pendente_id_for_row(row)
                 if pendente_id is not None:
                     ids.append(pendente_id)
@@ -554,8 +580,8 @@ class RevisaoPage(QWidget):
             if row is None:
                 continue
             self._set_situacao(row, "Sem empresa sugerida - nao e possivel organizar em lote.")
-            checkbox = self.table.cellWidget(row, COL_CHECK)
-            if isinstance(checkbox, QCheckBox):
+            checkbox = self._checkbox_for_row(row)
+            if checkbox is not None:
                 checkbox.setChecked(False)
                 checkbox.setEnabled(False)
 
@@ -616,8 +642,8 @@ class RevisaoPage(QWidget):
             else:
                 destino_text = "-"
                 situacao_text = row_data.needs_input_message or row_data.error or "Nao foi possivel propor um destino."
-                checkbox = self.table.cellWidget(table_row, COL_CHECK)
-                if isinstance(checkbox, QCheckBox):
+                checkbox = self._checkbox_for_row(table_row)
+                if checkbox is not None:
                     checkbox.setChecked(False)
                     checkbox.setEnabled(False)
 
@@ -685,8 +711,8 @@ class RevisaoPage(QWidget):
                     self._set_situacao(table_row, f"Organizado em {destino}")
 
             if table_row is not None:
-                checkbox = self.table.cellWidget(table_row, COL_CHECK)
-                if isinstance(checkbox, QCheckBox):
+                checkbox = self._checkbox_for_row(table_row)
+                if checkbox is not None:
                     checkbox.setChecked(False)
                     checkbox.setEnabled(False)
 
@@ -736,24 +762,18 @@ class RevisaoPage(QWidget):
 
         self.on_data_changed()
 
-    def ask_agent(self) -> None:
+    def selected_chat_context(self) -> tuple[dict, int | None, str | None] | None:
+        """Documento, empresa e pasta escolhidos atualmente na tela de revisao - usado pela
+        bolha flutuante de chat na janela principal pra abrir a conversa ja com esse contexto."""
         pendente_id = self._selected_pendente_id()
         if pendente_id is None:
-            return
+            return None
         pendente = self.pendentes_by_id.get(pendente_id)
         if not pendente:
-            return
-        AgentChatDialog(
-            self.services,
-            pendente,
-            empresa_id=self.company_selector.get_selected_company_id(),
-            diretorio_documentos=self._chosen_target_folder,
-            parent=self,
-        ).exec()
-        self.on_data_changed()
+            return None
+        return pendente, self.company_selector.get_selected_company_id(), self._chosen_target_folder
 
     def _set_resolution_enabled(self, enabled: bool) -> None:
         self.choose_target_button.setEnabled(enabled)
         self.confirm_button.setEnabled(enabled)
-        self.ask_agent_button.setEnabled(enabled)
         self.ignore_button.setEnabled(enabled)

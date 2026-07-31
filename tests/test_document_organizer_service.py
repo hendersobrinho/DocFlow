@@ -94,6 +94,44 @@ class ResolveOrganizeTargetTests(unittest.TestCase):
         self.assertIsInstance(result, OrganizeNeedsInput)
         self.assertEqual(result.reason, "pasta_sem_padrao")
 
+    def test_documento_generico_acha_pasta_por_doc_terms(self) -> None:
+        self._touch("2026/Guias FGTS/Guia FGTS 03-2026.pdf")
+        result = resolve_organize_target(
+            self.company_dir, 4, 2026, doc_terms=["guia", "fgts"], doc_label="Guia FGTS"
+        )
+        self.assertIsInstance(result, OrganizeProposal)
+        self.assertEqual(result.destination_dir, self.company_dir / "2026" / "Guias FGTS")
+        self.assertEqual(result.new_filename, "Guia FGTS 04-2026.pdf")
+
+    def test_documento_generico_sem_pasta_correspondente_cai_na_pasta_do_mes(self) -> None:
+        (self.company_dir / "2026" / "04 - Abril").mkdir(parents=True)
+        result = resolve_organize_target(
+            self.company_dir,
+            4,
+            2026,
+            doc_terms=["guia", "fgts"],
+            doc_label="Guia FGTS",
+            original_filename="scan.pdf",
+        )
+        self.assertIsInstance(result, OrganizeProposal)
+        self.assertEqual(result.destination_dir, self.company_dir / "2026" / "04 - Abril")
+        self.assertTrue(result.filename_is_synthesized)
+        self.assertEqual(result.new_filename, "Guia FGTS 04-2026.pdf")
+
+    def test_documento_generico_pasta_vazia_sintetiza_nome_com_doc_label(self) -> None:
+        (self.company_dir / "2026").mkdir()
+        result = resolve_organize_target(
+            self.company_dir,
+            4,
+            2026,
+            doc_terms=["guia", "fgts"],
+            doc_label="Guia FGTS",
+            original_filename="scan.pdf",
+        )
+        self.assertIsInstance(result, OrganizeProposal)
+        self.assertTrue(result.filename_is_synthesized)
+        self.assertEqual(result.new_filename, "Guia FGTS 04-2026.pdf")
+
 
 class DocumentOrganizerServiceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -331,6 +369,24 @@ class DocumentOrganizerServiceTests(unittest.TestCase):
         self.assertIsInstance(result, OrganizeProposal)
         self.assertEqual(result.new_filename, "Sicoob CC 04-2026.pdf")
         self.assertEqual(result.destination_dir, self.company_dir / "2026")
+
+    def test_propose_uses_generic_document_branch_for_non_bank_documento(self) -> None:
+        empresa = self._create_empresa(diretorio=str(self.company_dir))
+        (self.company_dir / "2026" / "Guias FGTS").mkdir(parents=True)
+        (self.company_dir / "2026" / "Guias FGTS" / "Guia FGTS 03-2026.pdf").write_bytes(b"conteudo")
+
+        file_path = self.inbox_dir / "guia.pdf"
+        file_path.write_bytes(b"conteudo")
+        pendente_id = self._create_pendente(file_path, empresa)
+
+        documento_empresa = {"id": 1, "nome_tipo": "Impostos", "nome_documento": "Guia FGTS"}
+        result = self.organizer_service.propose(
+            pendente_id, empresa["id"], 4, 2026, documento_empresa=documento_empresa
+        )
+
+        self.assertIsInstance(result, OrganizeProposal)
+        self.assertEqual(result.destination_dir, self.company_dir / "2026" / "Guias FGTS")
+        self.assertEqual(result.new_filename, "Guia FGTS 04-2026.pdf")
 
     def test_execute_moves_file_creates_folder_and_marks_resolved(self) -> None:
         empresa = self._create_empresa(diretorio=str(self.company_dir))

@@ -4,9 +4,12 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QDockWidget,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -15,7 +18,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -23,7 +25,8 @@ from PySide6.QtWidgets import (
 from documentos_empresa_app.app_context import ApplicationServices
 from documentos_empresa_app.qt_ui.dialogs.about_dialog import AboutDialog
 from documentos_empresa_app.qt_ui.dialogs.backup_settings_dialog import BackupSettingsDialog
-from documentos_empresa_app.qt_ui.icons import app_icon
+from documentos_empresa_app.qt_ui.icons import agent_chat_icon, app_icon
+from documentos_empresa_app.qt_ui.panels.agent_chat_panel import AgentChatPanel
 from documentos_empresa_app.qt_ui.pages.configuracoes_page import ConfiguracoesPage
 from documentos_empresa_app.qt_ui.pages.controle_page import ControlePage
 from documentos_empresa_app.qt_ui.pages.dashboard_page import DashboardPage
@@ -34,7 +37,7 @@ from documentos_empresa_app.qt_ui.pages.panorama_page import PanoramaPage
 from documentos_empresa_app.qt_ui.pages.revisao_page import RevisaoPage
 from documentos_empresa_app.qt_ui.pages.usuarios_page import UsuariosPage
 from documentos_empresa_app.qt_ui.theme import ThemeManager
-from documentos_empresa_app.qt_ui.widgets.common import make_button
+from documentos_empresa_app.qt_ui.widgets.common import make_button, make_icon_button, SinglePageStackedWidget
 from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner, CallableWorker
 from documentos_empresa_app.utils.auto_backup import (
     load_auto_backup_settings,
@@ -43,7 +46,7 @@ from documentos_empresa_app.utils.auto_backup import (
     should_run_auto_backup,
 )
 from documentos_empresa_app.utils.backup_encryption import is_encrypted_backup
-from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE, ValidationError
+from documentos_empresa_app.utils.common import AGENT_NAME, APP_NAME, APP_TITLE, ValidationError
 from documentos_empresa_app.utils.helpers import (
     load_backup_encryption_password,
     open_directory_in_file_manager,
@@ -76,6 +79,7 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(0)
 
         self._build_sidebar(root_layout)
+        self._build_agent_chat_dock()
         self._build_main_area(root_layout)
 
         QTimer.singleShot(800, self.run_auto_backup_if_due)
@@ -116,6 +120,35 @@ class MainWindow(QMainWindow):
         logout_button.clicked.connect(self.logout)
         layout.addWidget(logout_button)
 
+    def _build_agent_chat_dock(self) -> None:
+        self.agent_chat_panel = AgentChatPanel(self.services, self.refresh_all_tabs, parent=self)
+        self.agent_chat_dock = QDockWidget(f"Chat com {AGENT_NAME}", self)
+        self.agent_chat_dock.setObjectName("AgentChatDock")
+        self.agent_chat_dock.setWidget(self.agent_chat_panel)
+        self.agent_chat_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.agent_chat_dock)
+        self.resizeDocks([self.agent_chat_dock], [380], Qt.Orientation.Horizontal)
+        self.agent_chat_dock.setVisible(False)
+        self.agent_chat_dock.visibilityChanged.connect(self._on_agent_chat_dock_visibility_changed)
+
+    def _on_agent_chat_dock_visibility_changed(self, visible: bool) -> None:
+        if not visible:
+            self.refresh_all_tabs()
+
+    def open_agent_chat(
+        self, pendente: dict, empresa_id: int | None = None, diretorio_documentos: str | None = None
+    ) -> None:
+        self.agent_chat_panel.open_for_pendente(
+            pendente, empresa_id=empresa_id, diretorio_documentos=diretorio_documentos
+        )
+        self.agent_chat_dock.setWindowTitle(f'Chat - {pendente["nome_arquivo"]}')
+        self.agent_chat_dock.setVisible(True)
+        self.agent_chat_dock.raise_()
+
     def _build_main_area(self, root_layout: QHBoxLayout) -> None:
         main_area = QWidget()
         root_layout.addWidget(main_area, 1)
@@ -147,13 +180,14 @@ class MainWindow(QMainWindow):
         header.addWidget(help_button)
         layout.addLayout(header)
 
-        self.stack = QStackedWidget()
+        self.stack = SinglePageStackedWidget()
         layout.addWidget(self.stack, 1)
 
         self.controle_page = ControlePage(self.services, self.refresh_all_tabs)
         self.panorama_page = PanoramaPage(
             self.services, self.refresh_all_tabs, on_open_control=self.open_control_for_company_period
         )
+        self.revisao_page = RevisaoPage(self.services, self.refresh_all_tabs)
 
         page_defs: list[tuple[str, QWidget]] = [
             ("Dashboard", DashboardPage(self.services, self.refresh_all_tabs)),
@@ -161,7 +195,7 @@ class MainWindow(QMainWindow):
             ("Controle", self.controle_page),
             ("Empresas", EmpresasPage(self.services, self.refresh_all_tabs)),
             ("Documentos", DocumentosPage(self.services, self.refresh_all_tabs)),
-            ("Revisao de Documentos", RevisaoPage(self.services, self.refresh_all_tabs)),
+            ("Revisao de Documentos", self.revisao_page),
             ("Configuracoes", ConfiguracoesPage(self.services, self.refresh_all_tabs)),
         ]
         if self.services.session_service.is_admin():
@@ -176,6 +210,41 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda _checked=False, i=index: self._select_page(i))
             self.nav_layout.insertWidget(2 + index, button)
             self.nav_buttons[index] = button
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        self._build_chat_bubble(footer)
+        layout.addLayout(footer)
+
+    def _build_chat_bubble(self, footer: QHBoxLayout) -> None:
+        """Botao redondo com a logo, sempre no canto inferior direito da janela em
+        qualquer aba. Fica numa linha propria (nao flutua sobre o conteudo da pagina)
+        para nunca sobrepor botoes de acao que tambem ficam ancorados a direita, como
+        em Revisao de Documentos."""
+        self.chat_bubble_button = make_icon_button(
+            agent_chat_icon(), f"Abrir chat com o {AGENT_NAME}", size=48, variant="fab"
+        )
+        shadow = QGraphicsDropShadowEffect(self.chat_bubble_button)
+        shadow.setBlurRadius(16)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(0, 0, 0, 90))
+        self.chat_bubble_button.setGraphicsEffect(shadow)
+        self.chat_bubble_button.clicked.connect(self._on_chat_bubble_clicked)
+        footer.addWidget(self.chat_bubble_button)
+
+    def _on_chat_bubble_clicked(self) -> None:
+        if self.stack.currentWidget() is self.revisao_page:
+            context = self.revisao_page.selected_chat_context()
+            if context is not None:
+                pendente, empresa_id, folder = context
+                self.open_agent_chat(pendente, empresa_id=empresa_id, diretorio_documentos=folder)
+                return
+        if self.agent_chat_dock.isVisible():
+            self.agent_chat_dock.setVisible(False)
+            return
+        self.agent_chat_dock.setWindowTitle(f"Chat com {AGENT_NAME}")
+        self.agent_chat_dock.setVisible(True)
+        self.agent_chat_dock.raise_()
 
     def _select_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -373,6 +442,7 @@ class MainWindow(QMainWindow):
             shutdown = getattr(page, "shutdown", None)
             if callable(shutdown):
                 shutdown()
+        self.agent_chat_panel.shutdown()
         self._wait_for_auto_backup_thread()
         super().closeEvent(event)
 

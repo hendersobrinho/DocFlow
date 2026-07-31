@@ -60,3 +60,11 @@ def app_icon() -> QIcon:
     for path in iter_icon_candidates():
         return QIcon(str(path))
     return QIcon()
+
+
+@lru_cache(maxsize=1)
+def agent_chat_icon() -> QIcon:
+    path = get_icons_directory() / "agent_chat.svg"
+    if not path.exists():
+        return QIcon()
+    return QIcon(str(path))

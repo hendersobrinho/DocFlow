@@ -24,6 +24,25 @@ class PeriodoService:
     def list_available_years(self) -> list[int]:
         return self.periodo_repository.list_years()
 
+    def get_or_create_periodo(self, ano, mes) -> dict:
+        """Devolve o periodo do mes/ano informado, gerando o ano inteiro (generate_year e
+        idempotente) se aquele mes ainda nao existir - usado pelo "dar baixa" via chat pra
+        nunca esbarrar num beco sem saida so porque o calendario daquele ano nao foi gerado."""
+        ano_int = self._parse_year(ano)
+        try:
+            mes_int = int(mes)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Mes invalido (use um valor entre 1 e 12).") from exc
+        if not 1 <= mes_int <= 12:
+            raise ValidationError("Mes invalido (use um valor entre 1 e 12).")
+
+        periodo = self.periodo_repository.get_by_year_month(ano_int, mes_int)
+        if periodo is None:
+            self.generate_year(ano_int)
+            periodo = self.periodo_repository.get_by_year_month(ano_int, mes_int)
+        periodo["label"] = format_period_label(periodo["ano"], periodo["mes"])
+        return periodo
+
     def generate_year(self, ano) -> dict:
         ano_int = self._parse_year(ano)
         created = 0

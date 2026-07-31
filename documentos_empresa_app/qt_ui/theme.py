@@ -204,6 +204,16 @@ QPushButton[variant="quiet"]:hover {{
     background: {t["surface_hover"]};
     color: {t["text"]};
 }}
+QPushButton[variant="fab"] {{
+    background: {t["surface"]};
+    border: 1px solid {t["border_strong"]};
+    border-radius: 24px;
+    padding: 0px;
+}}
+QPushButton[variant="fab"]:hover {{
+    background: {t["surface_hover"]};
+    border-color: {t["accent"]};
+}}
 QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {{
     background: {t["surface"]};
     color: {t["text"]};
@@ -348,6 +358,42 @@ QStatusBar {{
     background: {t["surface"]};
     color: {t["muted"]};
     border-top: 1px solid {t["border"]};
+}}
+QFrame#ChatBubbleUser {{
+    background: {t["accent"]};
+    border-radius: 12px;
+}}
+QFrame#ChatBubbleUser QLabel {{
+    color: {t["on_accent"]};
+}}
+QFrame#ChatBubbleAgent {{
+    background: {t["surface_alt"]};
+    border: 1px solid {t["border"]};
+    border-radius: 12px;
+}}
+QFrame#ChatBubbleAgent QLabel {{
+    color: {t["text"]};
+}}
+QLabel#ChatSystemMessage {{
+    color: {t["muted"]};
+    font-style: italic;
+    padding: 4px 10px;
+}}
+QDockWidget {{
+    color: {t["text"]};
+}}
+QDockWidget::title {{
+    background: {t["surface_alt"]};
+    border-bottom: 1px solid {t["border"]};
+    padding: 6px 8px;
+}}
+QMainWindow::separator {{
+    background: {t["border_strong"]};
+    width: 6px;
+    height: 6px;
+}}
+QMainWindow::separator:hover {{
+    background: {t["accent"]};
 }}
 """
 

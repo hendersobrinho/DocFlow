@@ -24,17 +24,25 @@ class TipoService:
             raise ValidationError("Tipo de documento nao encontrado.")
         return tipo
 
-    def get_or_create_tipo(self, nome_tipo: str) -> dict:
-        tipo, _created = self.ensure_tipo(nome_tipo)
+    def get_or_create_tipo(self, nome_tipo: str, regra_ocorrencia: str = TYPE_OCCURRENCE_MENSAL) -> dict:
+        tipo, _created = self.ensure_tipo(nome_tipo, regra_ocorrencia)
         return tipo
 
-    def ensure_tipo(self, nome_tipo: str) -> tuple[dict, bool]:
+    def ensure_tipo(self, nome_tipo: str, regra_ocorrencia: str = TYPE_OCCURRENCE_MENSAL) -> tuple[dict, bool]:
         nome = self._normalize_name(nome_tipo)
         existing = self.tipo_repository.get_by_name(nome)
         if existing:
             return existing, False
-        tipo_id = self.create_tipo(nome)
+        tipo_id = self.create_tipo(nome, regra_ocorrencia)
         return self.get_tipo(tipo_id), True
+
+    def find_tipo_by_name(self, nome_tipo: str) -> dict | None:
+        """Consulta somente-leitura, sem criar nada - usada pelo chat pra decidir se um tipo
+        citado pelo usuario ja existe antes de propor cadastrar um novo."""
+        nome = canonicalize_tipo_name(nome_tipo)
+        if not nome:
+            return None
+        return self.tipo_repository.get_by_name(nome)
 
     def create_tipo(self, nome_tipo: str, regra_ocorrencia: str = TYPE_OCCURRENCE_MENSAL) -> int:
         nome = self._normalize_name(nome_tipo)

@@ -8,7 +8,9 @@ from documentos_empresa_app.services.file_check_service import (
     bank_display_label,
     extract_periods_from_filename,
     match_bank_in_filename,
+    match_document_terms,
     match_type_in_filename,
+    required_document_term_count,
 )
 
 # Apenas formatos numericos de competencia (MM-AAAA, AAAA-MM, MMAAAA, AAAAMM, com
@@ -74,6 +76,7 @@ def _gather_usable_siblings(
     *,
     bank_key: str | None = None,
     doc_type: str | None = None,
+    doc_terms: list[str] | None = None,
 ) -> list[tuple[Path, tuple[int, int], tuple[int, int], str]]:
     try:
         candidates = [entry for entry in destination_dir.iterdir() if entry.is_file()]
@@ -88,6 +91,13 @@ def _gather_usable_siblings(
             candidates = narrowed
     if doc_type:
         narrowed = [entry for entry in candidates if match_type_in_filename(entry.name, doc_type)]
+        if narrowed:
+            candidates = narrowed
+    if doc_terms:
+        required = required_document_term_count(doc_terms)
+        narrowed = [
+            entry for entry in candidates if len(match_document_terms(entry.name, doc_terms)) >= required
+        ]
         if narrowed:
             candidates = narrowed
 
@@ -111,12 +121,13 @@ def has_conflicting_naming_templates(
     *,
     bank_key: str | None = None,
     doc_type: str | None = None,
+    doc_terms: list[str] | None = None,
 ) -> bool:
     """True somente quando ha arquivos-irmaos usaveis com mais de um padrao de nome
     distinto (ambiguidade real - inseguro adivinhar). False para pasta vazia/inexistente
     ou sem nenhum irmao com competencia numerica unica detectavel - nesses casos e seguro
     o chamador sintetizar um nome padrao em vez de perguntar."""
-    usable = _gather_usable_siblings(destination_dir, bank_key=bank_key, doc_type=doc_type)
+    usable = _gather_usable_siblings(destination_dir, bank_key=bank_key, doc_type=doc_type, doc_terms=doc_terms)
     templates = {item[3] for item in usable}
     return len(templates) > 1
 
@@ -127,11 +138,18 @@ def synthesize_default_filename(
     *,
     bank_key: str | None = None,
     doc_type: str | None = None,
+    doc_label: str | None = None,
     original_filename: str | None = None,
 ) -> str:
     """Monta um nome de arquivo padrao quando nao ha nenhum irmao para copiar o nome -
-    usado apenas quando `has_conflicting_naming_templates` for False."""
-    parts = [bank_display_label(bank_key) if bank_key else "Documento"]
+    usado apenas quando `has_conflicting_naming_templates` for False. `doc_label` (o
+    nome_documento cadastrado) so e usado quando nao ha banco identificado."""
+    if bank_key:
+        parts = [bank_display_label(bank_key)]
+    elif doc_label:
+        parts = [doc_label]
+    else:
+        parts = ["Documento"]
     if doc_type:
         parts.append("CC" if doc_type == "cc" else "Aplicacao")
     parts.append(f"{mes:02d}-{ano}")
@@ -146,8 +164,9 @@ def infer_filename_from_siblings(
     *,
     bank_key: str | None = None,
     doc_type: str | None = None,
+    doc_terms: list[str] | None = None,
 ) -> InferredFilename | None:
-    usable = _gather_usable_siblings(destination_dir, bank_key=bank_key, doc_type=doc_type)
+    usable = _gather_usable_siblings(destination_dir, bank_key=bank_key, doc_type=doc_type, doc_terms=doc_terms)
     if not usable:
         return None
 

@@ -192,7 +192,7 @@ def build_application_services(db_path: str | Path, session_service: SessionServ
         audit_service=audit_service,
         session_service=session,
     )
-    batch_organize_service = BatchOrganizeService(document_agent_service, document_organizer_service)
+    batch_organize_service = BatchOrganizeService(document_agent_service, document_organizer_service, documento_service)
 
     services = ApplicationServices(
         empresa_service=empresa_service,

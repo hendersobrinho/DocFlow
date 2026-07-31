@@ -178,6 +178,34 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(second_run["created"], 0)
         self.assertEqual(second_run["existing"], 12)
 
+    def test_get_or_create_periodo_returns_existing_without_regenerating(self) -> None:
+        self.periodo_service.generate_year(2026)
+        periodos_antes = self.periodo_repository.list_by_year(2026)
+
+        periodo = self.periodo_service.get_or_create_periodo(2026, 4)
+
+        self.assertEqual(periodo["ano"], 2026)
+        self.assertEqual(periodo["mes"], 4)
+        self.assertEqual(self.periodo_repository.list_by_year(2026), periodos_antes)
+
+    def test_get_or_create_periodo_generates_missing_year(self) -> None:
+        self.assertFalse(self.periodo_repository.exists(2031, 6))
+
+        periodo = self.periodo_service.get_or_create_periodo(2031, 6)
+
+        self.assertEqual(periodo["ano"], 2031)
+        self.assertEqual(periodo["mes"], 6)
+        self.assertTrue(self.periodo_repository.exists(2031, 6))
+        self.assertEqual(len(self.periodo_repository.list_by_year(2031)), 12)
+
+    def test_get_or_create_periodo_rejects_invalid_month(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.periodo_service.get_or_create_periodo(2026, 13)
+
+    def test_get_or_create_periodo_rejects_invalid_year(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.periodo_service.get_or_create_periodo("nao-e-ano", 4)
+
     def test_closure_hides_future_periods(self) -> None:
         empresa_id = self.empresa_service.create_empresa(101, "Empresa Teste")
         tipo_id = self.tipo_service.get_or_create_tipo("Documentos Financeiros")["id"]
@@ -681,6 +709,38 @@ class ApplicationServiceTests(unittest.TestCase):
 
         self.assertEqual(tipo_atualizado["nome_tipo"], "Informes anuais")
         self.assertEqual(tipo_atualizado["regra_ocorrencia"], TYPE_OCCURRENCE_ANUAL_JANEIRO)
+
+    def test_get_or_create_tipo_uses_explicit_occurrence_rule_when_creating(self) -> None:
+        tipo = self.tipo_service.get_or_create_tipo("Guias Trimestrais", TYPE_OCCURRENCE_TRIMESTRAL)
+
+        self.assertEqual(tipo["regra_ocorrencia"], TYPE_OCCURRENCE_TRIMESTRAL)
+
+    def test_get_or_create_tipo_ignores_occurrence_rule_when_already_exists(self) -> None:
+        existing_id = self.tipo_service.create_tipo("Guias Mensais Ja Existentes", TYPE_OCCURRENCE_MENSAL)
+
+        tipo = self.tipo_service.get_or_create_tipo("Guias Mensais Ja Existentes", TYPE_OCCURRENCE_TRIMESTRAL)
+
+        self.assertEqual(tipo["id"], existing_id)
+        self.assertEqual(tipo["regra_ocorrencia"], TYPE_OCCURRENCE_MENSAL)
+
+    def test_find_tipo_by_name_returns_none_for_unknown_name(self) -> None:
+        self.assertIsNone(self.tipo_service.find_tipo_by_name("Categoria Que Nao Existe"))
+
+    def test_find_tipo_by_name_does_not_create_anything(self) -> None:
+        tipos_antes = len(self.tipo_service.list_tipos())
+
+        result = self.tipo_service.find_tipo_by_name("Categoria Inexistente")
+
+        self.assertIsNone(result)
+        self.assertEqual(len(self.tipo_service.list_tipos()), tipos_antes)
+
+    def test_find_tipo_by_name_returns_existing_tipo(self) -> None:
+        created_id = self.tipo_service.create_tipo("Categoria Encontravel", TYPE_OCCURRENCE_MENSAL)
+
+        found = self.tipo_service.find_tipo_by_name("categoria encontravel")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found["id"], created_id)
 
     def test_quarterly_type_marks_non_chargeable_months_as_nao_cobrar(self) -> None:
         empresa_id = self.empresa_service.create_empresa(118, "Empresa Trimestral")

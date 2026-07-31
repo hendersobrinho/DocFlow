@@ -30,10 +30,12 @@ class BatchOrganizeService:
         self,
         document_agent_service,
         document_organizer_service: DocumentOrganizerService,
+        documento_service,
         competence_suggestion_client=None,
     ) -> None:
         self.document_agent_service = document_agent_service
         self.document_organizer_service = document_organizer_service
+        self.documento_service = documento_service
         self.competence_suggestion_client = competence_suggestion_client
 
     def eligible_pendentes(self, pendentes: list[dict]) -> list[dict]:
@@ -68,10 +70,27 @@ class BatchOrganizeService:
         except DocumentExtractionError as exc:
             return self._row(pendente, empresa_id, empresa_nome, error=f"Falha ao ler o documento: {exc}")
 
+        registered_documents = self.documento_service.list_documentos_empresa(empresa_id)
+
         try:
-            suggestion = self.competence_suggestion_client.suggest(text)
+            suggestion = self.competence_suggestion_client.suggest(text, registered_documents)
         except LLMCompetenceSuggestionError as exc:
             return self._row(pendente, empresa_id, empresa_nome, error=f"Falha na sugestao de competencia: {exc}")
+
+        documento_empresa = next(
+            (doc for doc in registered_documents if doc["id"] == suggestion.documento_empresa_id), None
+        )
+        if documento_empresa is None:
+            return self._row(
+                pendente,
+                empresa_id,
+                empresa_nome,
+                suggestion=suggestion,
+                needs_input_message=(
+                    "A IA nao reconheceu nenhum documento cadastrado desta empresa para este arquivo. "
+                    "Revise manualmente ou cadastre o documento antes de organizar."
+                ),
+            )
 
         try:
             proposal = self.document_organizer_service.propose(
@@ -82,6 +101,7 @@ class BatchOrganizeService:
                 banco=suggestion.banco,
                 tipo_conta=suggestion.tipo_conta,
                 empresas_root_dir=empresas_root_dir,
+                documento_empresa=documento_empresa,
             )
         except ValidationError as exc:
             return self._row(pendente, empresa_id, empresa_nome, suggestion=suggestion, error=str(exc))
