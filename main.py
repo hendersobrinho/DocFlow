@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-import sqlite3
 import sys
 import traceback
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from documentos_empresa_app.app_context import build_application_services
-from documentos_empresa_app.qt_ui.dialogs.database_path_dialog import (
-    ensure_database_path_qt,
-    prompt_database_path_qt,
+from documentos_empresa_app.database.connection import DatabaseError, DatabaseManager
+from documentos_empresa_app.qt_ui.dialogs.database_connection_dialog import (
+    ensure_database_connection_qt,
+    prompt_database_connection_qt,
 )
 from documentos_empresa_app.qt_ui.dialogs.change_password_dialog import ChangePasswordDialog
 from documentos_empresa_app.qt_ui.icons import app_icon
@@ -19,7 +19,11 @@ from documentos_empresa_app.qt_ui.main_window import MainWindow
 from documentos_empresa_app.qt_ui.splash_screen import SplashScreen
 from documentos_empresa_app.qt_ui.theme import ThemeManager
 from documentos_empresa_app.utils.common import APP_NAME, ValidationError
-from documentos_empresa_app.utils.helpers import load_login_preferences, save_login_preferences
+from documentos_empresa_app.utils.helpers import (
+    load_login_preferences,
+    purge_removed_feature_settings,
+    save_login_preferences,
+)
 
 
 def try_restore_saved_login(services) -> dict | None:
@@ -82,6 +86,7 @@ def main() -> None:
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(app_icon())
     _install_exception_handler()
+    purge_removed_feature_settings()
     ThemeManager.instance().apply(app)
 
     splash = SplashScreen()
@@ -89,23 +94,27 @@ def main() -> None:
 
     while True:
         splash.show_message("Verificando banco de dados...")
-        db_path = ensure_database_path_qt()
-        if db_path is None:
+        conninfo = ensure_database_connection_qt()
+        if conninfo is None:
             splash.close()
             return
 
         try:
-            splash.show_message("Preparando banco de dados...")
-            services = build_application_services(db_path)
-        except sqlite3.OperationalError:
+            splash.show_message("Conectando ao banco de dados...")
+            services = build_application_services(conninfo)
+            # Meses do ano atual (e do proximo, a partir de novembro) sempre prontos.
+            services.periodo_service.ensure_operational_years()
+        except DatabaseError as exc:
             splash.hide()
+            detail = str(exc).strip() or exc.__class__.__name__
             QMessageBox.critical(
                 None,
                 APP_NAME,
-                f"Nao foi possivel abrir o banco de dados em:\n{db_path}\n\nEscolha outro local para continuar.",
+                f"Nao foi possivel conectar ao banco de dados:\n{DatabaseManager(conninfo).display_name}"
+                f"\n\n{detail}\n\nRevise os dados de conexao para continuar.",
             )
-            new_path = prompt_database_path_qt()
-            if new_path is None:
+            new_conninfo = prompt_database_connection_qt()
+            if new_conninfo is None:
                 splash.close()
                 return
             splash.show_animated()
@@ -113,7 +122,7 @@ def main() -> None:
 
         while True:
             services.session_service.logout()
-            splash.show_message("Restaurando sessao...")
+            splash.show_message("Restaurando sessão...")
             authenticated_user = try_restore_saved_login(services)
             if authenticated_user is None:
                 splash.close()
@@ -131,12 +140,13 @@ def main() -> None:
                     continue
 
             splash.show_message("Abrindo o sistema...")
-            window = MainWindow(db_path, services)
+            window = MainWindow(services)
             splash.finish(window)
             app.exec()
             if window.logout_requested:
                 continue
             if window.restart_requested:
+                services.database_maintenance_service.db_manager.close()
                 splash.show_animated()
                 break
             return

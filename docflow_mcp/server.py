@@ -1,0 +1,1196 @@
+"""Servidor MCP do DocFlow.
+
+Expoe os dados e as operacoes do DocFlow (empresas, documentos, tipos, meios de
+recebimento, periodos, status mensais, Panorama, cobranca, relatorios, usuarios, logs e
+backup) como tools MCP, reaproveitando os mesmos services da aplicacao desktop - as
+regras de negocio, validacoes, permissoes de admin e o log de auditoria sao exatamente
+os mesmos da interface.
+
+Configuracao (variaveis de ambiente):
+- DOCFLOW_MCP_USUARIO / DOCFLOW_MCP_SENHA: usuario do DocFlow em nome de quem o servidor
+  age (obrigatorio). Tudo que for alterado fica registrado nos logs com esse usuario.
+- DOCFLOW_DATABASE_URL: conexao com o PostgreSQL. Sem ela, usa a conexao salva pelo app
+  desktop no perfil do usuario do sistema operacional.
+"""
+
+from __future__ import annotations
+
+import functools
+import os
+import threading
+from typing import Any, Callable, Literal
+
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
+
+from documentos_empresa_app.app_context import ApplicationServices, build_application_services
+from documentos_empresa_app.database.connection import DatabaseError
+from documentos_empresa_app.qt_ui.viewmodels import UI_SITUATION_LABELS, PanoramaViewModel
+from documentos_empresa_app.utils.common import (
+    STATUS_OPTIONS,
+    ValidationError,
+    format_period_label,
+    format_utc_timestamp,
+    parse_period_label,
+)
+from documentos_empresa_app.utils.database_settings import resolve_database_conninfo
+
+USER_ENV_VAR = "DOCFLOW_MCP_USUARIO"
+PASSWORD_ENV_VAR = "DOCFLOW_MCP_SENHA"
+
+StatusValue = Literal["Recebido", "Pendente", "Encerrado", "Nao cobrar", ""]
+OccurrenceRule = Literal["mensal", "trimestral", "anual_janeiro"]
+
+mcp = MCPServer(
+    name="docflow",
+    title="DocFlow",
+    instructions=(
+        "Controle mensal de documentos que empresas-cliente de um escritorio contabil precisam "
+        "entregar. Empresas sao identificadas pelo codigo (codigo_empresa); competencias sao "
+        "informadas como MM/AAAA. Cada documento de uma empresa recebe um status por mes: "
+        "Recebido, Pendente, Encerrado (para de cobrar dali em diante) ou Nao cobrar. Use "
+        "'panorama' para a visao geral de um mes e 'controle_empresa' para a grade de uma "
+        "empresa. Tools de exclusao exigem confirmar=true.\n\n"
+        "Rotina de cobranca (o DocFlow e a memoria da cobranca: anote tudo nele):\n"
+        "1. 'iniciar_rodada' no comeco de cada passada. Tudo que voce registrar depois fica ligado "
+        "a essa rodada.\n"
+        "2. 'o_que_fazer_agora' diz, documento por documento, a acao certa pelas regras do sistema "
+        "(verificar, cobrar, recobrar, aguardar ou com_pessoa) e o porque. Siga essa lista; nao "
+        "decida prazos nem limites por conta propria. Cada empresa traz os canais por onde envia, "
+        "os emails de origem e as instrucoes de onde procurar.\n"
+        "3. Para 'verificar': procure nos canais com as suas ferramentas (email, Onvio) e registre "
+        "com 'registrar_verificacao', um resultado por documento:\n"
+        "   - recebido: achou o documento certo, da competencia certa (o sistema da baixa sozinho; "
+        "descreva em 'onde' remetente, data, assunto ou pasta);\n"
+        "   - documento_com_problema: veio algo, mas errado (motivo: documento_errado, "
+        "competencia_errada, ilegivel_ou_incompleto, empresa_errada ou outro);\n"
+        "   - nao_encontrado: procurou direito e nao esta la;\n"
+        "   - verificacao_falhou: nao conseguiu olhar (sem acesso, erro, fora do ar) - diga o motivo. "
+        "Isso NAO gera cobranca.\n"
+        "   Na duvida, NUNCA use recebido: use documento_com_problema ou 'encaminhar_para_pessoa'.\n"
+        "   Se baixar o documento (ex: anexo do email), salve na pasta da empresa (campo pasta_documentos em "
+        "'obter_empresa') e informe o caminho completo em 'arquivo': as pessoas abrem o arquivo "
+        "ou a pasta direto no DocFlow para conferir.\n"
+        "4. Depois de verificar, chame 'o_que_fazer_agora' de novo. Para 'cobrar'/'recobrar', gere o "
+        "texto com 'mensagem_cobranca', envie pelo canal da empresa e registre com "
+        "'registrar_cobranca' (o sistema numera cobranca e recobrancas). Se o cliente prometer "
+        "enviar ate uma data, use 'registrar_promessa_envio'. Se o cliente responder algo que "
+        "precisa de decisao humana, use 'encaminhar_para_pessoa'.\n"
+        "5. Qualquer coisa que der errado e nao for de um documento (email fora do ar, empresa sem "
+        "contato, erro de ferramenta), registre com 'registrar_ocorrencia' (tipo falha ou aviso).\n"
+        "6. 'finalizar_rodada' com um resumo curto no fim.\n"
+        "'ficha_empresa' e 'registro_documento' mostram o historico completo, inclusive o caminho "
+        "de cada documento pelas situacoes."
+    ),
+)
+
+_services: ApplicationServices | None = None
+_services_lock = threading.Lock()
+# Rodada aberta nesta conexao: verificacoes, cobrancas e ocorrencias registradas enquanto
+# ela estiver aberta ficam ligadas a ela.
+_rodada_atual: int | None = None
+_rodada_lock = threading.Lock()
+
+
+# Infraestrutura ---------------------------------------------------------------------
+
+
+def get_services() -> ApplicationServices:
+    """Conecta e autentica na primeira chamada (e nao na subida do servidor), para que um
+    banco fora do ar ou um usuario errado apareca como erro da tool, com a mensagem, em
+    vez de impedir o cliente MCP de listar as tools."""
+    global _services
+    with _services_lock:
+        if _services is not None:
+            return _services
+
+        username = os.environ.get(USER_ENV_VAR, "").strip()
+        password = os.environ.get(PASSWORD_ENV_VAR, "")
+        if not username or not password:
+            raise ToolError(
+                f"Defina {USER_ENV_VAR} e {PASSWORD_ENV_VAR} na configuracao do servidor MCP com um "
+                "usuario do DocFlow."
+            )
+        conninfo = resolve_database_conninfo()
+        if not conninfo:
+            raise ToolError(
+                "Banco de dados nao configurado. Defina DOCFLOW_DATABASE_URL ou configure a conexao "
+                "abrindo o DocFlow desktop uma vez."
+            )
+
+        services = build_application_services(conninfo)
+        services.periodo_service.ensure_operational_years()
+        user = services.auth_service.authenticate(username, password)
+        if user.get("deve_trocar_senha"):
+            raise ToolError(
+                f'O usuario "{username}" precisa trocar a senha antes de usar o DocFlow. Entre uma vez '
+                "pelo aplicativo desktop para definir a senha nova."
+            )
+        services.session_service.login(user)
+        _services = services
+        return _services
+
+
+def docflow_tool(*, read_only: bool, destructive: bool = False, idempotent: bool = False) -> Callable:
+    """Registra a funcao como tool MCP e converte os erros de negocio do DocFlow em
+    ToolError - assim a mensagem (ex: 'Ja existe uma empresa com esse codigo') chega ao
+    cliente, em vez do generico 'Error executing tool'."""
+
+    def decorator(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except ToolError:
+                raise
+            except ValidationError as exc:
+                raise ToolError(str(exc)) from exc
+            except DatabaseError as exc:
+                detail = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
+                raise ToolError(f"Erro no banco de dados: {detail}") from exc
+
+        annotations = ToolAnnotations(
+            read_only_hint=read_only,
+            destructive_hint=destructive if not read_only else None,
+            idempotent_hint=idempotent if not read_only else None,
+            open_world_hint=False,
+        )
+        mcp.tool(annotations=annotations, structured_output=True)(wrapper)
+        return fn
+
+    return decorator
+
+
+def _require_confirmation(confirmar: bool, what: str) -> None:
+    if not confirmar:
+        raise ToolError(f"{what} nao pode ser desfeito. Chame de novo com confirmar=true para prosseguir.")
+
+
+def _period(services: ApplicationServices, competencia: str) -> dict[str, Any]:
+    parsed = parse_period_label(competencia)
+    if parsed is None:
+        raise ToolError(f'Competencia invalida: "{competencia}". Use MM/AAAA, por exemplo 05/2026.')
+    ano, mes = parsed
+    for periodo in services.periodo_service.list_periodos():
+        if periodo["ano"] == ano and periodo["mes"] == mes:
+            return periodo
+    raise ToolError(
+        f"A competencia {mes:02d}/{ano} ainda nao existe. Gere os periodos do ano com 'gerar_periodos_ano'."
+    )
+
+
+def _company(services: ApplicationServices, codigo_empresa: int) -> dict[str, Any]:
+    empresa = services.empresa_service.get_empresa_by_code(codigo_empresa)
+    if not empresa:
+        raise ToolError(f"Nenhuma empresa com o codigo {codigo_empresa}.")
+    return empresa
+
+
+def _company_ids(services: ApplicationServices, codigos: list[int] | None) -> list[int] | None:
+    if not codigos:
+        return None
+    return [_company(services, codigo)["id"] for codigo in codigos]
+
+
+def _tipo_by_name(services: ApplicationServices, nome_tipo: str) -> dict[str, Any]:
+    wanted = nome_tipo.strip().casefold()
+    for tipo in services.tipo_service.list_tipos():
+        if tipo["nome_tipo"].casefold() == wanted:
+            return tipo
+    nomes = ", ".join(tipo["nome_tipo"] for tipo in services.tipo_service.list_tipos())
+    raise ToolError(f'Tipo de documento "{nome_tipo}" nao existe. Tipos cadastrados: {nomes}.')
+
+
+def _short_period(label: str) -> str:
+    return label.split(" - ", 1)[0]
+
+
+def _local(raw: str | None) -> str | None:
+    """Horario gravado em UTC -> horario local legivel (dd/mm/aaaa hh:mm)."""
+    return format_utc_timestamp(raw) if raw else None
+
+
+def _public_company(empresa: dict) -> dict[str, Any]:
+    return {
+        "codigo_empresa": empresa["codigo_empresa"],
+        "nome_empresa": empresa["nome_empresa"],
+        "ativa": bool(empresa["ativa"]),
+        "cnpj": empresa.get("cnpj"),
+        "email_contato": empresa.get("email_contato"),
+        "nome_contato": empresa.get("nome_contato"),
+        "observacao": empresa.get("observacao"),
+        "pasta_documentos": empresa.get("diretorio_documentos"),
+        "nao_contatar_mala_direta": bool(empresa.get("nao_contatar_mala_direta")),
+        "cobranca_inicio_dia": empresa.get("cobranca_inicio_dia"),
+        "cobranca_fim_dia": empresa.get("cobranca_fim_dia"),
+        "cobranca_alerta_dias": empresa.get("cobranca_alerta_dias"),
+        "canais_recebimento": empresa.get("canais_recebimento"),
+        "emails_origem_documentos": empresa.get("emails_origem_documentos"),
+        "instrucoes_busca": empresa.get("instrucoes_busca"),
+    }
+
+
+def _public_document(documento: dict) -> dict[str, Any]:
+    return {
+        "documento_id": documento["id"],
+        "tipo": documento.get("nome_tipo"),
+        "nome_documento": documento["nome_documento"],
+        "meios_recebimento": documento.get("meios_recebimento"),
+        "observacao": documento.get("observacao"),
+    }
+
+
+# Consultas ---------------------------------------------------------------------------
+
+
+@docflow_tool(read_only=True)
+def listar_empresas(somente_ativas: bool = True) -> list[dict[str, Any]]:
+    """Lista as empresas-cliente cadastradas (codigo, nome, CNPJ, contato, regras de cobranca)."""
+    services = get_services()
+    return [_public_company(e) for e in services.empresa_service.list_empresas(active_only=somente_ativas)]
+
+
+@docflow_tool(read_only=True)
+def obter_empresa(codigo_empresa: int) -> dict[str, Any]:
+    """Dados completos de uma empresa, incluindo os documentos que ela precisa entregar."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    result = _public_company(empresa)
+    result["documentos"] = [
+        _public_document(d) for d in services.documento_service.list_documentos_empresa(empresa["id"])
+    ]
+    return result
+
+
+@docflow_tool(read_only=True)
+def listar_documentos_empresa(codigo_empresa: int) -> list[dict[str, Any]]:
+    """Documentos cadastrados para uma empresa (id, tipo, nome e meios de recebimento)."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    return [_public_document(d) for d in services.documento_service.list_documentos_empresa(empresa["id"])]
+
+
+@docflow_tool(read_only=True)
+def listar_tipos_documento() -> list[dict[str, Any]]:
+    """Tipos de documento e sua regra de ocorrencia (mensal, trimestral ou anual_janeiro)."""
+    services = get_services()
+    return [
+        {"tipo_id": t["id"], "nome_tipo": t["nome_tipo"], "regra_ocorrencia": t["regra_ocorrencia"]}
+        for t in services.tipo_service.list_tipos()
+    ]
+
+
+@docflow_tool(read_only=True)
+def listar_meios_recebimento() -> list[dict[str, Any]]:
+    """Meios de recebimento disponiveis para os documentos (ex: Email, Onvio)."""
+    services = get_services()
+    return [{"meio_id": m["id"], "nome_meio": m["nome_meio"]} for m in services.delivery_method_service.list_methods()]
+
+
+@docflow_tool(read_only=True)
+def listar_competencias(ano: int | None = None) -> list[str]:
+    """Competencias (MM/AAAA) ja geradas no sistema, opcionalmente filtradas por ano."""
+    services = get_services()
+    return [
+        f'{p["mes"]:02d}/{p["ano"]}'
+        for p in services.periodo_service.list_periodos()
+        if ano is None or p["ano"] == ano
+    ]
+
+
+@docflow_tool(read_only=True)
+def panorama(competencia: str, somente_ativas: bool = True) -> dict[str, Any]:
+    """Visao geral de todas as empresas numa competencia (MM/AAAA): situacao do mes,
+    progresso (documentos marcados / cobraveis) e meses anteriores ainda em aberto.
+    As empresas vem ordenadas da mais urgente para a menos urgente."""
+    services = get_services()
+    periodo = _period(services, competencia)
+    viewmodel = PanoramaViewModel(services)
+    viewmodel.load(periodo["id"], somente_ativas)
+    linhas = []
+    for row in viewmodel.rows:
+        anteriores = row.get("previous_period_items") or []
+        linhas.append(
+            {
+                "codigo_empresa": row["codigo_empresa"],
+                "nome_empresa": row["nome_empresa"],
+                "situacao_do_mes": UI_SITUATION_LABELS.get(row["month_status_key"], row.get("situacao")),
+                "marcados": row["marcados"],
+                "total_cobravel": row["total_cobravel"],
+                "recebidos": row["recebidos"],
+                "pendentes": row["pendentes"],
+                "faltando": row["faltando"],
+                "meses_anteriores_em_aberto": [
+                    {"competencia": _short_period(item["periodo_label"]), "documentos": item["document_count"]}
+                    for item in anteriores
+                ],
+            }
+        )
+    return {"competencia": _short_period(format_period_label(periodo["ano"], periodo["mes"])), "empresas": linhas}
+
+
+@docflow_tool(read_only=True)
+def controle_empresa(codigo_empresa: int, competencia_inicial: str, competencia_final: str | None = None) -> dict[str, Any]:
+    """Grade de status de uma empresa: cada documento com o status de cada competencia no
+    intervalo (no maximo 12 meses). 'Nao cobrar' aparece nos meses fora da ocorrencia do tipo."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    inicio = _period(services, competencia_inicial)
+    fim = _period(services, competencia_final) if competencia_final else inicio
+    view = services.status_service.build_control_view(empresa["id"], inicio["id"], fim["id"])
+    competencias = [f'{p["mes"]:02d}/{p["ano"]}' for p in view["periodos"]]
+    documentos = []
+    for group in view["groups"]:
+        for documento in group["documentos"]:
+            documentos.append(
+                {
+                    "documento_id": documento["id"],
+                    "tipo": group["tipo_nome"],
+                    "nome_documento": documento["nome_documento"],
+                    "status": {
+                        competencia: (cell or {}).get("status") or None
+                        for competencia, cell in zip(competencias, documento["cells"])
+                    },
+                }
+            )
+    return {"codigo_empresa": codigo_empresa, "nome_empresa": empresa["nome_empresa"], "competencias": competencias,
+            "documentos": documentos}
+
+
+@docflow_tool(read_only=True)
+def relatorio_pendencias(
+    competencia_inicial: str,
+    competencia_final: str | None = None,
+    codigos_empresa: list[int] | None = None,
+) -> dict[str, Any]:
+    """Documentos pendentes (sem marcacao ou marcados como Pendente) no intervalo de
+    competencias, para todas as empresas ou so as informadas."""
+    services = get_services()
+    inicio = _period(services, competencia_inicial)
+    fim = _period(services, competencia_final) if competencia_final else inicio
+    return services.pending_report_service.list_pending_rows(
+        _company_ids(services, codigos_empresa), inicio["id"], fim["id"]
+    )
+
+
+@docflow_tool(read_only=True)
+def fila_cobranca(somente_ativas: bool = True) -> list[dict[str, Any]]:
+    """O que esta em aberto hoje, empresa por empresa: fase (Em cobranca / Em atraso), por
+    onde a empresa envia os documentos (canais, emails de origem, instrucoes de busca) e,
+    para cada documento e competencia, quantas vezes ja foi cobrado e quando."""
+    fila = get_services().cobranca_service.fila(somente_ativas=somente_ativas)
+    for item in fila:
+        item.pop("empresa_id", None)
+        item["ultima_cobranca_em"] = _local(item["ultima_cobranca_em"])
+        for documento in item["documentos"]:
+            documento.pop("periodo_id", None)
+            documento["ultima_cobranca_em"] = _local(documento["ultima_cobranca_em"])
+    return fila
+
+
+@docflow_tool(read_only=True)
+def mensagem_cobranca(codigo_empresa: int, canal: Literal["email", "whatsapp"] = "email") -> dict[str, Any]:
+    """Texto pronto de cobranca dos documentos em aberto de uma empresa (email com assunto
+    e corpo, ou mensagem de WhatsApp). So gera o texto - nada e enviado."""
+    services = get_services()
+    queue = services.collection_service.build_collection_queue(active_only=False)
+    item = next((i for i in queue["items"] if i["codigo_empresa"] == codigo_empresa), None)
+    if item is None:
+        raise ToolError(f"A empresa {codigo_empresa} nao tem documentos em aberto para cobrar.")
+    if canal == "whatsapp":
+        return {"mensagem": services.collection_service.build_whatsapp_message(item)}
+    return services.collection_service.build_email_draft(item)
+
+
+@docflow_tool(read_only=True)
+def configuracao_cobranca() -> dict[str, Any]:
+    """Regras de cobranca: dia de inicio, dia de encerramento e dias de tolerancia antes do
+    alerta de atraso; e as regras de acompanhamento (dias entre uma cobranca e a proxima,
+    maximo de recobrancas antes de passar para uma pessoa, e se documento com problema vai
+    direto para uma pessoa)."""
+    services = get_services().collection_service
+    return {**services.get_global_settings(), **services.get_followup_rules()}
+
+
+@docflow_tool(read_only=True)
+def listar_logs(limite: int = 100, codigo_empresa: int | None = None, competencia: str | None = None) -> list[dict[str, Any]]:
+    """Historico de alteracoes (auditoria). Somente administradores."""
+    services = get_services()
+    empresa_id = _company(services, codigo_empresa)["id"] if codigo_empresa is not None else None
+    ano = mes = None
+    if competencia:
+        parsed = parse_period_label(competencia)
+        if parsed is None:
+            raise ToolError(f'Competencia invalida: "{competencia}". Use MM/AAAA.')
+        ano, mes = parsed
+    logs = services.log_service.list_logs(limit=limite, empresa_id=empresa_id, periodo_ano=ano, periodo_mes=mes)
+    return [
+        {k: log.get(k) for k in ("data_hora", "username", "acao", "empresa_nome", "descricao")}
+        for log in logs
+    ]
+
+
+@docflow_tool(read_only=True)
+def listar_usuarios() -> list[dict[str, Any]]:
+    """Usuarios do DocFlow (sem senha)."""
+    return [
+        {
+            "usuario_id": u["id"],
+            "username": u["username"],
+            "tipo_usuario": u["tipo_usuario"],
+            "ativo": bool(u["ativa"]),
+        }
+        for u in get_services().user_service.list_users()
+    ]
+
+
+# Ficha, cobrancas e verificacoes ------------------------------------------------------
+
+
+class ItemCobranca(BaseModel):
+    documento_id: int = Field(description="id do documento (ver listar_documentos_empresa)")
+    competencia: str = Field(description="competencia cobrada, MM/AAAA")
+
+
+ResultadoVerificacao = Literal["recebido", "documento_com_problema", "nao_encontrado", "verificacao_falhou"]
+MotivoPessoa = Literal["cliente_respondeu", "documento_com_problema", "sem_canal", "baixa_falhou", "outro"]
+
+
+class ItemVerificacao(BaseModel):
+    documento_id: int = Field(description="id do documento verificado")
+    competencia: str = Field(description="competencia do documento, MM/AAAA")
+    resultado: ResultadoVerificacao = Field(
+        description=(
+            "recebido = achou o documento certo (o sistema da baixa); documento_com_problema = veio "
+            "algo errado; nao_encontrado = procurou e nao esta la; verificacao_falhou = nao "
+            "conseguiu olhar (nao gera cobranca). Na duvida, nunca use recebido."
+        )
+    )
+    motivo: str | None = Field(
+        default=None,
+        description=(
+            "documento_com_problema: documento_errado, competencia_errada, ilegivel_ou_incompleto, "
+            "empresa_errada ou outro. verificacao_falhou: o motivo (obrigatorio), ex: 'sem acesso ao Onvio'."
+        ),
+    )
+    onde: str | None = Field(
+        default=None, description="onde foi encontrado: remetente, data, assunto do email, pasta do Onvio..."
+    )
+    observacao: str | None = Field(default=None, description="qualquer detalhe relevante")
+    arquivo: str | None = Field(
+        default=None,
+        description=(
+            "caminho completo do arquivo, se voce baixou o documento (ex: anexo do email salvo na "
+            "pasta da empresa). Com isso as pessoas abrem o documento ou a pasta direto no DocFlow."
+        ),
+    )
+
+
+def _format_historico(evento: dict) -> dict[str, Any]:
+    base = {
+        "data": _local(evento["realizada_em"]),
+        "por": evento.get("username"),
+    }
+    if evento.get("tipo_evento") == "verificacao" or "fontes" in evento:
+        return {
+            **base,
+            "evento": "Verificacao",
+            "fontes": evento["fontes"],
+            "resumo": evento.get("resumo"),
+            "itens": evento["itens"],
+        }
+    return {
+        **base,
+        "evento": "Recobranca" if evento.get("recobranca") else "Cobranca",
+        "canal": evento["canal"],
+        "destinatario": evento.get("destinatario"),
+        "assunto": evento.get("assunto"),
+        "observacao": evento.get("observacao"),
+        "itens": evento["itens"],
+    }
+
+
+@docflow_tool(read_only=True)
+def ficha_empresa(codigo_empresa: int, limite_historico: int = 30) -> dict[str, Any]:
+    """Ficha completa da empresa: dados, como envia os documentos, cada documento com o
+    status do mes atual e quantas vezes foi cobrado/recobrado, o que esta em aberto e o
+    historico de cobrancas e verificacoes (mais recente primeiro)."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    ficha = services.cobranca_service.ficha_empresa(empresa["id"], limite_historico=limite_historico)
+    for documento in ficha["documentos"]:
+        documento["ultima_cobranca_em"] = _local(documento["ultima_cobranca_em"])
+    totais = ficha["totais"]
+    totais["ultima_cobranca_em"] = _local(totais["ultima_cobranca_em"])
+    totais["ultima_verificacao_em"] = _local(totais["ultima_verificacao_em"])
+    return {
+        "empresa": _public_company(ficha["empresa"]),
+        "competencia_atual": ficha["competencia_atual"],
+        "totais": totais,
+        "documentos": ficha["documentos"],
+        "em_aberto": ficha["em_aberto"],
+        "proximas_acoes": [
+            {k: v for k, v in doc.items() if k != "periodo_id"}
+            for doc in (ficha["proximas_acoes"] or {}).get("documentos", [])
+        ],
+        "historico": [_format_historico(evento) for evento in ficha["historico"]],
+    }
+
+
+@docflow_tool(read_only=True)
+def registro_documento(documento_id: int) -> dict[str, Any]:
+    """Registro proprio de um documento, competencia por competencia: status, quantas vezes
+    foi cobrado e recobrado (com data, canal e quem cobrou) e o resultado das verificacoes."""
+    registro = get_services().cobranca_service.registro_documento(documento_id)
+    for competencia in registro["competencias"]:
+        competencia["status_atualizado_em"] = _local(competencia["status_atualizado_em"])
+        for contato in competencia["contatos"]:
+            contato["realizada_em"] = _local(contato["realizada_em"])
+        for verificacao in competencia["verificacoes"]:
+            verificacao["realizada_em"] = _local(verificacao["realizada_em"])
+        for passo in competencia["caminho"]:
+            passo["em"] = _local(passo["em"])
+    return registro
+
+
+@docflow_tool(read_only=True)
+def historico_cobrancas(codigo_empresa: int | None = None, limite: int = 50) -> list[dict[str, Any]]:
+    """Cobrancas registradas (mais recentes primeiro), de todas as empresas ou de uma."""
+    services = get_services()
+    empresa_id = _company(services, codigo_empresa)["id"] if codigo_empresa is not None else None
+    cobrancas = services.cobranca_service.listar_cobrancas(limite, empresa_id=empresa_id)
+    return [
+        {"empresa": f'{c["codigo_empresa"]} - {c["nome_empresa"]}', **_format_historico(c)} for c in cobrancas
+    ]
+
+
+@docflow_tool(read_only=True)
+def historico_verificacoes(codigo_empresa: int | None = None, limite: int = 50) -> list[dict[str, Any]]:
+    """Relatorios de verificacao registrados (mais recentes primeiro): onde se procurou e o
+    que foi ou nao encontrado."""
+    services = get_services()
+    empresa_id = _company(services, codigo_empresa)["id"] if codigo_empresa is not None else None
+    verificacoes = services.cobranca_service.listar_verificacoes(limite, empresa_id=empresa_id)
+    return [
+        {"empresa": f'{v["codigo_empresa"]} - {v["nome_empresa"]}', **_format_historico(v)} for v in verificacoes
+    ]
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_recebimento_empresa(
+    codigo_empresa: int,
+    canais_recebimento: list[str] | None = None,
+    emails_origem_documentos: list[str] | None = None,
+    instrucoes_busca: str | None = None,
+) -> dict[str, Any]:
+    """Define como a empresa envia os documentos: canais (ex: ["Email", "Onvio"]), emails de
+    onde os documentos chegam e instrucoes livres de onde/como procura-los (ex: 'assunto
+    Extrato; Onvio > pasta Bancos'). Campos omitidos ficam como estao; lista vazia ou texto
+    vazio limpam o campo."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    services.empresa_service.set_recebimento(
+        empresa["id"],
+        canais_recebimento if canais_recebimento is not None else empresa.get("canais_recebimento"),
+        emails_origem_documentos if emails_origem_documentos is not None else empresa.get("emails_origem_documentos"),
+        instrucoes_busca if instrucoes_busca is not None else empresa.get("instrucoes_busca"),
+    )
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
+
+
+@docflow_tool(read_only=False)
+def registrar_cobranca(
+    codigo_empresa: int,
+    canal: str,
+    itens: list[ItemCobranca] | None = None,
+    destinatario: str | None = None,
+    assunto: str | None = None,
+    mensagem: str | None = None,
+    observacao: str | None = None,
+) -> dict[str, Any]:
+    """Registra uma cobranca JA FEITA (o envio em si e feito por fora - email, WhatsApp,
+    Onvio). Sem 'itens', registra todos os documentos em aberto da empresa. O sistema
+    numera cada documento/competencia: 1a vez = cobranca, seguintes = recobranca."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    pares = None
+    if itens:
+        pares = [(item.documento_id, _period(services, item.competencia)["id"]) for item in itens]
+    return services.cobranca_service.registrar_cobranca(
+        empresa["id"],
+        canal,
+        pares,
+        destinatario=destinatario,
+        assunto=assunto,
+        mensagem=mensagem,
+        observacao=observacao,
+        rodada_id=_rodada_atual,
+    )
+
+
+@docflow_tool(read_only=False)
+def registrar_verificacao(
+    codigo_empresa: int,
+    fontes: list[str],
+    itens: list[ItemVerificacao],
+    resumo: str | None = None,
+    marcar_recebidos: bool = True,
+) -> dict[str, Any]:
+    """Registra o relatorio de uma verificacao feita nos canais da empresa (fontes, ex:
+    ["Email", "Onvio"]): para cada documento/competencia, o resultado e onde foi visto. Os
+    recebidos ganham baixa (status Recebido), a menos que marcar_recebidos=false; se a
+    baixa falhar, o documento vai para uma pessoa. A resposta diz, por item, se a baixa
+    foi feita."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    itens_service = [
+        {
+            "documento_id": item.documento_id,
+            "periodo_id": _period(services, item.competencia)["id"],
+            "resultado": item.resultado,
+            "motivo": item.motivo,
+            "onde": item.onde,
+            "observacao": item.observacao,
+            "arquivo": item.arquivo,
+        }
+        for item in itens
+    ]
+    return services.cobranca_service.registrar_verificacao(
+        empresa["id"],
+        fontes,
+        itens_service,
+        resumo=resumo,
+        marcar_recebidos=marcar_recebidos,
+        rodada_id=_rodada_atual,
+    )
+
+
+# Rodadas e acompanhamento --------------------------------------------------------------
+
+
+def _pares(services: ApplicationServices, empresa: dict, itens: list[ItemCobranca] | None) -> list[tuple[int, int]]:
+    if itens:
+        return [(item.documento_id, _period(services, item.competencia)["id"]) for item in itens]
+    pares = services.cobranca_service._itens_em_aberto(empresa["id"])
+    if not pares:
+        raise ToolError(f'A empresa {empresa["codigo_empresa"]} nao tem documentos em aberto.')
+    return pares
+
+
+def _public_rodada(rodada: dict) -> dict[str, Any]:
+    return {
+        "rodada_id": rodada["id"],
+        "status": rodada["status_label"],
+        "iniciada_em": _local(rodada["iniciada_em"]),
+        "finalizada_em": _local(rodada["finalizada_em"]),
+        "resumo": rodada["resumo"],
+        "empresas": rodada["empresas"],
+        "verificacoes": rodada["verificacoes"],
+        "cobrancas": rodada["cobrancas"],
+        "falhas": rodada["falhas"],
+        "avisos": rodada["avisos"],
+        "ocorrencias": [
+            {
+                "tipo": o["tipo"],
+                "mensagem": o["mensagem"],
+                "empresa": f'{o["codigo_empresa"]} - {o["nome_empresa"]}' if o["codigo_empresa"] else None,
+                "em": _local(o["criado_em"]),
+            }
+            for o in rodada.get("ocorrencias", [])
+        ],
+    }
+
+
+def _ensure_rodada(services: ApplicationServices) -> int:
+    global _rodada_atual
+    with _rodada_lock:
+        if _rodada_atual is not None:
+            rodada = services.rodada_service.obter(_rodada_atual)
+            if rodada["status"] == "em_andamento":
+                return _rodada_atual
+        _rodada_atual = services.rodada_service.iniciar("claude")["id"]
+        return _rodada_atual
+
+
+@docflow_tool(read_only=False)
+def iniciar_rodada() -> dict[str, Any]:
+    """Abre uma rodada de cobranca (uma passada pelas empresas). Verificacoes, cobrancas e
+    ocorrencias registradas a seguir ficam ligadas a ela, e as pessoas veem no DocFlow o que
+    cada rodada fez e o que deu errado. Se ja houver uma rodada aberta nesta conexao, ela
+    continua."""
+    services = get_services()
+    return _public_rodada(services.rodada_service.obter(_ensure_rodada(services)))
+
+
+@docflow_tool(read_only=False)
+def registrar_ocorrencia(
+    tipo: Literal["falha", "aviso", "info"], mensagem: str, codigo_empresa: int | None = None
+) -> dict[str, Any]:
+    """Anota na rodada algo que aconteceu e nao e resultado de um documento: falha (algo
+    impediu o trabalho - email fora do ar, sem acesso ao Onvio, erro de ferramenta), aviso
+    (algo estranho que uma pessoa deve olhar - empresa sem email de contato, cliente bravo)
+    ou info. Abre uma rodada se nao houver."""
+    services = get_services()
+    empresa_id = _company(services, codigo_empresa)["id"] if codigo_empresa is not None else None
+    return services.rodada_service.registrar_ocorrencia(_ensure_rodada(services), tipo, mensagem, empresa_id)
+
+
+@docflow_tool(read_only=False)
+def finalizar_rodada(resumo: str | None = None) -> dict[str, Any]:
+    """Fecha a rodada aberta com um resumo curto do que foi feito. Fica 'Concluida com
+    falhas' se alguma falha foi registrada."""
+    global _rodada_atual
+    services = get_services()
+    with _rodada_lock:
+        if _rodada_atual is None:
+            raise ToolError("Nao ha rodada aberta nesta conexao.")
+        rodada = services.rodada_service.finalizar(_rodada_atual, resumo)
+        _rodada_atual = None
+    return _public_rodada(rodada)
+
+
+@docflow_tool(read_only=True)
+def historico_rodadas(limite: int = 10) -> list[dict[str, Any]]:
+    """Rodadas anteriores (mais recente primeiro) com o que cada uma fez e o que deu errado.
+    Uma rodada que nunca foi finalizada aparece como Interrompida."""
+    return [_public_rodada(r) for r in get_services().rodada_service.listar(limite)]
+
+
+@docflow_tool(read_only=True)
+def o_que_fazer_agora(codigo_empresa: int | None = None, incluir_aguardando: bool = False) -> dict[str, Any]:
+    """Plano de acao calculado pelas regras do sistema. Para cada documento em aberto diz a
+    acao (verificar, cobrar, recobrar, aguardar, com_pessoa), o porque, a situacao atual e
+    quantas vezes ja foi cobrado. Empresas vem na ordem de prioridade, com os canais, emails
+    de origem e instrucoes de busca. Por padrao omite documentos em 'aguardar' e
+    'com_pessoa' (nao ha nada para voce fazer neles); o resumo conta todos."""
+    services = get_services()
+    empresa_id = _company(services, codigo_empresa)["id"] if codigo_empresa is not None else None
+    plano = services.cobranca_service.proximas_acoes(empresa_id)
+    empresas = []
+    for empresa in plano["empresas"]:
+        documentos = []
+        for doc in empresa["documentos"]:
+            if not incluir_aguardando and doc["acao"] in ("aguardar", "com_pessoa"):
+                continue
+            doc.pop("periodo_id", None)
+            doc["ultima_cobranca_em"] = _local(doc["ultima_cobranca_em"])
+            doc["situacao_atualizada_em"] = _local(doc["situacao_atualizada_em"])
+            documentos.append(doc)
+        if not documentos:
+            continue
+        empresa.pop("empresa_id", None)
+        empresa["documentos"] = documentos
+        empresas.append(empresa)
+    return {
+        "data": plano["data"],
+        "regras": plano["regras"],
+        "resumo": plano["resumo"],
+        "rodada_aberta": _rodada_atual,
+        "empresas": empresas,
+    }
+
+
+@docflow_tool(read_only=False)
+def registrar_promessa_envio(
+    codigo_empresa: int,
+    aguardar_ate: str,
+    itens: list[ItemCobranca] | None = None,
+    detalhe: str | None = None,
+) -> dict[str, Any]:
+    """O cliente prometeu enviar: os documentos ficam em 'aguardar' ate a data (AAAA-MM-DD)
+    e depois voltam a ser verificados. Sem 'itens', vale para tudo que esta em aberto na
+    empresa. Anote em 'detalhe' o que o cliente disse e por onde."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    return services.cobranca_service.registrar_promessa(
+        _pares(services, empresa, itens), aguardar_ate, detalhe, rodada_id=_rodada_atual
+    )
+
+
+@docflow_tool(read_only=False)
+def encaminhar_para_pessoa(
+    codigo_empresa: int,
+    motivo: MotivoPessoa,
+    detalhe: str,
+    itens: list[ItemCobranca] | None = None,
+) -> dict[str, Any]:
+    """Tira os documentos do fluxo automatico e coloca na tela 'Precisa de atencao' do
+    DocFlow, para uma pessoa decidir. Use quando estiver em duvida, quando o cliente
+    responder algo que precisa de decisao, ou quando nao houver como cobrar. 'detalhe'
+    explica o caso para a pessoa. Sem 'itens', vale para tudo em aberto na empresa."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    return services.cobranca_service.encaminhar_para_pessoa(
+        _pares(services, empresa, itens), motivo, detalhe, rodada_id=_rodada_atual
+    )
+
+
+# Empresas ----------------------------------------------------------------------------
+
+
+@docflow_tool(read_only=False)
+def cadastrar_empresa(
+    codigo_empresa: int,
+    nome_empresa: str,
+    email_contato: str | None = None,
+    nome_contato: str | None = None,
+    observacao: str | None = None,
+    cnpj: str | None = None,
+) -> dict[str, Any]:
+    """Cadastra uma empresa-cliente. Observacao tem no maximo 255 caracteres."""
+    services = get_services()
+    empresa_id = services.empresa_service.create_empresa(
+        codigo_empresa, nome_empresa, email_contato, nome_contato, observacao, cnpj
+    )
+    return _public_company(services.empresa_service.get_empresa(empresa_id))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def atualizar_empresa(
+    codigo_empresa: int,
+    nome_empresa: str | None = None,
+    email_contato: str | None = None,
+    nome_contato: str | None = None,
+    observacao: str | None = None,
+    cnpj: str | None = None,
+) -> dict[str, Any]:
+    """Atualiza dados cadastrais. So os campos informados mudam; para apagar um campo
+    opcional, informe texto vazio ("")."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+
+    def pick(new: str | None, field: str):
+        return empresa.get(field) if new is None else new
+
+    services.empresa_service.update_empresa(
+        empresa["id"],
+        pick(nome_empresa, "nome_empresa"),
+        pick(email_contato, "email_contato"),
+        pick(nome_contato, "nome_contato"),
+        pick(observacao, "observacao"),
+        pick(cnpj, "cnpj"),
+    )
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_empresa_ativa(codigo_empresa: int, ativa: bool) -> dict[str, Any]:
+    """Ativa ou inativa uma empresa (inativas saem do Panorama e da cobranca por padrao)."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    services.empresa_service.set_empresa_ativa(empresa["id"], ativa)
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_pasta_empresa(codigo_empresa: int, pasta: str | None) -> dict[str, Any]:
+    """Define (ou limpa, com null) a pasta no disco onde ficam os documentos da empresa."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    services.empresa_service.set_empresa_directory(empresa["id"], pasta)
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_mala_direta_empresa(codigo_empresa: int, nao_contatar: bool) -> dict[str, Any]:
+    """Marca se a empresa deve ficar fora da mala direta por email."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    services.empresa_service.set_nao_contatar_mala_direta(empresa["id"], nao_contatar)
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_cobranca_empresa(
+    codigo_empresa: int,
+    inicio_dia: int | None = None,
+    fim_dia: int | None = None,
+    alerta_apos_dias: int | None = None,
+) -> dict[str, Any]:
+    """Regra de cobranca propria da empresa. Campos nulos usam a regra global."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    services.collection_service.update_company_settings(empresa["id"], inicio_dia, fim_dia, alerta_apos_dias)
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_cobranca_global(inicio_dia: int, fim_dia: int, alerta_apos_dias: int) -> dict[str, Any]:
+    """Regra global de cobranca, usada pelas empresas sem regra propria."""
+    return get_services().collection_service.update_global_settings(inicio_dia, fim_dia, alerta_apos_dias)
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_regras_acompanhamento(
+    dias_entre_cobrancas: int, max_recobrancas: int, problema_vai_para_pessoa: bool
+) -> dict[str, Any]:
+    """Regras do acompanhamento usadas por 'o_que_fazer_agora': quantos dias esperar depois
+    de cobrar antes de verificar/recobrar, quantas recobrancas antes de passar o caso para
+    uma pessoa, e se documento com problema vai direto para uma pessoa."""
+    return get_services().collection_service.update_followup_rules(
+        dias_entre_cobrancas, max_recobrancas, problema_vai_para_pessoa
+    )
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_empresa(codigo_empresa: int, confirmar: bool = False) -> str:
+    """Exclui a empresa com todos os seus documentos e status. Exige confirmar=true."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    _require_confirmation(confirmar, f'Excluir a empresa "{empresa["nome_empresa"]}" e todos os seus documentos')
+    services.empresa_service.delete_empresa(empresa["id"])
+    return f'Empresa {codigo_empresa} - {empresa["nome_empresa"]} excluida.'
+
+
+# Documentos --------------------------------------------------------------------------
+
+
+@docflow_tool(read_only=False)
+def cadastrar_documento(
+    codigo_empresa: int,
+    tipo: str,
+    nome_documento: str,
+    meios_recebimento: list[str] | None = None,
+    observacao: str | None = None,
+) -> dict[str, Any]:
+    """Cadastra um documento que a empresa precisa entregar. 'tipo' e o nome de um tipo ja
+    cadastrado (ver listar_tipos_documento). O nome e curto e nao repete o tipo (extrato de
+    conta corrente: so o banco); numero da conta, produto, contrato vao em 'observacao'."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    tipo_row = _tipo_by_name(services, tipo)
+    documento_id = services.documento_service.create_documento(
+        empresa["id"], tipo_row["id"], nome_documento, meios_recebimento, observacao=observacao
+    )
+    return _public_document(services.documento_service.get_documento(documento_id))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def atualizar_documento(
+    documento_id: int,
+    tipo: str | None = None,
+    nome_documento: str | None = None,
+    meios_recebimento: list[str] | None = None,
+    observacao: str | None = None,
+) -> dict[str, Any]:
+    """Altera tipo, nome, meios de recebimento e/ou observacao de um documento. So os campos
+    informados mudam (observacao vazia "" limpa)."""
+    services = get_services()
+    documento = services.documento_service.get_documento(documento_id)
+    tipo_id = _tipo_by_name(services, tipo)["id"] if tipo else documento["tipo_documento_id"]
+    services.documento_service.update_documento(
+        documento_id,
+        tipo_id,
+        nome_documento if nome_documento is not None else documento["nome_documento"],
+        meios_recebimento if meios_recebimento is not None else documento.get("meios_recebimento"),
+        **({"observacao": observacao} if observacao is not None else {}),
+    )
+    return _public_document(services.documento_service.get_documento(documento_id))
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_documento(documento_id: int, confirmar: bool = False) -> str:
+    """Exclui um documento e todo o seu historico de status. Exige confirmar=true."""
+    services = get_services()
+    documento = services.documento_service.get_documento(documento_id)
+    _require_confirmation(confirmar, f'Excluir o documento "{documento["nome_documento"]}" e seu historico')
+    services.documento_service.delete_documento(documento_id)
+    return f'Documento {documento_id} - {documento["nome_documento"]} excluido.'
+
+
+# Status ------------------------------------------------------------------------------
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def marcar_status(documento_ids: list[int], competencia: str, status: StatusValue) -> dict[str, Any]:
+    """Marca o status de um ou mais documentos numa competencia (MM/AAAA). Use "" para
+    limpar a marcacao. 'Encerrado' faz o documento parar de ser cobrado dali em diante."""
+    services = get_services()
+    periodo = _period(services, competencia)
+    valor = status or None
+    if valor not in STATUS_OPTIONS and valor is not None:
+        raise ToolError(f"Status invalido: {status}.")
+    if len(documento_ids) == 1:
+        services.status_service.update_status(documento_ids[0], periodo["id"], valor)
+        return {"atualizados": 1, "competencia": competencia, "status": valor}
+    resultado = services.status_service.update_status_batch(documento_ids, periodo["id"], valor)
+    return {"competencia": competencia, "status": valor, **resultado}
+
+
+# Tipos, meios e periodos ---------------------------------------------------------------
+
+
+@docflow_tool(read_only=False)
+def cadastrar_tipo_documento(nome_tipo: str, regra_ocorrencia: OccurrenceRule = "mensal") -> dict[str, Any]:
+    """Cadastra um tipo de documento. regra_ocorrencia: mensal, trimestral (jan/abr/jul/out)
+    ou anual_janeiro."""
+    services = get_services()
+    tipo_id = services.tipo_service.create_tipo(nome_tipo, regra_ocorrencia)
+    tipo = services.tipo_service.get_tipo(tipo_id)
+    return {"tipo_id": tipo["id"], "nome_tipo": tipo["nome_tipo"], "regra_ocorrencia": tipo["regra_ocorrencia"]}
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def atualizar_tipo_documento(tipo_id: int, nome_tipo: str, regra_ocorrencia: OccurrenceRule) -> dict[str, Any]:
+    """Renomeia um tipo e/ou troca a regra de ocorrencia."""
+    services = get_services()
+    services.tipo_service.update_tipo(tipo_id, nome_tipo, regra_ocorrencia)
+    tipo = services.tipo_service.get_tipo(tipo_id)
+    return {"tipo_id": tipo["id"], "nome_tipo": tipo["nome_tipo"], "regra_ocorrencia": tipo["regra_ocorrencia"]}
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_tipo_documento(tipo_id: int, confirmar: bool = False) -> str:
+    """Exclui um tipo que nao esteja em uso por nenhum documento. Exige confirmar=true."""
+    services = get_services()
+    tipo = services.tipo_service.get_tipo(tipo_id)
+    _require_confirmation(confirmar, f'Excluir o tipo "{tipo["nome_tipo"]}"')
+    services.tipo_service.delete_tipo(tipo_id)
+    return f'Tipo "{tipo["nome_tipo"]}" excluido.'
+
+
+@docflow_tool(read_only=False)
+def cadastrar_meio_recebimento(nome_meio: str) -> dict[str, Any]:
+    """Cadastra um meio de recebimento (ex: Email, Onvio, Portal)."""
+    services = get_services()
+    method_id = services.delivery_method_service.create_method(nome_meio)
+    return {"meio_id": method_id, "nome_meio": services.delivery_method_service.get_method(method_id)["nome_meio"]}
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def renomear_meio_recebimento(meio_id: int, nome_meio: str) -> str:
+    """Renomeia um meio de recebimento (os documentos que usam o nome antigo sao atualizados)."""
+    services = get_services()
+    afetados = services.delivery_method_service.update_method(meio_id, nome_meio)
+    return f'Meio renomeado para "{nome_meio}" ({afetados} documento(s) atualizado(s)).'
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_meio_recebimento(meio_id: int, confirmar: bool = False) -> str:
+    """Exclui um meio de recebimento e o remove dos documentos que o usam. Exige confirmar=true."""
+    services = get_services()
+    meio = services.delivery_method_service.get_method(meio_id)
+    _require_confirmation(confirmar, f'Excluir o meio de recebimento "{meio["nome_meio"]}"')
+    afetados = services.delivery_method_service.delete_method(meio_id)
+    return f'Meio "{meio["nome_meio"]}" excluido ({afetados} documento(s) atualizado(s)).'
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def gerar_periodos_ano(ano: int) -> dict[str, Any]:
+    """Gera as 12 competencias de um ano (so cria as que faltam)."""
+    return get_services().periodo_service.generate_year(ano)
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_periodos_ano(ano: int, confirmar: bool = False) -> dict[str, Any]:
+    """Exclui todas as competencias de um ano e os status marcados nelas. Exige confirmar=true."""
+    _require_confirmation(confirmar, f"Excluir o ano {ano} e todos os status marcados nele")
+    return get_services().periodo_service.delete_year(ano)
+
+
+# Usuarios ----------------------------------------------------------------------------
+
+
+@docflow_tool(read_only=False)
+def cadastrar_usuario(
+    username: str, senha: str, tipo_usuario: Literal["admin", "comum"] = "comum", ativo: bool = True
+) -> dict[str, Any]:
+    """Cadastra um usuario do DocFlow. Somente administradores."""
+    services = get_services()
+    user_id = services.user_service.create_user(username, senha, tipo_usuario, ativo)
+    user = services.user_service.get_user(user_id)
+    return {"usuario_id": user["id"], "username": user["username"], "tipo_usuario": user["tipo_usuario"]}
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def atualizar_usuario(
+    usuario_id: int,
+    username: str | None = None,
+    tipo_usuario: Literal["admin", "comum"] | None = None,
+    ativo: bool | None = None,
+    nova_senha: str | None = None,
+) -> dict[str, Any]:
+    """Altera nome, perfil, situacao ou senha de um usuario. Somente administradores."""
+    services = get_services()
+    user = services.user_service.get_user(usuario_id)
+    services.user_service.update_user(
+        usuario_id,
+        username or user["username"],
+        tipo_usuario or user["tipo_usuario"],
+        bool(user["ativa"]) if ativo is None else ativo,
+        password=nova_senha,
+    )
+    user = services.user_service.get_user(usuario_id)
+    return {"usuario_id": user["id"], "username": user["username"], "tipo_usuario": user["tipo_usuario"],
+            "ativo": bool(user["ativa"])}
+
+
+# Arquivos: relatorios, planilhas, backup -----------------------------------------------
+
+
+@docflow_tool(read_only=False)
+def exportar_relatorio_pendencias(
+    caminho_arquivo: str,
+    competencia_inicial: str,
+    competencia_final: str | None = None,
+    formato: Literal["xlsx", "pdf"] = "xlsx",
+    codigos_empresa: list[int] | None = None,
+) -> dict[str, Any]:
+    """Gera o relatorio de pendencias em Excel ou PDF no caminho informado (no computador
+    onde o servidor MCP roda)."""
+    services = get_services()
+    inicio = _period(services, competencia_inicial)
+    fim = _period(services, competencia_final) if competencia_final else inicio
+    ids = _company_ids(services, codigos_empresa)
+    if formato == "pdf":
+        return services.pending_report_service.export_pending_report_pdf(caminho_arquivo, ids, inicio["id"], fim["id"])
+    return services.pending_report_service.export_pending_report(caminho_arquivo, ids, inicio["id"], fim["id"])
+
+
+@docflow_tool(read_only=False)
+def importar_planilha(
+    caminho_arquivo: str,
+    conteudo: Literal["empresas", "documentos", "cadastro_completo"],
+    codigo_empresa: int | None = None,
+) -> dict[str, Any]:
+    """Importa uma planilha .xlsx no layout do DocFlow: 'empresas', 'documentos' (de uma
+    empresa - informe codigo_empresa) ou 'cadastro_completo' (empresas + documentos + status)."""
+    services = get_services()
+    if conteudo == "empresas":
+        return services.import_service.import_empresas(caminho_arquivo)
+    if conteudo == "documentos":
+        if codigo_empresa is None:
+            raise ToolError("Informe codigo_empresa para importar documentos.")
+        return services.import_service.import_documentos(caminho_arquivo, _company(services, codigo_empresa)["id"])
+    return services.import_service.import_cadastros_completos(caminho_arquivo)
+
+
+@docflow_tool(read_only=False)
+def criar_backup(caminho_arquivo: str, senha: str | None = None) -> dict[str, Any]:
+    """Gera um backup completo do banco (.dfbak), opcionalmente criptografado com senha."""
+    return get_services().database_maintenance_service.create_backup(caminho_arquivo, password=senha)
+
+
+@docflow_tool(read_only=False, destructive=True)
+def restaurar_backup(caminho_arquivo: str, senha: str | None = None, confirmar: bool = False) -> dict[str, Any]:
+    """Substitui TODOS os dados atuais pelos do backup (.dfbak, ou .db do DocFlow antigo).
+    Exige confirmar=true."""
+    _require_confirmation(confirmar, "Restaurar o backup apaga todos os dados atuais e")
+    return get_services().database_maintenance_service.restore_backup(caminho_arquivo, password=senha)
+
+
+@docflow_tool(read_only=False, destructive=True)
+def limpar_logs_antigos(dias_de_retencao: int, confirmar: bool = False) -> str:
+    """Apaga os logs de auditoria mais antigos que o numero de dias informado. Somente
+    administradores. Exige confirmar=true."""
+    services = get_services()
+    _require_confirmation(confirmar, f"Apagar os logs com mais de {dias_de_retencao} dias")
+    removidos = services.log_service.purge_logs_older_than(dias_de_retencao)
+    return f"{removidos} log(s) removido(s)."
+
+
+def main() -> None:
+    mcp.run("stdio")
+

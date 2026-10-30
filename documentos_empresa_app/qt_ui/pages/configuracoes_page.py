@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox,
-    QFileDialog,
+    QCheckBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -13,16 +10,15 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QScrollArea,
+    QSpinBox,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from documentos_empresa_app.app_context import refresh_agent_runtime
 from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSelectDialog
 from documentos_empresa_app.qt_ui.widgets.common import PageHeader, make_button
-from documentos_empresa_app.services.agent_config_service import AVAILABLE_MODELS, PROVIDER_LABELS
 from documentos_empresa_app.utils.common import ValidationError
 
 SECTION_TITLE_STYLE = "font-weight: 600; font-size: 10.5pt;"
@@ -40,22 +36,22 @@ class ConfiguracoesPage(QWidget):
 
         layout.addWidget(
             PageHeader(
-                "Configuracoes",
-                "Ajuste sua pasta de entrada pessoal e, se voce for administrador, os parametros do "
-                "agente de IA e da mala direta por email.",
+                "Configurações",
+                "Regras que valem para o escritório inteiro: prazos de cobrança, o que fazer depois de "
+                "cobrar e mala direta.",
             )
         )
 
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
 
-        self.tabs.addTab(self._build_inbox_tab(), "Minha pasta de entrada")
-        if self.services.session_service.is_admin():
-            self.tabs.addTab(self._build_agent_tab(), "Agente de IA")
-            self.tabs.addTab(self._build_mailing_tab(), "Mala direta por email")
+        self.tabs.addTab(self._build_collection_rule_tab(), "Prazos de cobrança")
+        self.tabs.addTab(self._build_followup_tab(), "Depois de cobrar")
+        self.tabs.addTab(self._build_mailing_tab(), "Mala direta por email")
 
     def refresh_data(self) -> None:
-        self.inbox_edit.setText(self.services.user_service.get_own_inbox_folder() or "")
+        self._load_collection_rule()
+        self._load_followup_rules()
 
     # Utilitarios de layout ------------------------------------------------
 
@@ -81,174 +77,175 @@ class ConfiguracoesPage(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         return form
 
-    # Aba pessoal - pasta de entrada ---------------------------------------
+    # Aba admin - prazos de cobranca ------------------------------------------
 
-    def _build_inbox_tab(self) -> QWidget:
+    def _build_collection_rule_tab(self) -> QWidget:
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(10)
+        layout.setSpacing(14)
 
         hint = QLabel(
-            "Pasta onde o agente procura novos documentos para voce, na tela de Revisao de "
-            "Documentos. Cada usuario pode apontar para uma pasta diferente."
+            "Define, para cada mês, quando os documentos começam a ser cobrados e quando passam a "
+            "contar como atrasados. Vale para todas as empresas que não tenham uma regra própria "
+            "(a regra própria fica no cadastro da empresa)."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
-
-        row = QHBoxLayout()
-        current_folder = self.services.user_service.get_own_inbox_folder()
-        self.inbox_edit = QLineEdit(current_folder or "")
-        self.inbox_edit.setReadOnly(True)
-        row.addWidget(self.inbox_edit, 1)
-        choose_button = make_button("Escolher pasta...")
-        choose_button.clicked.connect(self.choose_inbox_folder)
-        row.addWidget(choose_button)
-        layout.addLayout(row)
-        layout.addStretch(1)
-
-        return self._wrap_in_scroll_area(content)
-
-    def choose_inbox_folder(self) -> None:
-        current = self.inbox_edit.text().strip()
-        initial = current if current and Path(current).is_dir() else str(Path.home())
-        selected = QFileDialog.getExistingDirectory(self, "Escolha a pasta de entrada dos documentos", initial)
-        if not selected:
-            return
-        self.services.user_service.set_own_inbox_folder(selected)
-        self.inbox_edit.setText(selected)
-
-    # Aba admin - agente de IA ----------------------------------------------
-
-    def _build_agent_tab(self) -> QWidget:
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        hint = QLabel(
-            "Escolha o provedor de IA usado pelo agente organizador de documentos e pelo chat, "
-            "defina o modelo e o limiar de confianca para a classificacao automatica."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        privacy_notice = QLabel(
-            "Aviso de privacidade (LGPD): ao ativar o agente de IA, o texto extraido dos documentos "
-            "recebidos (e as perguntas feitas no chat) e enviado para os servidores do provedor de IA "
-            "escolhido (Anthropic ou OpenAI), que podem processar os dados fora do Brasil. Numeros de "
-            "CPF encontrados no texto sao removidos automaticamente antes do envio, mas outros dados "
-            "do documento (nome da empresa, valores, datas) sao transmitidos normalmente."
-        )
-        privacy_notice.setObjectName("Muted")
-        privacy_notice.setWordWrap(True)
-        layout.addWidget(privacy_notice)
-
-        settings = self.services.agent_config_service.get_settings()
 
         form = self._new_form()
-
-        self.provider_combo = QComboBox()
-        for provider_key, provider_label in PROVIDER_LABELS.items():
-            self.provider_combo.addItem(provider_label, provider_key)
-        self.provider_combo.setCurrentIndex(self.provider_combo.findData(settings.provider))
-        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        form.addRow("Provedor de IA", self.provider_combo)
-
-        api_key_row = QHBoxLayout()
-        self.api_key_edit = QLineEdit(settings.api_key or "")
-        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        api_key_row.addWidget(self.api_key_edit, 1)
-        self.test_connection_button = make_button("Testar conexao")
-        self.test_connection_button.clicked.connect(self.test_connection)
-        api_key_row.addWidget(self.test_connection_button)
-        form.addRow("API key", api_key_row)
-
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        form.addRow("Modelo usado", self.model_combo)
-
-        self.threshold_edit = QLineEdit(f"{settings.confidence_threshold:.2f}")
-        form.addRow("Limiar de confianca (0 a 1)", self.threshold_edit)
-
+        self.rule_start_spin = QSpinBox()
+        self.rule_start_spin.setRange(1, 31)
+        self.rule_start_spin.setPrefix("dia ")
+        self.rule_start_spin.setMaximumWidth(120)
+        form.addRow("Começar a cobrar no", self.rule_start_spin)
+        self.rule_end_spin = QSpinBox()
+        self.rule_end_spin.setRange(1, 31)
+        self.rule_end_spin.setPrefix("dia ")
+        self.rule_end_spin.setMaximumWidth(120)
+        form.addRow("Prazo final de entrega no", self.rule_end_spin)
+        self.rule_alert_spin = QSpinBox()
+        self.rule_alert_spin.setRange(0, 60)
+        self.rule_alert_spin.setSuffix(" dia(s) de atraso")
+        self.rule_alert_spin.setMaximumWidth(220)
+        form.addRow("Priorizar depois de", self.rule_alert_spin)
         layout.addLayout(form)
 
-        self._populate_model_combo(settings.provider, settings.model)
-
-        prompt_label = QLabel(
-            "System prompt customizado (opcional, complementa o prompt padrao com prioridade e vale "
-            "para o provedor escolhido)"
-        )
-        prompt_label.setWordWrap(True)
-        layout.addWidget(prompt_label)
-        self.custom_prompt_edit = QTextEdit()
-        self.custom_prompt_edit.setPlainText(settings.custom_instructions or "")
-        self.custom_prompt_edit.setMinimumHeight(120)
-        layout.addWidget(self.custom_prompt_edit, 1)
+        self.rule_example = QLabel()
+        self.rule_example.setObjectName("Muted")
+        self.rule_example.setWordWrap(True)
+        layout.addWidget(self.rule_example)
+        for spin in (self.rule_start_spin, self.rule_end_spin, self.rule_alert_spin):
+            spin.valueChanged.connect(self._update_rule_example)
 
         actions = QHBoxLayout()
-        save_button = make_button("Salvar configuracoes do agente", "primary")
-        save_button.clicked.connect(self.save_agent_settings)
+        save_button = make_button("Salvar prazos", "primary")
+        save_button.clicked.connect(self._save_collection_rule)
         actions.addWidget(save_button)
         actions.addStretch(1)
         layout.addLayout(actions)
+        layout.addStretch(1)
 
+        self._load_collection_rule()
         return self._wrap_in_scroll_area(content)
 
-    def _populate_model_combo(self, provider: str, current_model: str) -> None:
-        self.model_combo.blockSignals(True)
-        self.model_combo.clear()
-        self.model_combo.addItems(AVAILABLE_MODELS[provider])
-        if current_model not in AVAILABLE_MODELS[provider]:
-            self.model_combo.addItem(current_model)
-        self.model_combo.setCurrentText(current_model)
-        self.model_combo.blockSignals(False)
+    def _load_collection_rule(self) -> None:
+        settings = self.services.collection_service.get_global_settings()
+        self.rule_start_spin.setValue(int(settings["inicio_cobranca_dia"]))
+        self.rule_end_spin.setValue(int(settings["encerramento_cobranca_dia"]))
+        self.rule_alert_spin.setValue(int(settings["alerta_apos_dias"]))
+        self._update_rule_example()
 
-    def _selected_provider(self) -> str:
-        return self.provider_combo.currentData()
-
-    def _on_provider_changed(self) -> None:
-        provider = self._selected_provider()
-        settings = self.services.agent_config_service.get_settings(provider)
-        self.api_key_edit.setText(settings.api_key or "")
-        self._populate_model_combo(provider, settings.model)
-
-    def test_connection(self) -> None:
-        provider = self._selected_provider()
-        try:
-            self.services.agent_config_service.test_connection(
-                provider, self.api_key_edit.text(), self.model_combo.currentText()
-            )
-        except ValidationError as exc:
-            QMessageBox.critical(self, "Configuracoes", str(exc))
-            return
-        QMessageBox.information(
-            self, "Configuracoes", f"Conexao com {PROVIDER_LABELS[provider]} realizada com sucesso."
+    def _update_rule_example(self) -> None:
+        inicio = self.rule_start_spin.value()
+        fim = self.rule_end_spin.value()
+        alerta = self.rule_alert_spin.value()
+        self.rule_example.setText(
+            f"Exemplo para os documentos de maio: a cobrança começa em {inicio:02d}/06 e o prazo vai até "
+            f"{fim:02d}/06. Depois disso, o que faltar fica Em atraso, e passa a ser prioridade de "
+            f"cobrança {alerta} dia(s) depois."
         )
 
-    def save_agent_settings(self) -> None:
+    def _save_collection_rule(self) -> None:
         try:
-            threshold = float(self.threshold_edit.text().strip().replace(",", "."))
-        except ValueError:
-            QMessageBox.critical(self, "Configuracoes", "Informe um limiar de confianca numerico valido.")
-            return
-
-        try:
-            self.services.agent_config_service.save_settings(
-                self._selected_provider(),
-                self.api_key_edit.text().strip() or None,
-                self.model_combo.currentText(),
-                threshold,
-                self.custom_prompt_edit.toPlainText().strip() or None,
+            self.services.collection_service.update_global_settings(
+                self.rule_start_spin.value(), self.rule_end_spin.value(), self.rule_alert_spin.value()
             )
         except ValidationError as exc:
-            QMessageBox.critical(self, "Configuracoes", str(exc))
+            QMessageBox.critical(self, "Configurações", str(exc))
             return
+        QMessageBox.information(self, "Configurações", "Prazos de cobrança salvos.")
+        self.on_data_changed()
 
-        refresh_agent_runtime(self.services)
-        QMessageBox.information(self, "Configuracoes", "Configuracoes do agente salvas com sucesso.")
+    # Aba admin - regras do acompanhamento -----------------------------------
+
+    def _build_followup_tab(self) -> QWidget:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        hint = QLabel(
+            "Estas regras decidem o próximo passo de cada documento depois que ele foi cobrado. "
+            "O Claude segue o que estiver aqui (ferramenta \"o que fazer agora\"), e o mesmo "
+            "plano aparece em Cobranças > O que fazer agora."
+        )
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = self._new_form()
+        self.followup_wait_spin = QSpinBox()
+        self.followup_wait_spin.setRange(0, 60)
+        self.followup_wait_spin.setSuffix(" dia(s)")
+        self.followup_wait_spin.setMaximumWidth(140)
+        form.addRow("Esperar depois de cobrar", self.followup_wait_spin)
+        self.followup_max_spin = QSpinBox()
+        self.followup_max_spin.setRange(0, 20)
+        self.followup_max_spin.setSuffix(" vez(es)")
+        self.followup_max_spin.setMaximumWidth(140)
+        form.addRow("Recobrar no máximo", self.followup_max_spin)
+        self.followup_problem_check = QCheckBox("Documento que chegar errado vai direto para uma pessoa")
+        form.addRow("", self.followup_problem_check)
+        layout.addLayout(form)
+
+        self.followup_example = QLabel()
+        self.followup_example.setObjectName("Muted")
+        self.followup_example.setWordWrap(True)
+        layout.addWidget(self.followup_example)
+        self.followup_wait_spin.valueChanged.connect(self._update_followup_example)
+        self.followup_max_spin.valueChanged.connect(self._update_followup_example)
+        self.followup_problem_check.toggled.connect(self._update_followup_example)
+
+        actions = QHBoxLayout()
+        save_button = make_button("Salvar regras", "primary")
+        save_button.clicked.connect(self._save_followup_rules)
+        actions.addWidget(save_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        layout.addStretch(1)
+
+        self._load_followup_rules()
+        return self._wrap_in_scroll_area(content)
+
+    def _load_followup_rules(self) -> None:
+        rules = self.services.collection_service.get_followup_rules()
+        self.followup_wait_spin.setValue(rules["dias_entre_cobrancas"])
+        self.followup_max_spin.setValue(rules["max_recobrancas"])
+        self.followup_problem_check.setChecked(rules["problema_vai_para_pessoa"])
+        self._update_followup_example()
+
+    def _update_followup_example(self) -> None:
+        dias = self.followup_wait_spin.value()
+        maximo = self.followup_max_spin.value()
+        problema = (
+            "Se chegar o documento errado, uma pessoa decide o que fazer."
+            if self.followup_problem_check.isChecked()
+            else "Se chegar o documento errado, ele é cobrado de novo como se não tivesse chegado."
+        )
+        limite = (
+            "Não há recobrança: depois da primeira cobrança, o caso vai para uma pessoa."
+            if maximo == 0
+            else f"Depois de {maximo} recobrança(s) sem resposta, o caso vai para uma pessoa em Precisa de atenção."
+        )
+        self.followup_example.setText(
+            f"Exemplo: o extrato foi cobrado hoje. Durante {dias} dia(s) ele fica Aguardando. Depois, o Claude "
+            f"verifica de novo; se ainda não chegou, recobra. {limite} {problema}"
+        )
+
+    def _save_followup_rules(self) -> None:
+        try:
+            self.services.collection_service.update_followup_rules(
+                self.followup_wait_spin.value(),
+                self.followup_max_spin.value(),
+                self.followup_problem_check.isChecked(),
+            )
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Configurações", str(exc))
+            return
+        QMessageBox.information(self, "Configurações", "Regras salvas.")
+        self.on_data_changed()
 
     # Aba admin - mala direta por email --------------------------------------
 
@@ -259,9 +256,9 @@ class ConfiguracoesPage(QWidget):
         layout.setSpacing(14)
 
         hint = QLabel(
-            "Monta um rascunho no seu cliente de email padrao com as empresas selecionadas em "
-            "copia oculta (BCC) - ninguem ve o email dos outros. Nada e enviado por aqui: voce "
-            "revisa e clica em enviar no proprio cliente de email."
+            "Monta um rascunho no seu cliente de email padrão com as empresas selecionadas em "
+            "copia oculta (BCC) - ninguém ve o email dos outros. Nada e enviado por aqui: você "
+            "revisa e clica em enviar no próprio cliente de email."
         )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
@@ -345,7 +342,7 @@ class ConfiguracoesPage(QWidget):
         if opted_out:
             shown = ", ".join(opted_out[:5])
             extra = f" e mais {len(opted_out) - 5}" if len(opted_out) > 5 else ""
-            text += f" Marcadas para nao receber (opt-out): {shown}{extra}."
+            text += f" Marcadas para não receber (opt-out): {shown}{extra}."
         self.mailing_companies_summary_label.setText(text)
 
     def save_mailing_settings(self) -> None:
@@ -354,7 +351,7 @@ class ConfiguracoesPage(QWidget):
         except ValidationError as exc:
             QMessageBox.critical(self, "Mala direta", str(exc))
             return
-        QMessageBox.information(self, "Mala direta", "Configuracoes da mala direta salvas com sucesso.")
+        QMessageBox.information(self, "Mala direta", "Configurações da mala direta salvas com sucesso.")
 
     def _persist_mailing_settings(self) -> None:
         self.services.email_campaign_service.save_campaign(
@@ -387,5 +384,5 @@ class ConfiguracoesPage(QWidget):
         if result["missing_companies"]:
             message += "\n\nFicaram de fora (sem email cadastrado): " + ", ".join(result["missing_companies"])
         if result["opted_out_companies"]:
-            message += "\n\nFicaram de fora (optaram por nao receber): " + ", ".join(result["opted_out_companies"])
+            message += "\n\nFicaram de fora (optaram por não receber): " + ", ".join(result["opted_out_companies"])
         QMessageBox.information(self, "Mala direta", message)

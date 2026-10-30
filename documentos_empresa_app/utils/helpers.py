@@ -89,101 +89,31 @@ def save_config(config: dict) -> None:
     _harden_config_file_permissions(CONFIG_FILE)
 
 
-AGENT_PROVIDER_ENV_VARS = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-}
-AGENT_PROVIDER_API_KEY_CONFIG_KEYS = {
-    "anthropic": "anthropic_api_key",
-    "openai": "openai_api_key",
-}
-DEFAULT_AGENT_PROVIDER = "anthropic"
+# Chaves que versoes anteriores gravavam para recursos que foram removidos: o agente de IA
+# (provedor, API keys, modelo, limiar de confianca, prompt customizado) e o agente
+# organizador de documentos (pasta de entrada, caixa de email IMAP com a senha e o registro
+# de remetentes dos anexos). purge_removed_feature_settings apaga esses valores para nao
+# deixar credenciais esquecidas no config.json.
+REMOVED_FEATURE_CONFIG_KEYS = (
+    "anthropic_api_key",
+    "openai_api_key",
+    "agente_provider",
+    "agente_modelo_anthropic",
+    "agente_modelo_openai",
+    "agente_confianca_minima",
+    "agente_system_prompt_customizado",
+    "document_agent_inbox_folder",
+    "email_ingestion_imap",
+    "email_ingestion_senders",
+)
 
 
-def resolve_agent_api_key(provider: str) -> str | None:
-    env_var = AGENT_PROVIDER_ENV_VARS.get(provider)
-    env_key = os.environ.get(env_var) if env_var else None
-    if env_key:
-        return env_key
-    config_key = AGENT_PROVIDER_API_KEY_CONFIG_KEYS.get(provider)
-    if not config_key:
-        return None
-    stored = str(unprotect_secret(load_config().get(config_key)) or "").strip()
-    return stored or None
-
-
-def save_agent_api_key(provider: str, api_key: str | None) -> None:
-    config_key = AGENT_PROVIDER_API_KEY_CONFIG_KEYS.get(provider)
-    if not config_key:
+def purge_removed_feature_settings() -> None:
+    config = load_config()
+    if not any(key in config for key in REMOVED_FEATURE_CONFIG_KEYS):
         return
-    config = load_config()
-    normalized = str(api_key or "").strip()
-    if normalized:
-        config[config_key] = protect_secret(normalized)
-    else:
-        config.pop(config_key, None)
-    save_config(config)
-
-
-def load_agent_provider() -> str:
-    stored = str(load_config().get("agente_provider") or "").strip().lower()
-    return stored if stored in AGENT_PROVIDER_ENV_VARS else DEFAULT_AGENT_PROVIDER
-
-
-def save_agent_provider(provider: str) -> None:
-    config = load_config()
-    normalized = str(provider or "").strip().lower()
-    if normalized in AGENT_PROVIDER_ENV_VARS:
-        config["agente_provider"] = normalized
-    else:
-        config.pop("agente_provider", None)
-    save_config(config)
-
-
-def load_agent_model(provider: str) -> str | None:
-    stored = str(load_config().get(f"agente_modelo_{provider}") or "").strip()
-    return stored or None
-
-
-def save_agent_model(provider: str, model: str | None) -> None:
-    config = load_config()
-    normalized = str(model or "").strip()
-    if normalized:
-        config[f"agente_modelo_{provider}"] = normalized
-    else:
-        config.pop(f"agente_modelo_{provider}", None)
-    save_config(config)
-
-
-def load_agent_confidence_threshold() -> float | None:
-    stored = load_config().get("agente_confianca_minima")
-    try:
-        return float(stored) if stored is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def save_agent_confidence_threshold(value: float | None) -> None:
-    config = load_config()
-    if value is None:
-        config.pop("agente_confianca_minima", None)
-    else:
-        config["agente_confianca_minima"] = float(value)
-    save_config(config)
-
-
-def load_agent_custom_instructions() -> str | None:
-    stored = str(load_config().get("agente_system_prompt_customizado") or "").strip()
-    return stored or None
-
-
-def save_agent_custom_instructions(value: str | None) -> None:
-    config = load_config()
-    normalized = str(value or "").strip()
-    if normalized:
-        config["agente_system_prompt_customizado"] = normalized
-    else:
-        config.pop("agente_system_prompt_customizado", None)
+    for key in REMOVED_FEATURE_CONFIG_KEYS:
+        config.pop(key, None)
     save_config(config)
 
 
@@ -211,11 +141,6 @@ def save_mailing_campaign(campaign: dict) -> None:
     config = load_config()
     config["mala_direta_campanha"] = campaign
     save_config(config)
-
-
-def load_document_agent_inbox_folder() -> str | None:
-    stored = str(load_config().get("document_agent_inbox_folder") or "").strip()
-    return stored or None
 
 
 def load_login_preferences() -> dict:
@@ -309,6 +234,17 @@ def open_file_in_default_app(file_path: str | Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
     except OSError as exc:
         raise ValidationError("Nao foi possivel abrir o arquivo.") from exc
+
+
+def get_documents_directory() -> Path:
+    """Pasta Documentos do usuario (ou a pasta pessoal, se nao existir) - ponto de partida
+    para salvar relatorios, em vez da pasta de onde o programa foi aberto."""
+    home = Path.home()
+    for name in ("Documents", "Documentos"):
+        candidate = home / name
+        if candidate.is_dir():
+            return candidate
+    return home
 
 
 def get_default_email_handler() -> str:
@@ -406,18 +342,3 @@ def open_bcc_email_draft(bcc_addresses: list[str], subject: str, body: str) -> s
         raise ValidationError("Nao foi possivel abrir o cliente de email do sistema.") from exc
 
     raise ValidationError("Nao foi possivel localizar um cliente de email compativel neste computador.")
-
-
-def get_install_root_directory() -> Path:
-    app_reference = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
-    anchor = app_reference.anchor or Path.cwd().anchor or os.sep
-    return Path(anchor)
-
-
-def is_database_path_usable(db_path: str | Path) -> bool:
-    path = Path(db_path)
-    if path.exists():
-        return path.is_file() and os.access(path, os.R_OK | os.W_OK)
-
-    parent = path.parent
-    return parent.exists() and parent.is_dir() and os.access(parent, os.W_OK)

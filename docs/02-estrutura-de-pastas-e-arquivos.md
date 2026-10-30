@@ -130,7 +130,7 @@ Concentra toda a persistencia relacional e a inicializacao do banco.
 
 | Arquivo | Finalidade | Papel |
 |---|---|---|
-| `connection.py` | gerenciar conexoes SQLite | abre, fecha, confirma e desfaz transacoes |
+| `connection.py` | gerenciar a conexao com o PostgreSQL | abre, fecha, confirma e desfaz transacoes |
 | `repositories.py` | CRUD e consultas por tabela | encapsula SQL usado pelos servicos |
 | `schema.py` | schema, migracoes e dados iniciais | cria tabelas, indices, admin padrao, consolidacoes e backfills |
 

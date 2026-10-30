@@ -52,8 +52,8 @@ class DocumentTypeManagerDialog(QDialog):
         layout.setSpacing(10)
 
         help_label = QLabel(
-            "Mensal: cobrado todo mes. Trimestral: cobrado em janeiro, abril, julho e outubro. "
-            "Anual em janeiro: cobrado somente em janeiro. Nos demais meses o status vira 'Nao cobrar' automaticamente."
+            "Mensal: cobrado todo mês. Trimestral: cobrado em janeiro, abril, julho e outubro. "
+            "Anual em janeiro: cobrado somente em janeiro. Nos demais meses o status vira 'Não cobrar' automaticamente."
         )
         help_label.setWordWrap(True)
         help_label.setObjectName("Muted")
@@ -211,7 +211,7 @@ class DocumentNameManagerDialog(QDialog):
         self.allow_apply_to_document = allow_apply_to_document
         self.applied_name: str | None = None
 
-        self.setWindowTitle(f"{context_title} - Nomes padrao")
+        self.setWindowTitle(f"{context_title} - Nomes padrão")
         self.resize(620, 460)
 
         layout = QVBoxLayout(self)
@@ -234,7 +234,7 @@ class DocumentNameManagerDialog(QDialog):
         editor.addWidget(QLabel("Tipo"), 0, 0)
         self.tipo_combo = QComboBox()
         editor.addWidget(self.tipo_combo, 1, 0)
-        editor.addWidget(QLabel("Nome padrao"), 0, 1)
+        editor.addWidget(QLabel("Nome padrão"), 0, 1)
         self.nome_edit = QLineEdit()
         editor.addWidget(self.nome_edit, 1, 1)
         editor.setColumnStretch(1, 1)
@@ -321,7 +321,7 @@ class DocumentNameManagerDialog(QDialog):
     def _save(self) -> None:
         tipo_id = self.tipo_combo.currentData()
         if tipo_id is None:
-            QMessageBox.warning(self, "Nomes padrao", "Cadastre um tipo de documento antes.")
+            QMessageBox.warning(self, "Nomes padrão", "Cadastre um tipo de documento antes.")
             return
         try:
             if self.editing_name_id:
@@ -331,7 +331,7 @@ class DocumentNameManagerDialog(QDialog):
             else:
                 self.documento_service.create_system_document_name(tipo_id, self.nome_edit.text())
         except ValidationError as exc:
-            QMessageBox.critical(self, "Nomes padrao", str(exc))
+            QMessageBox.critical(self, "Nomes padrão", str(exc))
             return
         self.data_changed = True
         self._clear_editor()
@@ -340,16 +340,16 @@ class DocumentNameManagerDialog(QDialog):
     def _delete(self) -> None:
         rows = self.table.selectionModel().selectedRows()
         if not rows:
-            QMessageBox.warning(self, "Nomes padrao", "Selecione um nome para excluir.")
+            QMessageBox.warning(self, "Nomes padrão", "Selecione um nome para excluir.")
             return
         item = self.table.item(rows[0].row(), 0)
         name_id = int(item.data(Qt.ItemDataRole.UserRole))
-        if QMessageBox.question(self, "Nomes padrao", "Deseja excluir o nome selecionado?") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "Nomes padrão", "Deseja excluir o nome selecionado?") != QMessageBox.StandardButton.Yes:
             return
         try:
             self.documento_service.delete_system_document_name(name_id)
         except ValidationError as exc:
-            QMessageBox.critical(self, "Nomes padrao", str(exc))
+            QMessageBox.critical(self, "Nomes padrão", str(exc))
             return
         self.data_changed = True
         self._clear_editor()
@@ -480,7 +480,7 @@ class DeliveryMethodsManagerDialog(QDialog):
         if in_use:
             message = (
                 f'O meio "{method["nome_meio"]}" ainda esta em uso por {in_use} documento(s). '
-                "Ele sera removido apenas da lista do sistema. Continuar?"
+                "Ele será removido apenas da lista do sistema. Continuar?"
             )
         if QMessageBox.question(self, "Meios de recebimento", message) != QMessageBox.StandardButton.Yes:
             return

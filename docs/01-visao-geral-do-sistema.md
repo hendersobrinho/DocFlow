@@ -4,7 +4,7 @@
 
 ## 1.1 Objetivo do sistema
 
-O DocFLow e uma aplicacao desktop local, escrita em Python com Tkinter e SQLite, voltada ao controle operacional de documentos recebidos de diferentes empresas. O projeto prioriza simplicidade de uso, persistencia local, rastreabilidade e manutencao direta.
+O DocFLow e uma aplicacao desktop local, escrita em Python com PySide6 e PostgreSQL, voltada ao controle operacional de documentos recebidos de diferentes empresas. O projeto prioriza simplicidade de uso, persistencia local, rastreabilidade e manutencao direta.
 
 ## 1.2 Problema que o sistema resolve
 
@@ -22,7 +22,7 @@ O projeto permanece propositalmente enxuto:
 
 - aplicacao desktop local
 - sem servidor
-- com persistencia em SQLite
+- com persistencia em PostgreSQL
 - com autenticacao simples
 - com auditoria das alteracoes principais
 - com interface em abas focada em operacao
@@ -30,7 +30,7 @@ O projeto permanece propositalmente enxuto:
 ## 1.4 Funcionamento geral
 
 1. O sistema sobe a aplicacao por `main.py`.
-2. Resolve o caminho do banco SQLite e monta os servicos.
+2. Resolve a conexao com o PostgreSQL (configuracao salva ou `DOCFLOW_DATABASE_URL`) e monta os servicos.
 3. `initialize_schema()` cria tabelas, aplica ajustes de compatibilidade e semeia dados basicos.
 4. O usuario faz login.
 5. A janela principal abre as abas conforme permissao.
@@ -40,7 +40,7 @@ O projeto permanece propositalmente enxuto:
 ## 1.5 Modulos principais
 
 - bootstrap e configuracao inicial
-- persistencia SQLite e migracoes leves
+- persistencia PostgreSQL com criacao automatica do schema
 - repositÃ³rios SQL
 - servicos de negocio
 - autenticacao e sessao

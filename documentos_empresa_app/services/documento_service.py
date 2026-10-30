@@ -6,6 +6,12 @@ from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.utils.common import ValidationError, normalize_delivery_methods
 
 
+
+# Valor padrao de update_documento(observacao=...): "nao mexer na observacao".
+MANTER = object()
+MAX_OBSERVACAO = 500
+
+
 class DocumentoService:
     def __init__(
         self,
@@ -112,9 +118,11 @@ class DocumentoService:
         tipo_documento_id: int,
         nome_documento: str,
         meios_recebimento: list[str] | tuple[str, ...] | str | None = None,
+        observacao: str | None = None,
     ) -> int:
         nome = self._normalize_name(nome_documento)
         meios = self._normalize_delivery_methods(meios_recebimento)
+        observacao = self._normalize_observacao(observacao)
         with self.documento_repository.db_manager.connect():
             empresa = self._ensure_empresa(empresa_id)
             tipo = self._ensure_tipo(tipo_documento_id)
@@ -122,13 +130,15 @@ class DocumentoService:
             if self.documento_repository.find_duplicate(empresa_id, tipo_documento_id, nome):
                 raise ValidationError("Ja existe um documento com esse nome para a empresa e tipo informados.")
 
-            documento_id = self.documento_repository.create(empresa_id, tipo_documento_id, meios, nome)
+            documento_id = self.documento_repository.create(empresa_id, tipo_documento_id, meios, nome, observacao)
             details = [
                 f'Usuario {self._actor_name()} cadastrou o documento "{nome}" '
                 f'para a empresa "{empresa["nome_empresa"]}" no tipo "{tipo["nome_tipo"]}".'
             ]
             if meios:
                 details.append(f"Meios de recebimento: {meios}.")
+            if observacao:
+                details.append(f"Observacao: {observacao}.")
             self._log(
                 "CADASTRO_DOCUMENTO",
                 "documento",
@@ -145,11 +155,16 @@ class DocumentoService:
         tipo_documento_id: int,
         nome_documento: str,
         meios_recebimento: list[str] | tuple[str, ...] | str | None = None,
+        observacao: str | None | object = MANTER,
     ) -> None:
+        """observacao: texto novo, None/"" para limpar, ou omitido para manter a atual."""
         nome = self._normalize_name(nome_documento)
         meios = self._normalize_delivery_methods(meios_recebimento)
         with self.documento_repository.db_manager.connect():
             documento = self.get_documento(documento_id)
+            nova_observacao = (
+                documento.get("observacao") if observacao is MANTER else self._normalize_observacao(observacao)
+            )
             old_tipo = self._ensure_tipo(documento["tipo_documento_id"])
             new_tipo = self._ensure_tipo(tipo_documento_id)
             empresa = self._ensure_empresa(documento["empresa_id"])
@@ -163,7 +178,19 @@ class DocumentoService:
             if duplicate:
                 raise ValidationError("Ja existe um documento com esse nome para a empresa e tipo informados.")
 
-            self.documento_repository.update(documento_id, tipo_documento_id, meios, nome)
+            self.documento_repository.update(documento_id, tipo_documento_id, meios, nome, nova_observacao)
+            if (documento.get("observacao") or "") != (nova_observacao or ""):
+                self._log(
+                    "EDICAO_DOCUMENTO",
+                    "documento",
+                    documento_id,
+                    (
+                        f'Usuario {self._actor_name()} alterou a observacao do documento "{nome}" '
+                        f'de "{documento.get("observacao") or "-"}" para "{nova_observacao or "-"}".'
+                    ),
+                    empresa_id=empresa["id"],
+                    empresa_nome=empresa["nome_empresa"],
+                )
             if documento["nome_documento"] != nome:
                 self._log(
                     "EDICAO_DOCUMENTO",
@@ -250,6 +277,13 @@ class DocumentoService:
         if not normalized:
             raise ValidationError("O nome do documento nao pode ficar vazio.")
         return normalized
+
+    @staticmethod
+    def _normalize_observacao(observacao: str | None) -> str | None:
+        texto = " ".join(str(observacao or "").split())
+        if len(texto) > MAX_OBSERVACAO:
+            raise ValidationError(f"A observacao do documento pode ter no maximo {MAX_OBSERVACAO} caracteres.")
+        return texto or None
 
     def _normalize_delivery_methods(self, methods: list[str] | tuple[str, ...] | str | None) -> str | None:
         return normalize_delivery_methods(methods)

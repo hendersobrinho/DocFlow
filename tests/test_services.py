@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from documentos_empresa_app.database.connection import DatabaseManager
+from documentos_empresa_app.database.connection import IntegrityError
 from documentos_empresa_app.database.repositories import (
     CollectionConfigRepository,
     DeliveryMethodRepository,
@@ -17,13 +17,11 @@ from documentos_empresa_app.database.repositories import (
     RememberedSessionRepository,
     StatusRepository,
     TipoRepository,
-    UserPreferenceRepository,
     UsuarioRepository,
 )
 from documentos_empresa_app.database.schema import initialize_schema
-from documentos_empresa_app.services.agent_config_service import AgentConfigService, DEFAULT_CONFIDENCE_THRESHOLD
 from documentos_empresa_app.services.email_campaign_service import EmailCampaignService
-from documentos_empresa_app.utils import document_agent_diagnostics
+from documentos_empresa_app.utils import diagnostics
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.auth_service import AuthService
 from documentos_empresa_app.services.collection_service import CollectionService
@@ -48,6 +46,8 @@ from documentos_empresa_app.utils.common import (
     parse_period_label,
 )
 
+from tests.postgres_support import create_test_database_manager
+
 try:
     from openpyxl import load_workbook
 except ImportError:  # pragma: no cover - depende do ambiente local
@@ -57,9 +57,7 @@ except ImportError:  # pragma: no cover - depende do ambiente local
 class ApplicationServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        db_path = Path(self.temp_dir.name) / "test_app.db"
-
-        db_manager = DatabaseManager(db_path)
+        db_manager = create_test_database_manager(self)
         initialize_schema(db_manager)
 
         self.empresa_repository = EmpresaRepository(db_manager)
@@ -70,7 +68,6 @@ class ApplicationServiceTests(unittest.TestCase):
         self.periodo_repository = PeriodoRepository(db_manager)
         self.status_repository = StatusRepository(db_manager)
         self.usuario_repository = UsuarioRepository(db_manager)
-        self.user_preference_repository = UserPreferenceRepository(db_manager)
         self.remembered_session_repository = RememberedSessionRepository(db_manager)
         self.log_repository = LogRepository(db_manager)
 
@@ -135,13 +132,11 @@ class ApplicationServiceTests(unittest.TestCase):
         self.auth_service = AuthService(self.usuario_repository, self.remembered_session_repository)
         self.user_service = UserService(
             self.usuario_repository,
-            self.user_preference_repository,
             self.session_service,
             audit_service=self.audit_service,
             auth_service=self.auth_service,
         )
         self.log_service = LogService(self.log_repository, self.session_service)
-        self.agent_config_service = AgentConfigService(self.session_service)
 
         admin_user = self.auth_service.authenticate("admin", "admin")
         self.session_service.login(admin_user)
@@ -177,34 +172,6 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(first_run["created"], 12)
         self.assertEqual(second_run["created"], 0)
         self.assertEqual(second_run["existing"], 12)
-
-    def test_get_or_create_periodo_returns_existing_without_regenerating(self) -> None:
-        self.periodo_service.generate_year(2026)
-        periodos_antes = self.periodo_repository.list_by_year(2026)
-
-        periodo = self.periodo_service.get_or_create_periodo(2026, 4)
-
-        self.assertEqual(periodo["ano"], 2026)
-        self.assertEqual(periodo["mes"], 4)
-        self.assertEqual(self.periodo_repository.list_by_year(2026), periodos_antes)
-
-    def test_get_or_create_periodo_generates_missing_year(self) -> None:
-        self.assertFalse(self.periodo_repository.exists(2031, 6))
-
-        periodo = self.periodo_service.get_or_create_periodo(2031, 6)
-
-        self.assertEqual(periodo["ano"], 2031)
-        self.assertEqual(periodo["mes"], 6)
-        self.assertTrue(self.periodo_repository.exists(2031, 6))
-        self.assertEqual(len(self.periodo_repository.list_by_year(2031)), 12)
-
-    def test_get_or_create_periodo_rejects_invalid_month(self) -> None:
-        with self.assertRaises(ValidationError):
-            self.periodo_service.get_or_create_periodo(2026, 13)
-
-    def test_get_or_create_periodo_rejects_invalid_year(self) -> None:
-        with self.assertRaises(ValidationError):
-            self.periodo_service.get_or_create_periodo("nao-e-ano", 4)
 
     def test_closure_hides_future_periods(self) -> None:
         empresa_id = self.empresa_service.create_empresa(101, "Empresa Teste")
@@ -378,7 +345,7 @@ class ApplicationServiceTests(unittest.TestCase):
 
     def test_backup_restore_recovers_previous_database_state(self) -> None:
         self.empresa_service.create_empresa(113, "Empresa Antes do Backup")
-        backup_path = Path(self.temp_dir.name) / "backup_teste.db"
+        backup_path = Path(self.temp_dir.name) / "backup_teste.dfbak"
 
         self.database_maintenance_service.create_backup(backup_path)
         self.empresa_service.create_empresa(114, "Empresa Depois do Backup")
@@ -403,17 +370,19 @@ class ApplicationServiceTests(unittest.TestCase):
 
         backup_path = Path(result["path"])
         self.assertEqual(backup_path.parent, backup_dir)
-        self.assertEqual(backup_path.name, "test_app_auto_backup_20260506_213000.db")
+        database_name = self.database_maintenance_service.db_manager.database_name
+        self.assertEqual(backup_path.name, f"{database_name}_auto_backup_20260506_213000.dfbak")
         self.assertTrue(backup_path.exists())
         self.assertGreater(result["size_bytes"], 0)
 
     def test_timestamped_backup_prunes_old_files(self) -> None:
         backup_dir = Path(self.temp_dir.name) / "backups"
         backup_dir.mkdir()
+        database_name = self.database_maintenance_service.db_manager.database_name
         old_files = [
-            backup_dir / "test_app_auto_backup_20260501_080000.db",
-            backup_dir / "test_app_auto_backup_20260502_080000.db",
-            backup_dir / "test_app_auto_backup_20260503_080000.db",
+            backup_dir / f"{database_name}_auto_backup_20260501_080000.dfbak",
+            backup_dir / f"{database_name}_auto_backup_20260502_080000.dfbak",
+            backup_dir / f"{database_name}_auto_backup_20260503_080000.dfbak",
         ]
         for file_path in old_files:
             file_path.write_text("backup", encoding="utf-8")
@@ -425,17 +394,29 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertTrue(old_files[1].exists())
         self.assertTrue(old_files[2].exists())
 
-    def test_database_manager_applies_sqlite_pragmas(self) -> None:
-        with self.empresa_repository.db_manager.connect() as connection:
-            foreign_keys = int(connection.execute("PRAGMA foreign_keys").fetchone()[0])
-            busy_timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
-            journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-            synchronous = int(connection.execute("PRAGMA synchronous").fetchone()[0])
+    def test_failed_write_inside_larger_block_keeps_transaction_usable(self) -> None:
+        with self.empresa_repository.db_manager.connect():
+            self.empresa_repository.create(403, "Empresa Bloco")
+            with self.assertRaises(IntegrityError):
+                self.empresa_repository.create(403, "Empresa Codigo Repetido")
+            self.empresa_repository.create(404, "Empresa Depois do Erro")
 
-        self.assertEqual(foreign_keys, 1)
-        self.assertEqual(busy_timeout, 5000)
-        self.assertEqual(journal_mode, "wal")
-        self.assertEqual(synchronous, 1)
+        codigos = {empresa["codigo_empresa"] for empresa in self.empresa_service.list_empresas(active_only=False)}
+        self.assertIn(403, codigos)
+        self.assertIn(404, codigos)
+
+    def test_exception_in_block_rolls_back_whole_transaction(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with self.empresa_repository.db_manager.connect():
+                self.empresa_repository.create(405, "Empresa Desfeita")
+                raise RuntimeError("falha no meio da operacao")
+
+        self.assertIsNone(self.empresa_repository.get_by_code(405))
+
+    def test_names_compare_case_insensitively_like_before(self) -> None:
+        self.assertEqual(self.tipo_repository.get_by_name("EXTRATOS cc")["nome_tipo"], "Extratos CC")
+        with self.assertRaises(ValidationError):
+            self.tipo_service.create_tipo("extratos cc")
 
     def test_database_maintenance_service_optimize_database_returns_summary(self) -> None:
         self.empresa_service.create_empresa(401, "Empresa Otimizada")
@@ -443,8 +424,7 @@ class ApplicationServiceTests(unittest.TestCase):
         result = self.database_maintenance_service.optimize_database()
 
         self.assertTrue(result["optimized"])
-        self.assertGreater(result["page_count"], 0)
-        self.assertGreaterEqual(result["free_pages"], 0)
+        self.assertGreater(result["database_size_bytes"], 0)
 
     def test_repository_batch_queries_handle_large_repeated_id_lists(self) -> None:
         empresa_id = self.empresa_service.create_empresa(402, "Empresa Lote")
@@ -625,37 +605,91 @@ class ApplicationServiceTests(unittest.TestCase):
 
         self.assertEqual(documento["meios_recebimento"], "Email, Onvio")
 
-    def test_schema_migrates_legacy_status_table_to_allow_nao_cobrar(self) -> None:
-        legacy_db_path = Path(self.temp_dir.name) / "legacy_status.db"
-        legacy_db_manager = DatabaseManager(legacy_db_path)
+    def test_restore_imports_legacy_sqlite_database(self) -> None:
+        """Bancos SQLite da versao anterior (com tabelas sem as colunas mais novas e o
+        CHECK antigo de status) podem ser importados pela restauracao de backup."""
+        import sqlite3
 
-        with legacy_db_manager.connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE status_documento_mensal (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    documento_empresa_id INTEGER NOT NULL,
-                    periodo_id INTEGER NOT NULL,
-                    status TEXT NULL CHECK (status IN ('Recebido', 'Pendente', 'Encerrado') OR status IS NULL),
-                    FOREIGN KEY (documento_empresa_id) REFERENCES documentos_empresa(id) ON DELETE CASCADE,
-                    FOREIGN KEY (periodo_id) REFERENCES periodos(id) ON DELETE CASCADE,
-                    CONSTRAINT uq_status UNIQUE (documento_empresa_id, periodo_id)
+        legacy_path = Path(self.temp_dir.name) / "docflow_antigo.db"
+        connection = sqlite3.connect(legacy_path)
+        try:
+            with connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE empresas (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        codigo_empresa INTEGER NOT NULL UNIQUE,
+                        nome_empresa TEXT NOT NULL COLLATE NOCASE,
+                        meios_recebimento TEXT NULL,
+                        ativa INTEGER NOT NULL DEFAULT 1
+                    );
+                    CREATE TABLE tipos_documento (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nome_tipo TEXT NOT NULL UNIQUE COLLATE NOCASE
+                    );
+                    CREATE TABLE documentos_empresa (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        empresa_id INTEGER NOT NULL,
+                        tipo_documento_id INTEGER NOT NULL,
+                        nome_documento TEXT NOT NULL COLLATE NOCASE
+                    );
+                    CREATE TABLE periodos (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ano INTEGER NOT NULL,
+                        mes INTEGER NOT NULL
+                    );
+                    CREATE TABLE status_documento_mensal (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        documento_empresa_id INTEGER NOT NULL,
+                        periodo_id INTEGER NOT NULL,
+                        status TEXT NULL CHECK (status IN ('Recebido', 'Pendente', 'Encerrado') OR status IS NULL)
+                    );
+                    CREATE TABLE usuarios (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                        senha_hash TEXT NOT NULL,
+                        tipo_usuario TEXT NOT NULL,
+                        ativa INTEGER NOT NULL DEFAULT 1
+                    );
+                    INSERT INTO empresas (id, codigo_empresa, nome_empresa, meios_recebimento)
+                        VALUES (7, '501', 'Empresa Legada SQLite', 'Email');
+                    INSERT INTO tipos_documento (id, nome_tipo) VALUES (3, 'Extratos CC');
+                    INSERT INTO documentos_empresa (id, empresa_id, tipo_documento_id, nome_documento)
+                        VALUES (11, 7, 3, 'Banco Legado');
+                    INSERT INTO periodos (id, ano, mes) VALUES (5, 2026, 4);
+                    INSERT INTO status_documento_mensal (documento_empresa_id, periodo_id, status)
+                        VALUES (11, 5, 'Recebido');
+                    INSERT INTO usuarios (id, username, senha_hash, tipo_usuario)
+                        VALUES (1, 'admin', 'hash-antigo', 'admin');
+                    """
                 )
-                """
-            )
+        finally:
+            connection.close()
 
-        initialize_schema(legacy_db_manager)
+        self.database_maintenance_service.restore_backup(legacy_path)
 
-        with legacy_db_manager.connect() as connection:
-            table_sql = connection.execute(
-                """
-                SELECT sql
-                FROM sqlite_master
-                WHERE type = 'table' AND name = 'status_documento_mensal'
-                """
-            ).fetchone()["sql"]
+        empresa = self.empresa_repository.get_by_code(501)
+        self.assertEqual(empresa["id"], 7)
+        self.assertEqual(empresa["nao_contatar_mala_direta"], 0)
+        documento = self.documento_service.get_documento(11)
+        self.assertEqual(documento["meios_recebimento"], "Email")
+        status = self.status_repository.get_by_document_and_period(11, 5)
+        self.assertEqual(status["status"], "Recebido")
+        self.assertTrue(status["updated_at"])
+        # As sequencias continuam depois dos ids importados.
+        nova_empresa_id = self.empresa_service.create_empresa(502, "Empresa Nova")
+        self.assertGreater(nova_empresa_id, 7)
+        # Tipos e meios padrao que faltavam no banco antigo sao recriados.
+        self.assertIsNotNone(self.tipo_repository.get_by_name("Contratos"))
 
-        self.assertIn("'Nao cobrar'", table_sql)
+    def test_restore_rejects_wrong_backup_password(self) -> None:
+        backup_path = Path(self.temp_dir.name) / "backup_protegido.dfbak"
+        self.database_maintenance_service.create_backup(backup_path, password="senhaCerta")
+
+        with self.assertRaises(ValidationError):
+            self.database_maintenance_service.restore_backup(backup_path, password="senhaErrada")
+        with self.assertRaises(ValidationError):
+            self.database_maintenance_service.restore_backup(backup_path)
 
     def test_empresa_service_can_save_company_directory(self) -> None:
         empresa_id = self.empresa_service.create_empresa(108, "Empresa Pasta")
@@ -690,6 +724,34 @@ class ApplicationServiceTests(unittest.TestCase):
                 email_contato="email_invalido",
             )
 
+    def test_empresa_service_accepts_alphanumeric_cnpj(self) -> None:
+        # Formato novo do CNPJ (Receita Federal, 2026): letras nas 12 primeiras
+        # posicoes, 2 digitos verificadores numericos no final.
+        empresa_id = self.empresa_service.create_empresa(
+            120, "Empresa CNPJ Novo", cnpj="12.ABC.345/01DE-35"
+        )
+        empresa = self.empresa_service.get_empresa(empresa_id)
+
+        self.assertEqual(empresa["cnpj"], "12ABC34501DE35")
+
+    def test_empresa_service_still_accepts_numeric_only_cnpj(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(
+            121, "Empresa CNPJ Antigo", cnpj="12.345.678/0001-90"
+        )
+        empresa = self.empresa_service.get_empresa(empresa_id)
+
+        self.assertEqual(empresa["cnpj"], "12345678000190")
+
+    def test_empresa_service_rejects_letters_in_cnpj_check_digits(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.empresa_service.create_empresa(
+                122, "Empresa CNPJ Invalido", cnpj="12.ABC.345/01DE-3X"
+            )
+
+    def test_empresa_service_rejects_cnpj_with_wrong_length(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.empresa_service.create_empresa(123, "Empresa CNPJ Curto", cnpj="12.ABC.345")
+
     def test_tipo_service_blocks_delete_when_type_is_in_use(self) -> None:
         empresa_id = self.empresa_service.create_empresa(105, "Empresa Tipo Em Uso")
         tipo_id = self.tipo_service.get_or_create_tipo("Comprovantes")["id"]
@@ -722,25 +784,6 @@ class ApplicationServiceTests(unittest.TestCase):
 
         self.assertEqual(tipo["id"], existing_id)
         self.assertEqual(tipo["regra_ocorrencia"], TYPE_OCCURRENCE_MENSAL)
-
-    def test_find_tipo_by_name_returns_none_for_unknown_name(self) -> None:
-        self.assertIsNone(self.tipo_service.find_tipo_by_name("Categoria Que Nao Existe"))
-
-    def test_find_tipo_by_name_does_not_create_anything(self) -> None:
-        tipos_antes = len(self.tipo_service.list_tipos())
-
-        result = self.tipo_service.find_tipo_by_name("Categoria Inexistente")
-
-        self.assertIsNone(result)
-        self.assertEqual(len(self.tipo_service.list_tipos()), tipos_antes)
-
-    def test_find_tipo_by_name_returns_existing_tipo(self) -> None:
-        created_id = self.tipo_service.create_tipo("Categoria Encontravel", TYPE_OCCURRENCE_MENSAL)
-
-        found = self.tipo_service.find_tipo_by_name("categoria encontravel")
-
-        self.assertIsNotNone(found)
-        self.assertEqual(found["id"], created_id)
 
     def test_quarterly_type_marks_non_chargeable_months_as_nao_cobrar(self) -> None:
         empresa_id = self.empresa_service.create_empresa(118, "Empresa Trimestral")
@@ -1284,6 +1327,69 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertIsNone(documentos[0]["meios_recebimento"])
         self.assertEqual(documentos[0]["nome_tipo"], "Extratos CC")
 
+    def test_import_documentos_unexpected_row_error_does_not_abort_batch_and_is_logged(self) -> None:
+        """Uma falha inesperada (nao prevista como ValidationError) numa linha nao pode
+        abortar o lote inteiro nem virar uma mensagem crua na tela - as demais linhas
+        continuam sendo importadas, o usuario recebe um aviso amigavel apontando pro log,
+        e o log tecnico recebe o erro completo (com traceback) pra investigar depois."""
+
+        class FakeWorksheet:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def iter_rows(self, min_row=1, values_only=True):
+                return iter(self._rows)
+
+        class FakeWorkbook:
+            def __init__(self, rows):
+                self.active = FakeWorksheet(rows)
+
+        empresa_id = self.empresa_service.create_empresa(501, "Empresa Lote Com Erro")
+        workbook = FakeWorkbook(
+            [
+                ("meios_recebimento", "nome_documento", "nome_tipo"),
+                ("Email", "Documento Com Falha Inesperada", "Extratos CC"),
+                ("Email", "Documento OK", "Extratos CC"),
+            ]
+        )
+
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        config_dir = Path(temp_dir.name) / "config"
+        config_patcher = patch.multiple(
+            "documentos_empresa_app.utils.diagnostics", CONFIG_DIR=config_dir
+        )
+        config_patcher.start()
+        self.addCleanup(config_patcher.stop)
+        diagnostics._reset_for_tests()
+        self.addCleanup(diagnostics._reset_for_tests)
+
+        original_create_documento = self.documento_service.create_documento
+
+        def flaky_create_documento(empresa_id, tipo_documento_id, nome_documento, meios_recebimento=None):
+            if nome_documento == "Documento Com Falha Inesperada":
+                raise RuntimeError("falha simulada e inesperada")
+            return original_create_documento(empresa_id, tipo_documento_id, nome_documento, meios_recebimento)
+
+        with patch.object(self.import_service, "_load_workbook", return_value=workbook):
+            with patch.object(self.documento_service, "create_documento", side_effect=flaky_create_documento):
+                result = self.import_service.import_documentos("documentos_com_erro.xlsx", empresa_id)
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertNotIn("RuntimeError", result["errors"][0])
+        self.assertIn("veja o log de diagnostico", result["errors"][0])
+
+        documentos = self.documento_service.list_documentos_empresa(empresa_id)
+        self.assertEqual(len(documentos), 1)
+        self.assertEqual(documentos[0]["nome_documento"], "Documento OK")
+
+        log_content = diagnostics.get_diagnostics_log_path().read_text(encoding="utf-8")
+        self.assertIn("IMPORT_DOCUMENTO_LINHA_ERRO_INESPERADO", log_content)
+        self.assertIn("falha simulada e inesperada", log_content)
+        self.assertIn("Traceback", log_content)
+
     def test_document_service_lists_reusable_document_names_by_type(self) -> None:
         tipo_extrato_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
         tipo_contrato_id = self.tipo_service.get_or_create_tipo("Contratos")["id"]
@@ -1679,49 +1785,6 @@ class ApplicationServiceTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.auth_service.authenticate("maria", "123456")
 
-    def test_own_inbox_folder_is_scoped_per_user(self) -> None:
-        second_user_id = self.user_service.create_user("carla", "123456", "comum", ativo=True)
-
-        self.user_service.set_own_inbox_folder("C:/pasta-admin")
-        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/pasta-admin")
-
-        second_user = self.usuario_repository.get_by_id(second_user_id)
-        self.session_service.login(second_user)
-        self.assertIsNone(self.user_service.get_own_inbox_folder())
-
-        self.user_service.set_own_inbox_folder("C:/pasta-carla")
-        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/pasta-carla")
-
-        self.session_service.login(self.usuario_repository.get_by_username("admin"))
-        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/pasta-admin")
-
-    def test_own_empresas_root_folder_is_scoped_per_user(self) -> None:
-        second_user_id = self.user_service.create_user("carla", "123456", "comum", ativo=True)
-
-        self.user_service.set_own_empresas_root_folder("C:/Empresas-admin")
-        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-admin")
-
-        second_user = self.usuario_repository.get_by_id(second_user_id)
-        self.session_service.login(second_user)
-        self.assertIsNone(self.user_service.get_own_empresas_root_folder())
-
-        self.user_service.set_own_empresas_root_folder("C:/Empresas-carla")
-        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-carla")
-
-        self.session_service.login(self.usuario_repository.get_by_username("admin"))
-        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-admin")
-
-    def test_inbox_folder_and_empresas_root_folder_are_independent(self) -> None:
-        self.user_service.set_own_inbox_folder("C:/entrada")
-        self.user_service.set_own_empresas_root_folder("C:/Empresas")
-
-        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/entrada")
-        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas")
-
-        self.user_service.set_own_empresas_root_folder("C:/Empresas-novo")
-        self.assertEqual(self.user_service.get_own_inbox_folder(), "C:/entrada")
-        self.assertEqual(self.user_service.get_own_empresas_root_folder(), "C:/Empresas-novo")
-
     def test_logs_are_created_for_empresa_documento_e_status(self) -> None:
         empresa_id = self.empresa_service.create_empresa(777, "HND TEC")
         tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
@@ -1793,7 +1856,7 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertTrue(any("Empresa B" in log["descricao"] for log in period_logs))
 
 
-class AgentConfigServiceTests(unittest.TestCase):
+class RemovedFeatureSettingsPurgeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         config_dir = Path(self.temp_dir.name) / "config"
@@ -1804,70 +1867,29 @@ class AgentConfigServiceTests(unittest.TestCase):
         )
         self.config_patcher.start()
 
-        self.admin_session = SessionService()
-        self.admin_session.login({"id": 1, "username": "admin", "tipo_usuario": "admin", "ativa": 1})
-        self.common_session = SessionService()
-        self.common_session.login({"id": 2, "username": "comum", "tipo_usuario": "comum", "ativa": 1})
-
-        self.service = AgentConfigService(self.admin_session)
-
     def tearDown(self) -> None:
         self.config_patcher.stop()
         self.temp_dir.cleanup()
 
-    def test_get_settings_returns_defaults_when_nothing_saved(self) -> None:
-        settings = self.service.get_settings()
+    def test_removes_old_feature_keys_and_keeps_other_settings(self) -> None:
+        from documentos_empresa_app.utils.helpers import load_config, purge_removed_feature_settings, save_config
 
-        self.assertEqual(settings.provider, "anthropic")
-        self.assertIsNone(settings.api_key)
-        self.assertEqual(settings.confidence_threshold, DEFAULT_CONFIDENCE_THRESHOLD)
-        self.assertIsNone(settings.custom_instructions)
-
-    def test_save_settings_persists_and_is_read_back(self) -> None:
-        saved = self.service.save_settings(
-            "anthropic", "sk-teste-123", "claude-sonnet-5", 0.6, "Documentos da empresa X vem sem CNPJ."
+        save_config(
+            {
+                "anthropic_api_key": "sk-ant-antiga",
+                "openai_api_key": "sk-antiga",
+                "agente_provider": "openai",
+                "agente_confianca_minima": 0.6,
+                "document_agent_inbox_folder": "C:/entrada",
+                "email_ingestion_imap": {"host": "imap.exemplo.com", "password": "segredo"},
+                "email_ingestion_senders": {"C:/entrada/boleto.pdf": "financeiro@exemplo.com"},
+                "backup_encryption_password": "mantida",
+            }
         )
 
-        self.assertEqual(saved.provider, "anthropic")
-        self.assertEqual(saved.api_key, "sk-teste-123")
-        self.assertEqual(saved.model, "claude-sonnet-5")
-        self.assertEqual(saved.confidence_threshold, 0.6)
-        self.assertEqual(saved.custom_instructions, "Documentos da empresa X vem sem CNPJ.")
+        purge_removed_feature_settings()
 
-        reloaded = self.service.get_settings()
-        self.assertEqual(reloaded.api_key, "sk-teste-123")
-        self.assertEqual(reloaded.model, "claude-sonnet-5")
-
-    def test_save_settings_rejects_threshold_out_of_range(self) -> None:
-        with self.assertRaises(ValidationError):
-            self.service.save_settings("anthropic", "sk-teste", "claude-haiku-4-5", 1.5, None)
-
-    def test_save_settings_rejects_invalid_provider(self) -> None:
-        with self.assertRaises(ValidationError):
-            self.service.save_settings("gemini", "sk-teste", "algum-modelo", 0.75, None)
-
-    def test_switching_provider_keeps_each_api_key_and_model_independent(self) -> None:
-        self.service.save_settings("anthropic", "sk-anthropic", "claude-sonnet-5", 0.75, None)
-        self.service.save_settings("openai", "sk-openai", "gpt-4o", 0.75, None)
-
-        anthropic_settings = self.service.get_settings("anthropic")
-        openai_settings = self.service.get_settings("openai")
-
-        self.assertEqual(anthropic_settings.api_key, "sk-anthropic")
-        self.assertEqual(anthropic_settings.model, "claude-sonnet-5")
-        self.assertEqual(openai_settings.api_key, "sk-openai")
-        self.assertEqual(openai_settings.model, "gpt-4o")
-
-        # o provedor ativo (usado por get_settings sem argumento) e o ultimo salvo
-        self.assertEqual(self.service.get_settings().provider, "openai")
-
-    def test_non_admin_cannot_read_or_save_settings(self) -> None:
-        service = AgentConfigService(self.common_session)
-
-        with self.assertRaises(ValidationError):
-            service.get_settings()
-        with self.assertRaises(ValidationError):
-            service.save_settings("anthropic", "sk-teste", "claude-haiku-4-5", 0.75, None)
+        self.assertEqual(load_config(), {"backup_encryption_password": "mantida"})
 
 
 class EmailCampaignServiceTests(unittest.TestCase):
@@ -1884,8 +1906,7 @@ class EmailCampaignServiceTests(unittest.TestCase):
         )
         self.config_patcher.start()
 
-        db_path = Path(self.temp_dir.name) / "test_mailing.db"
-        db_manager = DatabaseManager(db_path)
+        db_manager = create_test_database_manager(self)
         initialize_schema(db_manager)
         self.empresa_repository = EmpresaRepository(db_manager)
 
@@ -2020,62 +2041,31 @@ class ParsePeriodLabelTests(unittest.TestCase):
         self.assertIsNone(parse_period_label(None))
 
 
-class DocumentAgentDiagnosticsTests(unittest.TestCase):
+class DiagnosticsLogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         config_dir = Path(self.temp_dir.name) / "config"
         self.config_patcher = patch.multiple(
-            "documentos_empresa_app.utils.document_agent_diagnostics",
+            "documentos_empresa_app.utils.diagnostics",
             CONFIG_DIR=config_dir,
         )
         self.config_patcher.start()
-        document_agent_diagnostics._reset_for_tests()
+        diagnostics._reset_for_tests()
 
     def tearDown(self) -> None:
-        document_agent_diagnostics._reset_for_tests()
+        diagnostics._reset_for_tests()
         self.config_patcher.stop()
         self.temp_dir.cleanup()
 
-    def _read_log(self) -> str:
-        log_path = document_agent_diagnostics.get_document_agent_log_path()
-        return log_path.read_text(encoding="utf-8")
-
     def test_log_path_lives_under_config_dir(self) -> None:
-        log_path = document_agent_diagnostics.get_document_agent_log_path()
-        self.assertEqual(log_path.name, document_agent_diagnostics.LOG_FILE_NAME)
+        log_path = diagnostics.get_diagnostics_log_path()
+        self.assertEqual(log_path.name, diagnostics.LOG_FILE_NAME)
         self.assertEqual(log_path.parent, Path(self.temp_dir.name) / "config")
 
-    def test_log_extraction_failure_writes_entry(self) -> None:
-        document_agent_diagnostics.log_extraction_failure("boleto.pdf", "arquivo corrompido")
-        content = self._read_log()
-        self.assertIn("EXTRACAO_FALHOU", content)
-        self.assertIn("boleto.pdf", content)
-        self.assertIn("arquivo corrompido", content)
-
-    def test_log_unmatched_cnpj_with_candidates(self) -> None:
-        document_agent_diagnostics.log_unmatched_cnpj(
-            "boleto.pdf", ["12345678000190"], "texto do boleto com CNPJ 12.345.678/0001-90"
-        )
-        content = self._read_log()
-        self.assertIn("CNPJ_NAO_CADASTRADO", content)
-        self.assertIn("12345678000190", content)
-
-    def test_log_unmatched_cnpj_without_candidates(self) -> None:
-        document_agent_diagnostics.log_unmatched_cnpj("boleto.pdf", [], "texto sem nenhum cnpj reconhecivel")
-        content = self._read_log()
-        self.assertIn("CNPJ_NAO_ENCONTRADO", content)
-
-    def test_log_unmatched_cnpj_truncates_long_text(self) -> None:
-        long_text = "A" * 1000
-        document_agent_diagnostics.log_unmatched_cnpj("boleto.pdf", [], long_text)
-        content = self._read_log()
-        self.assertIn("...", content)
-        self.assertLess(len(content), len(long_text))
-
-    def test_log_move_failure_writes_entry(self) -> None:
-        document_agent_diagnostics.log_move_failure("boleto.pdf", "C:/destino", "permissao negada")
-        content = self._read_log()
-        self.assertIn("MOVER_ARQUIVO_FALHOU", content)
+    def test_logger_writes_to_file(self) -> None:
+        diagnostics.get_diagnostics_logger().error("TAREFA_FALHOU | erro=%s", "permissao negada")
+        content = diagnostics.get_diagnostics_log_path().read_text(encoding="utf-8")
+        self.assertIn("TAREFA_FALHOU", content)
         self.assertIn("permissao negada", content)
 
 

@@ -16,6 +16,9 @@ class Empresa:
     observacao: str | None = None
     diretorio_documentos: str | None = None
     ativa: int = 1
+    canais_recebimento: str | None = None
+    emails_origem_documentos: str | None = None
+    instrucoes_busca: str | None = None
 
 
 @dataclass(slots=True)
@@ -72,3 +75,46 @@ class LogRegistro:
     periodo_ano: int | None = None
     periodo_mes: int | None = None
     data_hora: str | None = None
+
+
+@dataclass(slots=True)
+class Cobranca:
+    id: int | None
+    empresa_id: int
+    canal: str
+    destinatario: str | None = None
+    assunto: str | None = None
+    mensagem: str | None = None
+    observacao: str | None = None
+    realizada_em: str | None = None
+    usuario_id: int | None = None
+
+
+@dataclass(slots=True)
+class CobrancaItem:
+    id: int | None
+    cobranca_id: int
+    documento_empresa_id: int
+    periodo_id: int
+    sequencia: int
+
+
+@dataclass(slots=True)
+class Verificacao:
+    id: int | None
+    empresa_id: int
+    fontes: str
+    resumo: str | None = None
+    realizada_em: str | None = None
+    usuario_id: int | None = None
+
+
+@dataclass(slots=True)
+class VerificacaoItem:
+    id: int | None
+    verificacao_id: int
+    documento_empresa_id: int
+    periodo_id: int
+    encontrado: int
+    onde: str | None = None
+    observacao: str | None = None

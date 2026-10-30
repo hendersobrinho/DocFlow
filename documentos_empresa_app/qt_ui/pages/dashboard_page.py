@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import time
+
 from PySide6.QtCharts import (
     QBarCategoryAxis,
     QBarSeries,
@@ -26,19 +28,55 @@ from documentos_empresa_app.qt_ui.viewmodels import (
     PanoramaViewModel,
     UI_SITUATION_LABELS,
 )
+from documentos_empresa_app.qt_ui.pages.cobrancas_page import CobrancasPage
 from documentos_empresa_app.qt_ui.widgets.common import Card, KpiCard, PageHeader, ToolbarRow, make_button
+from documentos_empresa_app.qt_ui.widgets.visual import PipelineBar
 from documentos_empresa_app.services.panorama_service import PanoramaService
+from documentos_empresa_app.utils.common import format_utc_timestamp
 
 TREND_PERIODS = 6
+TREND_CACHE_SECONDS = 60
+
+
+class ClickableCard(Card):
+    """Cartao pequeno com valor grande e legenda, que leva para outra tela ao clicar."""
+
+    def __init__(self, title: str, on_click, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.on_click = on_click
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(0)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("Muted")
+        layout.addWidget(self.title_label)
+        self.value_label = QLabel("-")
+        layout.addWidget(self.value_label)
+        self.caption_label = QLabel("")
+        self.caption_label.setObjectName("Muted")
+        layout.addWidget(self.caption_label)
+
+    def set_content(self, value: str, caption: str, color: str) -> None:
+        self.value_label.setText(value)
+        self.value_label.setStyleSheet(f"font-size: 15pt; font-weight: 700; color: {color};")
+        self.caption_label.setText(caption)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.on_click()
+        super().mousePressEvent(event)
 
 
 class DashboardPage(QWidget):
     """Visao executiva: KPIs e graficos do periodo selecionado."""
 
-    def __init__(self, services, on_data_changed, parent: QWidget | None = None) -> None:
+    def __init__(self, services, on_data_changed, on_navigate=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.services = services
         self.on_data_changed = on_data_changed
+        # on_navigate(titulo_da_pagina, acao=None): abre outra tela (ex: Cobrancas filtrada).
+        self.on_navigate = on_navigate
         self.viewmodel = PanoramaViewModel(services)
         self.periods: list[dict] = []
 
@@ -46,10 +84,17 @@ class DashboardPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
 
-        layout.addWidget(PageHeader("Dashboard", "Resumo executivo da competencia selecionada."))
+        layout.addWidget(
+            PageHeader("Painel", "Como está a cobrança agora e como está a entrega dos documentos no mês escolhido.")
+        )
+        layout.addWidget(self._build_cobranca_block())
+
+        entrega = QLabel("Entrega do mês")
+        entrega.setStyleSheet("font-weight: 600; font-size: 11pt; margin-top: 4px;")
+        layout.addWidget(entrega)
 
         toolbar = ToolbarRow()
-        toolbar.add(QLabel("Competencia"))
+        toolbar.add(QLabel("Competência"))
         self.period_combo = QComboBox()
         self.period_combo.setMinimumWidth(150)
         self.period_combo.currentIndexChanged.connect(lambda _i: self.reload())
@@ -69,11 +114,11 @@ class DashboardPage(QWidget):
         t = tokens()
         self.kpi_cards: dict[str, KpiCard] = {}
         for key, label, color in (
-            ("total", "Empresas no periodo", None),
-            ("concluida", "Concluidas", t["success"]),
+            ("total", "Empresas no período", None),
+            ("concluida", "Concluídas", t["success"]),
             ("andamento", "Em andamento", t["accent"]),
             ("prazo", "Dentro do prazo", t["warning"]),
-            ("pendencia", "Com pendencia", t["danger"]),
+            ("pendencia", "Com pendência", t["danger"]),
             ("atraso", "Em atraso", t["danger"]),
         ):
             card = KpiCard(label, color)
@@ -88,7 +133,7 @@ class DashboardPage(QWidget):
         donut_card = Card()
         donut_layout = QVBoxLayout(donut_card)
         donut_layout.setContentsMargins(14, 12, 14, 12)
-        donut_title = QLabel("Distribuicao por situacao")
+        donut_title = QLabel("Distribuição por situação")
         donut_title.setStyleSheet("font-weight: 600;")
         donut_layout.addWidget(donut_title)
         self.donut_view = QChartView()
@@ -100,7 +145,7 @@ class DashboardPage(QWidget):
         trend_card = Card()
         trend_layout = QVBoxLayout(trend_card)
         trend_layout.setContentsMargins(14, 12, 14, 12)
-        trend_title = QLabel(f"Conclusao das ultimas {TREND_PERIODS} competencias (%)")
+        trend_title = QLabel(f"Conclusão das últimas {TREND_PERIODS} competências (%)")
         trend_title.setStyleSheet("font-weight: 600;")
         trend_layout.addWidget(trend_title)
         self.trend_view = QChartView()
@@ -114,16 +159,100 @@ class DashboardPage(QWidget):
         layout.addWidget(self.footer_label)
 
         self._trend_cache: dict[tuple, tuple[list[str], list[float]]] = {}
+        self._trend_generation = -1
+        self._trend_built_at = 0.0
 
         # Conexao com metodo bound: o Qt desconecta automaticamente quando a
         # pagina e destruida (lambda ficaria conectada a um widget morto).
         ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
 
+    def _build_cobranca_block(self) -> QWidget:
+        card = Card()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 12, 16, 14)
+        layout.setSpacing(10)
+        header = QHBoxLayout()
+        titulo = QLabel("Cobrança agora")
+        titulo.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        header.addWidget(titulo)
+        self.cobranca_resumo = QLabel()
+        self.cobranca_resumo.setObjectName("Muted")
+        header.addWidget(self.cobranca_resumo, 1)
+        abrir = make_button("Abrir Cobranças", "quiet")
+        abrir.clicked.connect(lambda: self._navigate("Cobranças"))
+        header.addWidget(abrir)
+        layout.addLayout(header)
+
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        self.pipeline = PipelineBar(CobrancasPage.ETAPAS)
+        self.pipeline.changed.connect(self._on_stage_clicked)
+        row.addWidget(self.pipeline, 4)
+
+        lado = QVBoxLayout()
+        lado.setSpacing(8)
+        self.atencao_card = ClickableCard("Precisa de atenção", lambda: self._navigate("Precisa de atenção"))
+        lado.addWidget(self.atencao_card)
+        self.rodada_card = ClickableCard("Última rodada do Claude", lambda: self._navigate("Cobranças", "rodadas"))
+        lado.addWidget(self.rodada_card)
+        row.addLayout(lado, 1)
+        layout.addLayout(row)
+        return card
+
+    def _navigate(self, titulo: str, acao: str | None = None) -> None:
+        if self.on_navigate:
+            self.on_navigate(titulo, acao)
+
+    def _on_stage_clicked(self, key: str) -> None:
+        # No Painel a etapa nao fica "selecionada": o clique so leva para Cobrancas filtrada.
+        self.pipeline.select("todas")
+        self._navigate("Cobranças", None if key == "todas" else key)
+
+    def _reload_cobranca(self) -> None:
+        t = tokens()
+        try:
+            plano = self.services.cobranca_service.proximas_acoes()
+            atencao = len(self.services.cobranca_service.precisa_de_atencao())
+            rodadas = self.services.rodada_service.listar(1, com_ocorrencias=False)
+        except Exception:  # noqa: BLE001 - o Painel nunca pode quebrar por causa deste bloco
+            return
+        resumo = plano["resumo"]
+        self.pipeline.set_counts(resumo)
+        self.pipeline.restyle()
+        empresas = len(plano["empresas"])
+        self.cobranca_resumo.setText(
+            f"  {sum(resumo.values())} documento(s) em aberto em {empresas} empresa(s). Clique numa etapa para ver."
+        )
+        self.atencao_card.set_content(
+            str(atencao),
+            "documento(s) esperando você" if atencao else "nada esperando você",
+            t["danger"] if atencao else t["success"],
+        )
+        if rodadas:
+            rodada = rodadas[0]
+            cor = {
+                "concluida": t["success"],
+                "em_andamento": t["accent"],
+            }.get(rodada["status_efetivo"], t["danger"])
+            detalhe = format_utc_timestamp(rodada["iniciada_em"])
+            if rodada["falhas"]:
+                detalhe += f' - {rodada["falhas"]} falha(s)'
+            self.rodada_card.set_content(rodada["status_label"], detalhe, cor)
+        else:
+            self.rodada_card.set_content("Nenhuma", "o Claude ainda não passou por aqui", t["muted"])
+
     def _on_theme_changed(self, _mode: str) -> None:
         self.reload()
 
     def refresh_data(self) -> None:
-        self._trend_cache.clear()
+        # O grafico dos 6 meses so e recalculado se algo foi gravado (ou depois de 1 minuto,
+        # para pegar o que outro computador gravou).
+        geracao = self.services.database_maintenance_service.db_manager.write_generation
+        agora = time.monotonic()
+        if geracao != self._trend_generation or agora - self._trend_built_at > TREND_CACHE_SECONDS:
+            self._trend_cache.clear()
+            self._trend_generation = geracao
+            self._trend_built_at = agora
         self._refresh_periods()
         self.reload()
 
@@ -152,13 +281,14 @@ class DashboardPage(QWidget):
         self.period_combo.blockSignals(False)
 
     def reload(self) -> None:
+        self._reload_cobranca()
         period_id = self.period_combo.currentData()
         if period_id is None:
             for card in self.kpi_cards.values():
                 card.set_value("-")
             self._swap_chart(self.donut_view, self._base_chart())
             self._swap_chart(self.trend_view, self._base_chart())
-            self.footer_label.setText("Cadastre periodos para carregar o dashboard.")
+            self.footer_label.setText("Cadastre períodos para carregar o dashboard.")
             return
 
         active_only = self.active_only_check.isChecked()
@@ -244,7 +374,7 @@ class DashboardPage(QWidget):
             values.append(cached[1])
 
         chart = self._base_chart()
-        bar_set = QBarSet("Conclusao %")
+        bar_set = QBarSet("Conclusão %")
         bar_set.setColor(QColor(t["accent"]))
         for value in values:
             bar_set.append(value)
@@ -262,7 +392,13 @@ class DashboardPage(QWidget):
         series.attachAxis(axis_x)
 
         axis_y = QValueAxis()
-        axis_y.setRange(0, 100)
+        # Folga acima de 100 para o rotulo "100%" ficar em cima da barra (e nao escondido
+        # dentro dela); as marcas continuam de 25 em 25 ate 100.
+        axis_y.setRange(0, 112)
+        axis_y.setTickType(QValueAxis.TickType.TicksDynamic)
+        axis_y.setTickAnchor(0)
+        axis_y.setTickInterval(25)
+        axis_y.setLabelFormat("%d")
         axis_y.setLabelsColor(QColor(t["muted"]))
         axis_y.setGridLineColor(QColor(t["chart_grid"]))
         chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)

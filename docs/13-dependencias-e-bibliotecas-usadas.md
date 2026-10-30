@@ -36,7 +36,7 @@
 
 | Biblioteca | Uso principal |
 |---|---|
-| `sqlite3` | banco local |
+| `psycopg` | driver do PostgreSQL |
 | `tkinter` / `ttk` / `messagebox` / `filedialog` / `simpledialog` | interface grafica |
 | `json` | config local |
 | `pathlib` | caminhos de arquivos |

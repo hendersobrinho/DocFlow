@@ -3,57 +3,43 @@ from __future__ import annotations
 import json
 
 from PySide6.QtWidgets import (
-    QDialog,
     QFileDialog,
     QHBoxLayout,
-    QLabel,
     QMessageBox,
     QPlainTextEdit,
-    QVBoxLayout,
     QWidget,
 )
 
-from documentos_empresa_app.qt_ui.icons import app_icon
-from documentos_empresa_app.qt_ui.theme import tokens
+from documentos_empresa_app.qt_ui.widgets.brand_dialog import BrandDialog
 from documentos_empresa_app.qt_ui.widgets.common import make_button
 from documentos_empresa_app.services.license_service import LicenseError, LicenseService
 from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE
 
 
-class LicenseWindow(QDialog):
+class LicenseWindow(BrandDialog):
     def __init__(
         self,
         license_service: LicenseService,
         status_message: str = "",
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__("Ativar o DocFlow", "Cole a licença recebida ou importe o arquivo.", panel_width=300, parent=parent)
         self.license_service = license_service
         self.license_activated = False
 
-        self.setWindowTitle(f"{APP_TITLE} - Licenca")
-        self.setWindowIcon(app_icon())
-        self.resize(620, 460)
+        self.setWindowTitle(f"{APP_TITLE} - Licença")
+        self.resize(900, 520)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
-
-        instructions = QLabel(
-            "Cole abaixo o conteudo do arquivo de licenca (JSON) ou importe o arquivo para ativar o sistema."
-        )
-        instructions.setWordWrap(True)
-        layout.addWidget(instructions)
-
+        self.add_heading("Licença", "Cole abaixo o conteúdo do arquivo de licença (JSON) ou importe o arquivo.")
         if status_message:
-            status_label = QLabel(status_message)
-            status_label.setWordWrap(True)
-            status_label.setStyleSheet(f'color: {tokens()["danger"]};')
-            layout.addWidget(status_label)
+            self.show_message(status_message)
+        self.add_message_area()
 
         self.license_text = QPlainTextEdit()
         self.license_text.setPlaceholderText('{"payload": {...}, "signature": "..."}')
-        layout.addWidget(self.license_text, 1)
+        self.license_text.setStyleSheet('font-family: "JetBrains Mono", "Consolas", monospace; font-size: 9pt;')
+        self.add_widget(self.license_text, 1)
+        self.form_layout.addSpacing(8)
 
         buttons = QHBoxLayout()
         import_button = make_button("Importar arquivo...")
@@ -66,7 +52,7 @@ class LicenseWindow(QDialog):
         activate_button = make_button("Ativar licenca", "primary")
         activate_button.clicked.connect(self.activate)
         buttons.addWidget(activate_button)
-        layout.addLayout(buttons)
+        self.form_layout.addLayout(buttons)
 
     def import_file(self) -> None:
         file_path, _filter = QFileDialog.getOpenFileName(
@@ -80,26 +66,26 @@ class LicenseWindow(QDialog):
         try:
             content = open(file_path, encoding="utf-8").read()
         except OSError:
-            QMessageBox.critical(self, APP_NAME, "Nao foi possivel ler o arquivo selecionado.")
+            QMessageBox.critical(self, APP_NAME, "Não foi possível ler o arquivo selecionado.")
             return
         self.license_text.setPlainText(content)
 
     def activate(self) -> None:
         raw_text = self.license_text.toPlainText().strip()
         if not raw_text:
-            QMessageBox.critical(self, APP_NAME, "Cole ou importe o conteudo da licenca para continuar.")
+            self.show_message("Cole ou importe o conteúdo da licença para continuar.")
             return
 
         try:
             parsed = json.loads(raw_text)
         except json.JSONDecodeError:
-            QMessageBox.critical(self, APP_NAME, "O conteudo informado nao e um JSON valido.")
+            self.show_message("O conteúdo informado não é um JSON válido.")
             return
 
         try:
             self.license_service.save(parsed)
         except LicenseError as exc:
-            QMessageBox.critical(self, APP_NAME, str(exc))
+            self.show_message(str(exc))
             return
 
         self.license_activated = True

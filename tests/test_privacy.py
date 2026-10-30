@@ -4,7 +4,6 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from documentos_empresa_app.services.llm_types import redact_cpf
 from documentos_empresa_app.utils.backup_encryption import (
     decrypt_backup_file,
     encrypt_backup_file,
@@ -14,32 +13,9 @@ from documentos_empresa_app.utils.common import ValidationError
 from documentos_empresa_app.utils.secret_protection import protect_secret, unprotect_secret
 
 
-class RedactCpfTests(unittest.TestCase):
-    def test_redacts_formatted_cpf(self) -> None:
-        text = "Titular CPF 123.456.789-01 residente na Rua Tal."
-        self.assertNotIn("123.456.789-01", redact_cpf(text))
-        self.assertIn("[CPF removido]", redact_cpf(text))
-
-    def test_redacts_unformatted_cpf(self) -> None:
-        text = "CPF: 12345678901 fim."
-        self.assertNotIn("12345678901", redact_cpf(text))
-
-    def test_does_not_touch_formatted_cnpj(self) -> None:
-        text = "CNPJ 12.345.678/0001-99 emitido para a empresa."
-        self.assertIn("12.345.678/0001-99", redact_cpf(text))
-
-    def test_does_not_touch_unformatted_cnpj(self) -> None:
-        text = "CNPJ 12345678000199 emitido para a empresa."
-        self.assertIn("12345678000199", redact_cpf(text))
-
-    def test_handles_empty_text(self) -> None:
-        self.assertEqual(redact_cpf(""), "")
-        self.assertEqual(redact_cpf(None), "")
-
-
 class SecretProtectionTests(unittest.TestCase):
     def test_roundtrip_protects_and_recovers_secret(self) -> None:
-        secret = "sk-ant-super-secret-value"
+        secret = "valor-secreto-de-teste"
         protected = protect_secret(secret)
 
         self.assertNotEqual(protected, secret)

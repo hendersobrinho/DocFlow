@@ -56,7 +56,7 @@ set "APP_EXE=%DIST_DIR%\DocFLow.exe"
 
 if not "%RUN_TESTS%"=="0" (
     echo Executando testes antes do build...
-    "%BUILD_PYTHON%" -m unittest tests.test_services tests.test_storage tests.test_resources tests.test_display tests.test_release_files
+    "%BUILD_PYTHON%" -m unittest tests.test_services tests.test_resources tests.test_display tests.test_release_files
     if errorlevel 1 exit /b 1
 )
 

@@ -43,7 +43,6 @@ from documentos_empresa_app.services.file_check_service import (
     resolve_type_subfolder,
     resolve_year_folder,
     score_file,
-    suggest_company_folder_name,
 )
 
 
@@ -282,48 +281,6 @@ class TestResolveCompanyFolder(unittest.TestCase):
         import tempfile
         self._tmpdir = tempfile.mkdtemp()
         return self._tmpdir
-
-
-class TestSuggestCompanyFolderName(unittest.TestCase):
-    def test_empty_root_uses_default_convention(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            name = suggest_company_folder_name("1", "Acme Ltda", Path(tmp))
-            self.assertEqual(name, "1. Acme Ltda")
-
-    def test_learns_dash_convention_from_siblings(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            (tmp_path / "2 - Beta Ltda").mkdir()
-            (tmp_path / "3 - Gamma Ltda").mkdir()
-            name = suggest_company_folder_name("1", "Acme Ltda", tmp_path)
-            self.assertEqual(name, "1 - Acme Ltda")
-
-    def test_majority_convention_wins_when_mixed(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            (tmp_path / "2 - Beta Ltda").mkdir()
-            (tmp_path / "3 - Gamma Ltda").mkdir()
-            (tmp_path / "4. Delta Ltda").mkdir()
-            name = suggest_company_folder_name("1", "Acme Ltda", tmp_path)
-            self.assertEqual(name, "1 - Acme Ltda")
-
-    def test_ignores_folders_without_recognizable_pattern(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            (tmp_path / "Documentos Gerais").mkdir()
-            (tmp_path / "2026").mkdir()
-            name = suggest_company_folder_name("1", "Acme Ltda", tmp_path)
-            self.assertEqual(name, "1. Acme Ltda")
-
-    def test_sanitizes_illegal_characters_in_company_name(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            name = suggest_company_folder_name("1", "Acme/Ltda: Filial*", Path(tmp))
-            self.assertEqual(name, "1. AcmeLtda Filial")
 
 
 # ── resolve_year_folder ────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
 - As telas nunca fazem SQL direto.
 - As telas chamam servicos.
 - Os servicos chamam repositórios.
-- Os repositórios acessam SQLite.
+- Os repositórios acessam o PostgreSQL.
 - O resultado volta como dicionario e e usado pela UI.
 
 ## 7.2 Relacoes centrais

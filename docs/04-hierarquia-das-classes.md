@@ -17,7 +17,7 @@ Existe heranca apenas em tres grupos principais:
 | Classe | Arquivo | Tipo | Responsabilidade principal | Instanciada por |
 |---|---|---|---|---|
 | `ApplicationServices` | `app_context.py` | container | agrupar os servicos do sistema | `build_application_services()` |
-| `DatabaseManager` | `database/connection.py` | infraestrutura | gerenciar conexoes/transacoes SQLite | `build_application_services()` |
+| `DatabaseManager` | `database/connection.py` | infraestrutura | gerenciar a conexao/transacoes com o PostgreSQL | `build_application_services()` |
 | `BaseRepository` | `database/repositories.py` | base de repositório | concentrar helpers de acesso ao banco | repositórios concretos |
 | `EmpresaRepository` | `database/repositories.py` | repositório | CRUD de empresas | `build_application_services()` |
 | `DeliveryMethodRepository` | `database/repositories.py` | repositório | CRUD de meios de recebimento do sistema | `build_application_services()` |

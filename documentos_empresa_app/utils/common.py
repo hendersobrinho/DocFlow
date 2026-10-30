@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from functools import lru_cache
 import os
 from pathlib import Path
 import re
@@ -7,9 +9,11 @@ import sys
 
 from documentos_empresa_app import __version__
 
-APP_NAME = "DocFLow"
+APP_NAME = "DocFlow"
 APP_TITLE = f"{APP_NAME} {__version__}"
-AGENT_NAME = "Buba"
+# Nome da pasta de dados no Windows/macOS. Fica com a grafia antiga para nao "perder" a
+# configuracao de quem ja usa o sistema (o nome exibido mudou para DocFlow).
+APP_DATA_DIRNAME = "DocFLow"
 LEGACY_CONFIG_DIRS = (
     Path.home() / ".g_docs",
     Path.home() / ".documentos_empresa_app",
@@ -21,16 +25,15 @@ def get_default_config_dir() -> Path:
     if sys.platform.startswith("win"):
         appdata = os.environ.get("APPDATA")
         if appdata:
-            return Path(appdata) / APP_NAME
-        return Path.home() / "AppData" / "Roaming" / APP_NAME
+            return Path(appdata) / APP_DATA_DIRNAME
+        return Path.home() / "AppData" / "Roaming" / APP_DATA_DIRNAME
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / APP_NAME
+        return Path.home() / "Library" / "Application Support" / APP_DATA_DIRNAME
     return Path.home() / ".docflow"
 
 
 CONFIG_DIR = get_default_config_dir()
 CONFIG_FILE = CONFIG_DIR / "config.json"
-DEFAULT_DB_NAME = "docflow.db"
 DOCUMENT_DELIVERY_OPTIONS = (
     "WhatsApp",
     "Email",
@@ -129,6 +132,7 @@ def normalize_delivery_methods(
     return ", ".join(normalized_items) if normalized_items else None
 
 
+@lru_cache(maxsize=128)
 def normalize_type_occurrence_rule(raw_rule: str | None) -> str:
     normalized = str(raw_rule or "").strip().casefold().replace("-", "_").replace(" ", "_")
     alias_map = {
@@ -183,6 +187,24 @@ def format_period_label(year: int, month: int) -> str:
     return f"{month:02d}/{year} - {MONTH_NAMES.get(month, str(month))}"
 
 
+def format_competencia(year: int, month: int) -> str:
+    """Competencia curta, no formato MM/AAAA."""
+    return f"{month:02d}/{year}"
+
+
+def format_utc_timestamp(raw: str | None, with_time: bool = True) -> str:
+    """Converte um horario gravado em UTC ('YYYY-MM-DD HH:MM:SS', ver docflow_utc_now no
+    schema) para o horario local, no formato dd/mm/aaaa hh:mm."""
+    if not raw:
+        return "-"
+    try:
+        moment = datetime.strptime(str(raw)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return str(raw)
+    local = moment.astimezone()
+    return local.strftime("%d/%m/%Y %H:%M" if with_time else "%d/%m/%Y")
+
+
 def parse_period_label(raw: str) -> tuple[int, int] | None:
     """Interpreta um periodo digitado livremente (MM/AAAA, AAAA-MM, ou o texto
     completo de format_period_label) e retorna (ano, mes), ou None se invalido."""
@@ -201,12 +223,3 @@ def parse_period_label(raw: str) -> tuple[int, int] | None:
 
 def count_months_between(start_year: int, start_month: int, end_year: int, end_month: int) -> int:
     return (end_year - start_year) * 12 + (end_month - start_month) + 1
-
-
-CPF_REGEX = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
-
-
-def redact_cpf(text: str) -> str:
-    """Remove numeros de CPF de um texto - CPF e dado pessoal (LGPD) e nao deve ser transmitido
-    pra servicos de terceiros (IA) nem gravado sem necessidade em logs locais."""
-    return CPF_REGEX.sub("[CPF removido]", text or "")

@@ -91,9 +91,17 @@
    - `meios_recebimento`
    - `nome_documento`
    - `nome_tipo`
-   - `observacao`
+   - `observacao` (da empresa)
+   - colunas opcionais pelo cabecalho: `Observação do documento` e `Regra do tipo`
+     (mensal, trimestral ou anual; so vale para tipo criado na importacao)
+   - meses no cabecalho como `Janeiro 2026` (ou so `Janeiro`, usando o ano padrao)
 3. Tipos podem ser reutilizados ou criados automaticamente.
-4. Cada linha usa os mesmos servicos de negocio da operacao manual.
+4. Documento que ja existe na empresa (mesmo tipo e nome) e reaproveitado: a linha so
+   completa os meses e a observacao (se estava vazia), sem duplicar.
+5. Meio de recebimento novo (ex: Fisico) entra na lista de meios do sistema.
+6. Cada linha usa os mesmos servicos de negocio da operacao manual.
+7. `scripts/tratar_planilha_controle.py` gera essa planilha a partir da "Planilha de
+   Controle Unificada" do escritorio (nomes padronizados, relatorio do que ficou de fora).
 
 ## 9.9 Relatorio de pendencias
 

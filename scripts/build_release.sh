@@ -51,7 +51,7 @@ fi
 
 if [[ "$RUN_TESTS" != "0" ]]; then
   echo "Executando testes antes do build..."
-  "$BUILD_PYTHON" -m unittest tests.test_services tests.test_storage tests.test_resources tests.test_display tests.test_release_files
+  "$BUILD_PYTHON" -m unittest tests.test_services tests.test_resources tests.test_display tests.test_release_files
 fi
 
 "$ICON_PYTHON" scripts/generate_icons.py

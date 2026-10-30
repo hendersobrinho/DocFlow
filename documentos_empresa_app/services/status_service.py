@@ -111,6 +111,24 @@ class StatusService:
             "document_ids": updated_document_ids,
         }
 
+    def update_status_many(self, pares: list[tuple[int, int]], status: str | None) -> dict:
+        """Mesmo status em varias celulas (documento, competencia) de uma vez, numa unica
+        transacao. Aplica mes a mes, do mais antigo para o mais novo, para que um
+        "Encerrado" ja valha para os meses seguintes da mesma selecao."""
+        pares = list(dict.fromkeys((int(d), int(p)) for d, p in pares))
+        if not pares:
+            raise ValidationError("Selecione pelo menos um documento.")
+        por_periodo: dict[int, list[int]] = {}
+        for documento_id, periodo_id in pares:
+            por_periodo.setdefault(periodo_id, []).append(documento_id)
+        periodos = {p["id"]: p for p in self.periodo_repository.list_all()}
+        ordem = sorted(por_periodo, key=lambda pid: (periodos[pid]["ano"], periodos[pid]["mes"]) if pid in periodos else (0, 0))
+        atualizados = 0
+        with self.status_repository.db_manager.connect():
+            for periodo_id in ordem:
+                atualizados += self.update_status_batch(por_periodo[periodo_id], periodo_id, status)["updated"]
+        return {"selected": len(pares), "updated": atualizados}
+
     def build_control_view(self, empresa_id: int, start_period_id: int, end_period_id: int) -> dict:
         empresa = self.empresa_repository.get_by_id(empresa_id)
         if not empresa:

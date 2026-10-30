@@ -18,12 +18,12 @@
 
 - Arquivo: `documentos_empresa_app/database/connection.py`
 - Tipo: classe de infraestrutura
-- Objetivo: abrir conexoes SQLite e controlar transacoes
+- Objetivo: manter a conexao com o PostgreSQL e controlar transacoes (blocos aninhados compartilham a transacao)
 - Atributos:
   - `db_path`: caminho do banco
   - `_active_connection`: conexao reutilizada em transacoes aninhadas
   - `_connection_depth`: profundidade de reentrada
-- Dependencias: `sqlite3`, `Path`, `contextmanager`
+- Dependencias: `psycopg`, `threading`, `contextmanager`
 - Papel: garantir `PRAGMA foreign_keys = ON`, commit no sucesso e rollback em falha
 - Observacao: essa classe e central para a consistencia dos logs, porque permite que servicos executem mutacao e auditoria na mesma transacao
 
@@ -36,7 +36,7 @@
 - Objetivo: concentrar `_fetchall`, `_fetchone`, `_execute` e `_executemany`
 - Dependencias: `DatabaseManager`
 - Quem usa: todos os repositórios concretos
-- Papel: evitar repeticao de abertura de conexao e conversao de `sqlite3.Row` para `dict`
+- Papel: evitar repeticao de abertura de conexao e conversao das linhas para `dict`
 
 ### `EmpresaRepository`
 

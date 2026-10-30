@@ -4,12 +4,10 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QDockWidget,
     QFileDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -25,19 +23,23 @@ from PySide6.QtWidgets import (
 from documentos_empresa_app.app_context import ApplicationServices
 from documentos_empresa_app.qt_ui.dialogs.about_dialog import AboutDialog
 from documentos_empresa_app.qt_ui.dialogs.backup_settings_dialog import BackupSettingsDialog
-from documentos_empresa_app.qt_ui.icons import agent_chat_icon, app_icon
-from documentos_empresa_app.qt_ui.panels.agent_chat_panel import AgentChatPanel
+from documentos_empresa_app.qt_ui.brand import LOGO_HORIZONTAL_NEGATIVO, TAGLINE, brand_pixmap
+from documentos_empresa_app.qt_ui.dialogs.database_connection_dialog import prompt_database_connection_qt
+from documentos_empresa_app.qt_ui.dialogs.help_content import DEFAULT_HELP_TOPIC_ID
+from documentos_empresa_app.qt_ui.dialogs.help_dialog import HelpDialog
+from documentos_empresa_app.qt_ui.icons import app_icon
+from documentos_empresa_app.qt_ui.pages.atencao_page import AtencaoPage
+from documentos_empresa_app.qt_ui.pages.cobrancas_page import CobrancasPage
 from documentos_empresa_app.qt_ui.pages.configuracoes_page import ConfiguracoesPage
-from documentos_empresa_app.qt_ui.pages.controle_page import ControlePage
 from documentos_empresa_app.qt_ui.pages.dashboard_page import DashboardPage
 from documentos_empresa_app.qt_ui.pages.documentos_page import DocumentosPage
 from documentos_empresa_app.qt_ui.pages.empresas_page import EmpresasPage
+from documentos_empresa_app.qt_ui.pages.ficha_page import FichaEmpresaPage
 from documentos_empresa_app.qt_ui.pages.logs_page import LogsPage
 from documentos_empresa_app.qt_ui.pages.panorama_page import PanoramaPage
-from documentos_empresa_app.qt_ui.pages.revisao_page import RevisaoPage
 from documentos_empresa_app.qt_ui.pages.usuarios_page import UsuariosPage
 from documentos_empresa_app.qt_ui.theme import ThemeManager
-from documentos_empresa_app.qt_ui.widgets.common import make_button, make_icon_button, SinglePageStackedWidget
+from documentos_empresa_app.qt_ui.widgets.common import make_button, SinglePageStackedWidget
 from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner, CallableWorker
 from documentos_empresa_app.utils.auto_backup import (
     load_auto_backup_settings,
@@ -45,32 +47,57 @@ from documentos_empresa_app.utils.auto_backup import (
     save_auto_backup_settings,
     should_run_auto_backup,
 )
+from documentos_empresa_app.services.database_maintenance_service import BACKUP_EXTENSION
 from documentos_empresa_app.utils.backup_encryption import is_encrypted_backup
-from documentos_empresa_app.utils.common import AGENT_NAME, APP_NAME, APP_TITLE, ValidationError
+from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE, ValidationError
 from documentos_empresa_app.utils.helpers import (
     load_backup_encryption_password,
     open_directory_in_file_manager,
     save_login_preferences,
 )
 
+
 SIDEBAR_WIDTH = 230
+
+# Mapeia o titulo de cada pagina (usado em page_defs, dentro de _build_main_area)
+# pro topico correspondente do manual (F1) - ver qt_ui/dialogs/help_content.py.
+PAGE_TOPIC_IDS = {
+    "Painel": "dashboard",
+    "Panorama": "panorama",
+    "Cobranças": "cobrancas",
+    "Precisa de atenção": "atencao",
+    "Empresas": "empresas",
+    "Ficha da empresa": "ficha",
+    "Documentos": "documentos",
+    "Configurações": "configuracoes",
+    "Usuários": "usuarios",
+    "Histórico de ações": "logs",
+}
+
+NAV_SECTION_ACOMPANHAMENTO = "ACOMPANHAMENTO"
+NAV_SECTION_CADASTROS = "CADASTROS"
+NAV_SECTION_ADMINISTRACAO = "ADMINISTRAÇÃO"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, db_path: str | Path, services: ApplicationServices) -> None:
+    def __init__(self, services: ApplicationServices) -> None:
         super().__init__()
-        self.db_path = Path(db_path)
         self.services = services
         self.logout_requested = False
         self.restart_requested = False
         self.nav_buttons: dict[int, QPushButton] = {}
         self.pages: list[QWidget] = []
+        self.page_topic_ids: list[str] = []
         self._dirty_pages: set[int] = set()
+        self.help_dialog: HelpDialog | None = None
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(app_icon())
         self.resize(1440, 880)
         self.setMinimumSize(1100, 720)
+
+        self.help_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
+        self.help_shortcut.activated.connect(self.open_help)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -79,12 +106,14 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(0)
 
         self._build_sidebar(root_layout)
-        self._build_agent_chat_dock()
         self._build_main_area(root_layout)
 
         QTimer.singleShot(800, self.run_auto_backup_if_due)
-        self.refresh_all_tabs()
+
+        # A janela aparece primeiro e os dados entram logo em seguida: a primeira carga (fila
+        # de cobranca, Painel) leva quase um segundo e nao precisa segurar a tela.
         self._select_page(0)
+        QTimer.singleShot(0, self.refresh_all_tabs)
 
     # Layout
 
@@ -98,13 +127,28 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 18, 12, 18)
         layout.setSpacing(4)
 
-        title = QLabel(APP_NAME)
-        title.setObjectName("SidebarTitle")
-        layout.addWidget(title)
-        layout.addSpacing(12)
+        # Logo horizontal em negativo (a barra lateral e navy nos dois temas).
+        logo = QLabel()
+        logo.setObjectName("SidebarLogo")
+        logo.setContentsMargins(10, 2, 0, 6)
+        pixmap = brand_pixmap(LOGO_HORIZONTAL_NEGATIVO, 34)
+        if pixmap.isNull():
+            logo.setText(APP_NAME)
+            logo.setStyleSheet("color: white; font-size: 15pt; font-weight: 600;")
+        else:
+            logo.setPixmap(pixmap)
+        logo.setToolTip(TAGLINE)
+        layout.addWidget(logo)
+        layout.addSpacing(4)
 
         self.nav_layout = layout
         layout.addStretch(1)
+
+        tools_row = QHBoxLayout()
+        tools_row.setSpacing(6)
+        tools_row.addWidget(self._build_database_button(), 1)
+        tools_row.addWidget(self._build_help_button(), 1)
+        layout.addLayout(tools_row)
 
         self.theme_button = make_button("Modo claro", "quiet")
         self.theme_button.clicked.connect(self._toggle_theme)
@@ -112,139 +156,106 @@ class MainWindow(QMainWindow):
         self._sync_theme_button()
 
         self.user_label = QLabel("")
-        self.user_label.setObjectName("Muted")
+        self.user_label.setObjectName("SidebarFooter")
         self.user_label.setWordWrap(True)
         layout.addWidget(self.user_label)
 
-        logout_button = make_button("Logout", "danger")
+        db_manager = self.services.database_maintenance_service.db_manager
+        database_label = QLabel(f"Banco: {db_manager.database_name}")
+        database_label.setObjectName("SidebarFooter")
+        database_label.setToolTip(db_manager.display_name)
+        layout.addWidget(database_label)
+
+        logout_button = make_button("Sair", "danger")
+        logout_button.setToolTip("Encerrar a sessão e voltar para o login")
         logout_button.clicked.connect(self.logout)
         layout.addWidget(logout_button)
 
-    def _build_agent_chat_dock(self) -> None:
-        self.agent_chat_panel = AgentChatPanel(self.services, self.refresh_all_tabs, parent=self)
-        self.agent_chat_dock = QDockWidget(f"Chat com {AGENT_NAME}", self)
-        self.agent_chat_dock.setObjectName("AgentChatDock")
-        self.agent_chat_dock.setWidget(self.agent_chat_panel)
-        self.agent_chat_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.agent_chat_dock)
-        self.resizeDocks([self.agent_chat_dock], [380], Qt.Orientation.Horizontal)
-        self.agent_chat_dock.setVisible(False)
-        self.agent_chat_dock.visibilityChanged.connect(self._on_agent_chat_dock_visibility_changed)
+    def _build_database_button(self) -> QPushButton:
+        database_button = make_button("Banco", "sidebar")
+        database_menu = QMenu(database_button)
+        database_menu.addAction("Fazer backup agora...", self.backup_database)
+        database_menu.addAction("Backup automático...", self.configure_auto_backup)
+        database_menu.addAction("Abrir pasta dos backups automáticos", self.open_auto_backup_directory)
+        database_menu.addSeparator()
+        restore_action = database_menu.addAction("Restaurar backup...", self.restore_database)
+        restore_action.setEnabled(self.services.session_service.is_admin())
+        switch_db_action = database_menu.addAction("Trocar banco de dados...", self.trocar_banco_de_dados)
+        switch_db_action.setEnabled(self.services.session_service.is_admin())
+        database_button.setMenu(database_menu)
+        return database_button
 
-    def _on_agent_chat_dock_visibility_changed(self, visible: bool) -> None:
-        if not visible:
-            self.refresh_all_tabs()
-
-    def open_agent_chat(
-        self, pendente: dict, empresa_id: int | None = None, diretorio_documentos: str | None = None
-    ) -> None:
-        self.agent_chat_panel.open_for_pendente(
-            pendente, empresa_id=empresa_id, diretorio_documentos=diretorio_documentos
-        )
-        self.agent_chat_dock.setWindowTitle(f'Chat - {pendente["nome_arquivo"]}')
-        self.agent_chat_dock.setVisible(True)
-        self.agent_chat_dock.raise_()
+    def _build_help_button(self) -> QPushButton:
+        help_button = make_button("Ajuda", "sidebar")
+        help_menu = QMenu(help_button)
+        help_menu.addAction("Manual desta tela (F1)", self.open_help)
+        help_menu.addAction("Sobre o DocFlow...", lambda: AboutDialog(self).exec())
+        help_button.setMenu(help_menu)
+        return help_button
 
     def _build_main_area(self, root_layout: QHBoxLayout) -> None:
         main_area = QWidget()
         root_layout.addWidget(main_area, 1)
         layout = QVBoxLayout(main_area)
-        layout.setContentsMargins(20, 14, 20, 16)
+        layout.setContentsMargins(24, 20, 24, 18)
         layout.setSpacing(12)
-
-        header = QHBoxLayout()
-        db_label = QLabel(f"Banco: {self.db_path}")
-        db_label.setObjectName("Muted")
-        header.addWidget(db_label)
-        header.addStretch(1)
-
-        database_button = make_button("Banco")
-        database_menu = QMenu(database_button)
-        database_menu.addAction("Fazer backup...", self.backup_database)
-        database_menu.addAction("Configurar backup automatico...", self.configure_auto_backup)
-        database_menu.addAction("Abrir pasta de backup automatico", self.open_auto_backup_directory)
-        database_menu.addSeparator()
-        restore_action = database_menu.addAction("Restaurar backup...", self.restore_database)
-        restore_action.setEnabled(self.services.session_service.is_admin())
-        database_button.setMenu(database_menu)
-        header.addWidget(database_button)
-
-        help_button = make_button("Ajuda")
-        help_menu = QMenu(help_button)
-        help_menu.addAction("Sobre...", lambda: AboutDialog(self).exec())
-        help_button.setMenu(help_menu)
-        header.addWidget(help_button)
-        layout.addLayout(header)
 
         self.stack = SinglePageStackedWidget()
         layout.addWidget(self.stack, 1)
 
-        self.controle_page = ControlePage(self.services, self.refresh_all_tabs)
         self.panorama_page = PanoramaPage(
-            self.services, self.refresh_all_tabs, on_open_control=self.open_control_for_company_period
+            self.services,
+            self.refresh_all_tabs,
+            on_open_ficha=self.open_company_ficha,
         )
-        self.revisao_page = RevisaoPage(self.services, self.refresh_all_tabs)
+        self.ficha_page = FichaEmpresaPage(self.services, self.refresh_all_tabs)
+        self.atencao_page = AtencaoPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)
+        self.cobrancas_page = CobrancasPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)
 
-        page_defs: list[tuple[str, QWidget]] = [
-            ("Dashboard", DashboardPage(self.services, self.refresh_all_tabs)),
-            ("Panorama", self.panorama_page),
-            ("Controle", self.controle_page),
-            ("Empresas", EmpresasPage(self.services, self.refresh_all_tabs)),
-            ("Documentos", DocumentosPage(self.services, self.refresh_all_tabs)),
-            ("Revisao de Documentos", self.revisao_page),
-            ("Configuracoes", ConfiguracoesPage(self.services, self.refresh_all_tabs)),
+        page_defs: list[tuple[str, str, QWidget]] = [
+            (
+                NAV_SECTION_ACOMPANHAMENTO,
+                "Painel",
+                DashboardPage(self.services, self.refresh_all_tabs, on_navigate=self.navigate_to),
+            ),
+            (NAV_SECTION_ACOMPANHAMENTO, "Panorama", self.panorama_page),
+            (NAV_SECTION_ACOMPANHAMENTO, "Cobranças", self.cobrancas_page),
+            (NAV_SECTION_ACOMPANHAMENTO, "Precisa de atenção", self.atencao_page),
+            (
+                NAV_SECTION_CADASTROS,
+                "Empresas",
+                EmpresasPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha),
+            ),
+            (NAV_SECTION_CADASTROS, "Ficha da empresa", self.ficha_page),
+            (NAV_SECTION_CADASTROS, "Documentos", DocumentosPage(self.services, self.refresh_all_tabs)),
         ]
         if self.services.session_service.is_admin():
-            page_defs.append(("Usuarios", UsuariosPage(self.services, self.refresh_all_tabs)))
-            page_defs.append(("Logs", LogsPage(self.services, self.refresh_all_tabs)))
+            page_defs.append(
+                (NAV_SECTION_ADMINISTRACAO, "Configurações", ConfiguracoesPage(self.services, self.refresh_all_tabs))
+            )
+            page_defs.append((NAV_SECTION_ADMINISTRACAO, "Usuários", UsuariosPage(self.services, self.refresh_all_tabs)))
+            page_defs.append(
+                (NAV_SECTION_ADMINISTRACAO, "Histórico de ações", LogsPage(self.services, self.refresh_all_tabs))
+            )
 
-        for index, (title, page) in enumerate(page_defs):
+        insert_at = 2
+        current_section = None
+        for index, (section, title, page) in enumerate(page_defs):
+            if section != current_section:
+                current_section = section
+                section_label = QLabel(section)
+                section_label.setObjectName("NavSection")
+                self.nav_layout.insertWidget(insert_at, section_label)
+                insert_at += 1
             self.pages.append(page)
+            self.page_topic_ids.append(PAGE_TOPIC_IDS.get(title, DEFAULT_HELP_TOPIC_ID))
             self.stack.addWidget(page)
             button = make_button(title)
             button.setObjectName("NavButton")
             button.clicked.connect(lambda _checked=False, i=index: self._select_page(i))
-            self.nav_layout.insertWidget(2 + index, button)
+            self.nav_layout.insertWidget(insert_at, button)
+            insert_at += 1
             self.nav_buttons[index] = button
-
-        footer = QHBoxLayout()
-        footer.addStretch(1)
-        self._build_chat_bubble(footer)
-        layout.addLayout(footer)
-
-    def _build_chat_bubble(self, footer: QHBoxLayout) -> None:
-        """Botao redondo com a logo, sempre no canto inferior direito da janela em
-        qualquer aba. Fica numa linha propria (nao flutua sobre o conteudo da pagina)
-        para nunca sobrepor botoes de acao que tambem ficam ancorados a direita, como
-        em Revisao de Documentos."""
-        self.chat_bubble_button = make_icon_button(
-            agent_chat_icon(), f"Abrir chat com o {AGENT_NAME}", size=48, variant="fab"
-        )
-        shadow = QGraphicsDropShadowEffect(self.chat_bubble_button)
-        shadow.setBlurRadius(16)
-        shadow.setOffset(0, 2)
-        shadow.setColor(QColor(0, 0, 0, 90))
-        self.chat_bubble_button.setGraphicsEffect(shadow)
-        self.chat_bubble_button.clicked.connect(self._on_chat_bubble_clicked)
-        footer.addWidget(self.chat_bubble_button)
-
-    def _on_chat_bubble_clicked(self) -> None:
-        if self.stack.currentWidget() is self.revisao_page:
-            context = self.revisao_page.selected_chat_context()
-            if context is not None:
-                pendente, empresa_id, folder = context
-                self.open_agent_chat(pendente, empresa_id=empresa_id, diretorio_documentos=folder)
-                return
-        if self.agent_chat_dock.isVisible():
-            self.agent_chat_dock.setVisible(False)
-            return
-        self.agent_chat_dock.setWindowTitle(f"Chat com {AGENT_NAME}")
-        self.agent_chat_dock.setVisible(True)
-        self.agent_chat_dock.raise_()
 
     def _select_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -265,19 +276,56 @@ class MainWindow(QMainWindow):
 
     def _sync_theme_button(self) -> None:
         mode = ThemeManager.instance().mode
-        self.theme_button.setText("☀ Modo claro" if mode == "dark" else "🌙 Modo escuro")
+        self.theme_button.setText("Modo claro" if mode == "dark" else "Modo escuro")
+
+    def open_help(self) -> None:
+        """Abre o manual (F1 ou menu Ajuda) ja na pagina correspondente a aba atual -
+        ver PAGE_TOPIC_IDS e qt_ui/dialogs/help_content.py."""
+        current_index = self.stack.currentIndex()
+        topic_id = DEFAULT_HELP_TOPIC_ID
+        if 0 <= current_index < len(self.page_topic_ids):
+            topic_id = self.page_topic_ids[current_index]
+
+        if self.help_dialog is None:
+            self.help_dialog = HelpDialog(self)
+        self.help_dialog.show_topic(topic_id)
+        self.help_dialog.show()
+        self.help_dialog.raise_()
+        self.help_dialog.activateWindow()
 
     # Navegacao / atualizacao
 
-    def open_control_for_company_period(self, company_id: int, period_id: int) -> None:
-        if self.controle_page.open_company_period(company_id, period_id):
-            index = self.pages.index(self.controle_page)
-            self._select_page(index)
+    def navigate_to(self, titulo: str, acao: str | None = None) -> None:
+        """Abre uma tela pelo titulo do menu. Em Cobrancas, 'acao' filtra uma etapa do funil
+        ou, com "rodadas", abre a aba das rodadas do Claude."""
+        if titulo not in PAGE_TOPIC_IDS:
+            return
+        for index, page in enumerate(self.pages):
+            if self.nav_buttons[index].text().split(" (")[0] == titulo:
+                self._select_page(index)
+                break
+        if titulo == "Cobranças" and acao:
+            if acao == "rodadas":
+                self.cobrancas_page.tabs.setCurrentIndex(3)
+            else:
+                self.cobrancas_page.show_action(acao)
+
+    def open_company_ficha(
+        self, company_id: int, documento_id: int | None = None, competencia: str | None = None
+    ) -> None:
+        """Abre a ficha da empresa; com documento (e competencia), ja deixa ele selecionado."""
+        index = self.pages.index(self.ficha_page)
+        self._select_page(index)
+        self.ficha_page.open_company(company_id)
+        if documento_id is not None:
+            self.ficha_page.focus_document(documento_id, competencia)
 
     def refresh_all_tabs(self) -> None:
         """Atualiza a pagina visivel imediatamente; as demais sao marcadas para
         atualizar quando forem abertas (evita recarregar o app inteiro a cada acao)."""
         self._refresh_user_info()
+        # O contador do menu vem depois da tela atual: quem clicou ve a resposta primeiro.
+        QTimer.singleShot(0, self._refresh_attention_badge)
         current_index = self.stack.currentIndex()
         self._dirty_pages = {i for i in range(len(self.pages)) if i != current_index}
         if 0 <= current_index < len(self.pages):
@@ -285,18 +333,36 @@ class MainWindow(QMainWindow):
             if hasattr(page, "refresh_data"):
                 page.refresh_data()
 
+    def _refresh_attention_badge(self) -> None:
+        """Mostra no menu quantos documentos e rodadas estao esperando uma pessoa."""
+        index = self.pages.index(self.atencao_page)
+        button = self.nav_buttons.get(index)
+        if button is None:
+            return
+        try:
+            total = len(self.services.cobranca_service.precisa_de_atencao()) + len(
+                self.services.rodada_service.rodadas_com_problema(50)
+            )
+        except Exception:  # noqa: BLE001 - o contador nunca pode derrubar a janela
+            total = 0
+        button.setText(f"Precisa de atenção ({total})" if total else "Precisa de atenção")
+        button.setProperty("alert", "true" if total else "false")
+        button.style().unpolish(button)
+        button.style().polish(button)
+
     def _refresh_user_info(self) -> None:
         user = self.services.session_service.current_user
         if not user:
-            self.user_label.setText("Usuario: nao autenticado")
+            self.user_label.setText("Nenhum usuário conectado")
             return
-        self.user_label.setText(f'Usuario: {user["username"]} ({user["tipo_usuario"]})')
+        perfil = "administrador" if user["tipo_usuario"] == "admin" else "usuário comum"
+        self.user_label.setText(f'Conectado como {user["username"]} ({perfil})')
 
     # Sessao
 
     def logout(self) -> None:
         answer = QMessageBox.question(
-            self, APP_NAME, "Deseja encerrar a sessao atual e voltar para o login?"
+            self, APP_NAME, "Deseja encerrar a sessão atual e voltar para o login?"
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -314,11 +380,12 @@ class MainWindow(QMainWindow):
 
     def backup_database(self) -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        database_name = self.services.database_maintenance_service.db_manager.database_name
         file_path, _filter = QFileDialog.getSaveFileName(
             self,
             "Salvar backup do banco",
-            str(self.db_path.parent / f"{self.db_path.stem}_backup_{timestamp}.db"),
-            "Banco SQLite (*.db);;Todos os arquivos (*.*)",
+            str(self._backup_dialog_directory() / f"{database_name}_backup_{timestamp}{BACKUP_EXTENSION}"),
+            f"Backup do DocFlow (*{BACKUP_EXTENSION});;Todos os arquivos (*.*)",
         )
         if not file_path:
             return
@@ -331,6 +398,11 @@ class MainWindow(QMainWindow):
             on_success=self._on_backup_created,
             on_error=lambda message: QMessageBox.critical(self, APP_NAME, message),
         )
+
+    @staticmethod
+    def _backup_dialog_directory() -> Path:
+        directory = Path(load_auto_backup_settings()["directory"]).expanduser()
+        return directory if directory.is_dir() else Path.home()
 
     def _on_backup_created(self, result: dict) -> None:
         QMessageBox.information(
@@ -347,7 +419,7 @@ class MainWindow(QMainWindow):
 
         settings = save_auto_backup_settings(dialog.result)
         state_label = "ativado" if settings["enabled"] else "desativado"
-        QMessageBox.information(self, APP_NAME, f"Backup automatico {state_label}.")
+        QMessageBox.information(self, APP_NAME, f"Backup automático {state_label}.")
 
     def open_auto_backup_directory(self) -> None:
         settings = load_auto_backup_settings()
@@ -385,14 +457,14 @@ class MainWindow(QMainWindow):
         mark_auto_backup_created(result)
 
     def _on_auto_backup_failed(self, message: str) -> None:
-        QMessageBox.warning(self, APP_NAME, f"Nao foi possivel gerar o backup automatico.\n\n{message}")
+        QMessageBox.warning(self, APP_NAME, f"Não foi possível gerar o backup automático.\n\n{message}")
 
     def restore_database(self) -> None:
         file_path, _filter = QFileDialog.getOpenFileName(
             self,
             "Selecionar backup para restaurar",
-            str(self.db_path.parent),
-            "Banco SQLite (*.db);;Todos os arquivos (*.*)",
+            str(self._backup_dialog_directory()),
+            f"Backups do DocFlow (*{BACKUP_EXTENSION} *.db);;Todos os arquivos (*.*)",
         )
         if not file_path:
             return
@@ -432,8 +504,34 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             APP_NAME,
-            "Backup restaurado com sucesso. O sistema sera recarregado para aplicar os dados restaurados.",
+            "Backup restaurado com sucesso. O sistema será recarregado para aplicar os dados restaurados.",
         )
+        self.restart_requested = True
+        self.close()
+
+    def trocar_banco_de_dados(self) -> None:
+        """Aponta esta instalacao (deste usuario do sistema operacional) pra outro
+        banco PostgreSQL - outro servidor ou outro banco no mesmo servidor - e reinicia
+        o sistema com ele.
+        Util pra montar setores/departamentos isolados numa mesma maquina/servidor de
+        Area de Trabalho Remota: cada usuario do Windows/Linux tem sua propria config
+        (%USERPROFILE%/AppData/Roaming/DocFlow ou equivalente), entao cada um pode
+        apontar pro banco compartilhado do seu setor ou pra um banco proprio, sem
+        misturar com os outros."""
+        answer = QMessageBox.question(
+            self,
+            APP_NAME,
+            "Trocar o banco de dados encerra a sessão atual e reabre o sistema já "
+            "apontando para o banco escolhido (pode ser um banco existente ou um "
+            "novo, vazio). Deseja continuar?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        new_conninfo = prompt_database_connection_qt(self)
+        if new_conninfo is None:
+            return
+
         self.restart_requested = True
         self.close()
 
@@ -442,7 +540,6 @@ class MainWindow(QMainWindow):
             shutdown = getattr(page, "shutdown", None)
             if callable(shutdown):
                 shutdown()
-        self.agent_chat_panel.shutdown()
         self._wait_for_auto_backup_thread()
         super().closeEvent(event)
 

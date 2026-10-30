@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
-
+from documentos_empresa_app.database.connection import IntegrityError
 from documentos_empresa_app.database.repositories import DeliveryMethodRepository, DocumentoRepository
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
@@ -36,7 +35,7 @@ class DeliveryMethodService:
             raise ValidationError("Ja existe um meio de recebimento com esse nome.")
         try:
             method_id = self.delivery_method_repository.create(nome)
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise ValidationError("Nao foi possivel cadastrar o meio de recebimento.") from exc
 
         self._log(

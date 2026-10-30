@@ -4,78 +4,101 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
+from documentos_empresa_app.qt_ui.brand import load_brand_fonts
 from documentos_empresa_app.utils.helpers import load_config, save_config
+from documentos_empresa_app.utils.resources import get_icons_directory
 
+# Paleta da identidade visual (docflow-identidade/LEIA-ME.md): navy de base, ciano para
+# ativo/foco, laranja para pendencia. Texto sobre ciano ou laranja e sempre navy (branco nao
+# passa em contraste). Verde/vermelho ficam so para o que e semantico (recebido, erro).
 DARK_TOKENS = {
-    "window": "#0F1420",
-    "surface": "#1B2333",
-    "surface_alt": "#232D42",
-    "surface_hover": "#2A3550",
-    "border": "#2E3A52",
-    "border_strong": "#3A4867",
-    "text": "#E7ECF5",
-    "muted": "#8D99AE",
-    "accent": "#2F6FED",
-    "accent_hover": "#4A82F0",
-    "accent_pressed": "#1E4FAA",
-    "accent_soft": "#1B2A4A",
-    "on_accent": "#FFFFFF",
-    "danger": "#C34747",
-    "danger_hover": "#D45A5A",
-    "danger_soft": "#3A2020",
-    "success": "#3E9B5F",
-    "success_soft": "#1C3327",
-    "warning": "#C9A227",
-    "warning_soft": "#38311A",
-    "disabled_bg": "#20283A",
-    "disabled_fg": "#5B6678",
-    "selection": "#2F6FED",
-    "status_recebido": "#1C3327",
-    "status_recebido_fg": "#7ED6A0",
-    "status_pendente": "#3A2020",
-    "status_pendente_fg": "#F0A0A0",
-    "status_nao_cobrar": "#38311A",
-    "status_nao_cobrar_fg": "#E3C86A",
-    "status_encerrado": "#2A2F3A",
-    "status_encerrado_fg": "#9AA5B5",
-    "status_vazio": "#1B2333",
-    "chart_grid": "#2E3A52",
+    "window": "#0F1A33",          # Navy 900
+    "surface": "#16254A",         # Navy 800
+    "surface_alt": "#1B2C55",
+    "surface_hover": "#22376A",
+    "border": "#263A6B",
+    "border_strong": "#2E4A85",   # Navy 600
+    "text": "#E9EEF8",
+    "muted": "#8C9BC0",           # Navy 300
+    "accent": "#4BBDCD",          # Ciano Fluxo
+    "accent_hover": "#66C9D7",
+    "accent_pressed": "#38A6B6",
+    "accent_soft": "#1B4060",
+    "on_accent": "#203461",       # navy sobre ciano
+    "focus": "#4BBDCD",
+    "brand_orange": "#F9B259",
+    "danger": "#E06666",
+    "danger_hover": "#EB7D7D",
+    "danger_soft": "#3D2230",
+    "success": "#4CC38A",
+    "success_soft": "#173B3A",
+    "warning": "#F9B259",         # Laranja Dado
+    "warning_soft": "#3B3326",
+    "disabled_bg": "#1A2747",
+    "disabled_fg": "#5B6C93",
+    "selection": "#2E4A85",
+    "selection_text": "#FFFFFF",
+    "sidebar_bg": "#0B1428",
+    "sidebar_border": "#1C2C52",
+    "sidebar_text": "#C9D3EA",
+    "sidebar_muted": "#6F80AA",
+    "sidebar_hover": "#16254A",
+    "sidebar_active": "#1B3A5A",
+    "status_recebido": "#173B3A",
+    "status_recebido_fg": "#7FE0B0",
+    "status_pendente": "#3B3326",
+    "status_pendente_fg": "#F9B259",
+    "status_nao_cobrar": "#1F2C4D",
+    "status_nao_cobrar_fg": "#9AA9CC",
+    "status_encerrado": "#262F45",
+    "status_encerrado_fg": "#A3AEC4",
+    "status_vazio": "#16254A",
+    "chart_grid": "#263A6B",
 }
 
 LIGHT_TOKENS = {
-    "window": "#EEF3F8",
+    "window": "#F2F5FA",          # Nevoa
     "surface": "#FFFFFF",
-    "surface_alt": "#F7FAFD",
-    "surface_hover": "#EDF3FB",
-    "border": "#D5DEE8",
-    "border_strong": "#B8C7D8",
-    "text": "#203040",
-    "muted": "#617286",
-    "accent": "#2F6FED",
-    "accent_hover": "#255FD0",
-    "accent_pressed": "#1E4FAA",
-    "accent_soft": "#DCE9FF",
+    "surface_alt": "#F7F9FC",
+    "surface_hover": "#EAF0F8",
+    "border": "#DCE3EE",          # Linha
+    "border_strong": "#C2CCDC",
+    "text": "#1B2335",            # Grafite
+    "muted": "#5E6B82",           # Cinza
+    "accent": "#203461",          # Navy Metodos
+    "accent_hover": "#2E4A85",
+    "accent_pressed": "#16254A",
+    "accent_soft": "#E2F3F6",     # ciano bem claro: ativo/selecionado
     "on_accent": "#FFFFFF",
-    "danger": "#C34747",
-    "danger_hover": "#AE3737",
-    "danger_soft": "#F7DEDE",
-    "success": "#2F7D4C",
-    "success_soft": "#D9F2D9",
-    "warning": "#9C7C14",
-    "warning_soft": "#F6EFC7",
-    "disabled_bg": "#E8EEF5",
-    "disabled_fg": "#8A99AA",
-    "selection": "#2F6FED",
-    "status_recebido": "#D9F2D9",
-    "status_recebido_fg": "#1F5B35",
-    "status_pendente": "#FAD4D4",
-    "status_pendente_fg": "#7C2020",
-    "status_nao_cobrar": "#F6EFC7",
-    "status_nao_cobrar_fg": "#6B5510",
-    "status_encerrado": "#E2E2E2",
-    "status_encerrado_fg": "#4F5560",
+    "focus": "#4BBDCD",
+    "brand_orange": "#F9B259",
+    "danger": "#C0392B",
+    "danger_hover": "#A93226",
+    "danger_soft": "#FBE3E0",
+    "success": "#1F8A5B",
+    "success_soft": "#DDF3E8",
+    "warning": "#B86E12",         # laranja escurecido para texto em fundo claro
+    "warning_soft": "#FDEBD3",
+    "disabled_bg": "#EDF1F7",
+    "disabled_fg": "#98A3B6",
+    "selection": "#203461",
+    "selection_text": "#FFFFFF",
+    "sidebar_bg": "#203461",
+    "sidebar_border": "#203461",
+    "sidebar_text": "#D5DDEF",
+    "sidebar_muted": "#8C9BC0",
+    "sidebar_hover": "#2A4174",
+    "sidebar_active": "#2E4A85",
+    "status_recebido": "#DDF3E8",
+    "status_recebido_fg": "#17694A",
+    "status_pendente": "#FDEBD3",
+    "status_pendente_fg": "#8A4E0B",
+    "status_nao_cobrar": "#E8ECF4",
+    "status_nao_cobrar_fg": "#4D5A73",
+    "status_encerrado": "#E3E6EC",
+    "status_encerrado_fg": "#4F5868",
     "status_vazio": "#FFFFFF",
-    "chart_grid": "#D5DEE8",
+    "chart_grid": "#DCE3EE",
 }
 
 STATUS_TOKEN_KEYS = {
@@ -97,9 +120,12 @@ SITUATION_COLORS = {
 
 
 def _build_stylesheet(t: dict[str, str]) -> str:
+    # Setas das listas e campos numericos vem de SVGs em assets/icons (o tema substitui o
+    # desenho padrao do Qt, que sumia com as bordas arredondadas).
+    icons = get_icons_directory().as_posix()
     return f"""
 QWidget {{
-    font-family: "Segoe UI";
+    font-family: "Inter", "Segoe UI";
     font-size: 10pt;
     color: {t["text"]};
 }}
@@ -107,33 +133,73 @@ QMainWindow, QDialog {{
     background: {t["window"]};
 }}
 QFrame#Sidebar {{
-    background: {t["surface"]};
+    background: {t["sidebar_bg"]};
     border: none;
-    border-right: 1px solid {t["border"]};
+    border-right: 1px solid {t["sidebar_border"]};
 }}
-QLabel#SidebarTitle {{
-    font-size: 15pt;
-    font-weight: 700;
-    color: {t["text"]};
-    padding: 4px 8px;
+QFrame#Sidebar QLabel {{
+    background: transparent;
+}}
+QLabel#NavSection {{
+    color: {t["sidebar_muted"]};
+    font-size: 8pt;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    padding: 16px 14px 4px 14px;
+}}
+QLabel#SidebarFooter {{
+    color: {t["sidebar_muted"]};
+    font-size: 8.5pt;
+    padding: 0px 8px;
 }}
 QPushButton#NavButton {{
     background: transparent;
-    color: {t["muted"]};
+    color: {t["sidebar_text"]};
     border: none;
+    border-left: 3px solid transparent;
     border-radius: 8px;
-    padding: 10px 14px;
+    padding: 8px 14px 8px 11px;
     text-align: left;
     font-size: 10.5pt;
 }}
 QPushButton#NavButton:hover {{
-    background: {t["surface_hover"]};
-    color: {t["text"]};
+    background: {t["sidebar_hover"]};
+    color: #FFFFFF;
+}}
+QPushButton#NavButton[alert="true"] {{
+    color: {t["brand_orange"]};
+    font-weight: 600;
 }}
 QPushButton#NavButton[active="true"] {{
-    background: {t["accent_soft"]};
-    color: {t["text"]};
+    background: {t["sidebar_active"]};
+    border-left: 3px solid {t["focus"]};
+    color: #FFFFFF;
     font-weight: 600;
+}}
+QFrame#Sidebar QPushButton[variant="quiet"] {{
+    color: {t["sidebar_text"]};
+}}
+QFrame#Sidebar QPushButton[variant="quiet"]:hover {{
+    background: {t["sidebar_hover"]};
+    color: #FFFFFF;
+}}
+QFrame#Sidebar QPushButton[variant="sidebar"] {{
+    background: transparent;
+    color: {t["sidebar_text"]};
+    border: 1px solid {t["sidebar_active"]};
+}}
+QFrame#Sidebar QPushButton[variant="sidebar"]:hover {{
+    background: {t["sidebar_hover"]};
+    color: #FFFFFF;
+}}
+QFrame#Sidebar QPushButton[variant="danger"] {{
+    background: transparent;
+    color: #F4A3A3;
+    border: 1px solid #7A3B4E;
+}}
+QFrame#Sidebar QPushButton[variant="danger"]:hover {{
+    background: #7A3B4E;
+    color: #FFFFFF;
 }}
 QFrame#Card, QFrame#KpiCard {{
     background: {t["surface"]};
@@ -141,15 +207,17 @@ QFrame#Card, QFrame#KpiCard {{
     border-radius: 12px;
 }}
 QLabel#PageTitle {{
+    font-family: "Sora", "Inter", "Segoe UI";
     font-size: 16pt;
-    font-weight: 700;
+    font-weight: 600;
 }}
 QLabel#PageSubtitle, QLabel#Muted {{
     color: {t["muted"]};
 }}
 QLabel#KpiValue {{
+    font-family: "Sora", "Inter", "Segoe UI";
     font-size: 22pt;
-    font-weight: 700;
+    font-weight: 600;
 }}
 QLabel#KpiLabel {{
     color: {t["muted"]};
@@ -204,15 +272,47 @@ QPushButton[variant="quiet"]:hover {{
     background: {t["surface_hover"]};
     color: {t["text"]};
 }}
-QPushButton[variant="fab"] {{
+QFrame#OptionCard {{
     background: {t["surface"]};
-    border: 1px solid {t["border_strong"]};
-    border-radius: 24px;
-    padding: 0px;
+    border: 1px solid {t["border"]};
+    border-radius: 10px;
 }}
-QPushButton[variant="fab"]:hover {{
+QFrame#OptionCard:hover {{
+    border-color: {t["border_strong"]};
+}}
+QFrame#OptionCard QRadioButton::indicator {{
+    width: 14px;
+    height: 14px;
+    border-radius: 9px;
+    border: 2px solid {t["border_strong"]};
+    background: {t["surface"]};
+}}
+QFrame#OptionCard QRadioButton::indicator:checked {{
+    width: 10px;
+    height: 10px;
+    border: 4px solid {t["accent"]};
+    background: {t["surface"]};
+}}
+QFrame#OptionCard[selected="true"] {{
+    background: {t["accent_soft"]};
+    border: 1.5px solid {t["accent"]};
+}}
+QPushButton[variant="filter"] {{
+    background: transparent;
+    border: 1px solid {t["border"]};
+    border-radius: 14px;
+    padding: 4px 12px;
+    color: {t["muted"]};
+}}
+QPushButton[variant="filter"]:hover {{
     background: {t["surface_hover"]};
+    color: {t["text"]};
+}}
+QPushButton[variant="filter"]:checked {{
+    background: {t["accent_soft"]};
     border-color: {t["accent"]};
+    color: {t["text"]};
+    font-weight: 600;
 }}
 QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {{
     background: {t["surface"]};
@@ -224,7 +324,7 @@ QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {{
     selection-color: {t["on_accent"]};
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus {{
-    border-color: {t["accent"]};
+    border-color: {t["focus"]};
 }}
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QTextEdit:disabled {{
     background: {t["disabled_bg"]};
@@ -233,6 +333,42 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QTextEdit:disabled {{
 QComboBox::drop-down {{
     border: none;
     width: 26px;
+}}
+QComboBox::down-arrow {{
+    image: url("{icons}/chevron_down.svg");
+    width: 12px;
+    height: 12px;
+}}
+QSpinBox {{
+    padding-right: 26px;
+}}
+QSpinBox::up-button, QSpinBox::down-button {{
+    subcontrol-origin: border;
+    width: 22px;
+    border: none;
+    border-left: 1px solid {t["border"]};
+    background: transparent;
+}}
+QSpinBox::up-button {{
+    subcontrol-position: top right;
+    border-top-right-radius: 8px;
+}}
+QSpinBox::down-button {{
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 8px;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+    background: {t["surface_hover"]};
+}}
+QSpinBox::up-arrow {{
+    image: url("{icons}/chevron_up.svg");
+    width: 10px;
+    height: 10px;
+}}
+QSpinBox::down-arrow {{
+    image: url("{icons}/chevron_down.svg");
+    width: 10px;
+    height: 10px;
 }}
 QComboBox QAbstractItemView {{
     background: {t["surface"]};
@@ -250,6 +386,12 @@ QTableView, QTreeView, QListWidget {{
     gridline-color: {t["border"]};
     selection-background-color: {t["accent_soft"]};
     selection-color: {t["text"]};
+}}
+QTreeView::item {{
+    min-height: 26px;
+}}
+QTableView::item {{
+    padding: 2px 6px;
 }}
 QHeaderView::section {{
     background: {t["surface_alt"]};
@@ -359,42 +501,6 @@ QStatusBar {{
     color: {t["muted"]};
     border-top: 1px solid {t["border"]};
 }}
-QFrame#ChatBubbleUser {{
-    background: {t["accent"]};
-    border-radius: 12px;
-}}
-QFrame#ChatBubbleUser QLabel {{
-    color: {t["on_accent"]};
-}}
-QFrame#ChatBubbleAgent {{
-    background: {t["surface_alt"]};
-    border: 1px solid {t["border"]};
-    border-radius: 12px;
-}}
-QFrame#ChatBubbleAgent QLabel {{
-    color: {t["text"]};
-}}
-QLabel#ChatSystemMessage {{
-    color: {t["muted"]};
-    font-style: italic;
-    padding: 4px 10px;
-}}
-QDockWidget {{
-    color: {t["text"]};
-}}
-QDockWidget::title {{
-    background: {t["surface_alt"]};
-    border-bottom: 1px solid {t["border"]};
-    padding: 6px 8px;
-}}
-QMainWindow::separator {{
-    background: {t["border_strong"]};
-    width: 6px;
-    height: 6px;
-}}
-QMainWindow::separator:hover {{
-    background: {t["accent"]};
-}}
 """
 
 
@@ -409,7 +515,7 @@ def _build_palette(t: dict[str, str]) -> QPalette:
         QPalette.ColorRole.Button: t["surface_alt"],
         QPalette.ColorRole.ButtonText: t["text"],
         QPalette.ColorRole.Highlight: t["selection"],
-        QPalette.ColorRole.HighlightedText: t["on_accent"],
+        QPalette.ColorRole.HighlightedText: t["selection_text"],
         QPalette.ColorRole.ToolTipBase: t["surface_alt"],
         QPalette.ColorRole.ToolTipText: t["text"],
         QPalette.ColorRole.PlaceholderText: t["muted"],
@@ -449,6 +555,7 @@ class ThemeManager(QObject):
         return DARK_TOKENS if self._mode == "dark" else LIGHT_TOKENS
 
     def apply(self, app: QApplication) -> None:
+        load_brand_fonts()
         app.setStyle("Fusion")
         app.setPalette(_build_palette(self.tokens))
         app.setStyleSheet(_build_stylesheet(self.tokens))

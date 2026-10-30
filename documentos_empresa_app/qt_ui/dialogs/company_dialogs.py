@@ -37,13 +37,13 @@ class _CompanyTableDialog(QDialog):
         layout.setSpacing(10)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Buscar por codigo ou nome...")
+        self.search_edit.setPlaceholderText("Buscar por código ou nome...")
         self.search_edit.setText(initial_search)
         self.search_edit.textChanged.connect(self._populate)
         layout.addWidget(self.search_edit)
 
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Codigo", "Nome", "Situacao"])
+        self.table.setHorizontalHeaderLabels(["Código", "Nome", "Situação"])
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

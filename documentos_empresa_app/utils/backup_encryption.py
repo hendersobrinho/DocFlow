@@ -29,21 +29,17 @@ def is_encrypted_backup(file_path: Path) -> bool:
         return False
 
 
-def encrypt_backup_file(file_path: Path, password: str) -> None:
-    """Criptografa o backup no lugar: le o .db gerado em texto claro e
-    sobrescreve com a versao criptografada (cabecalho + salt + conteudo cifrado
-    com Fernet/AES, chave derivada da senha via PBKDF2)."""
+def encrypt_backup_bytes(plaintext: bytes, password: str) -> bytes:
+    """Cabecalho + salt + conteudo cifrado com Fernet/AES, chave derivada da senha via
+    PBKDF2."""
     salt = os.urandom(SALT_SIZE)
     key = _derive_key(password, salt)
-    ciphertext = Fernet(key).encrypt(file_path.read_bytes())
-    file_path.write_bytes(MAGIC_HEADER + salt + ciphertext)
+    return MAGIC_HEADER + salt + Fernet(key).encrypt(plaintext)
 
 
-def decrypt_backup_file(source_path: Path, destination_path: Path, password: str) -> None:
-    """Descriptografa um backup criptografado para destination_path. Levanta
-    ValidationError se a senha estiver errada ou o arquivo nao for um backup
+def decrypt_backup_bytes(raw: bytes, password: str) -> bytes:
+    """Levanta ValidationError se a senha estiver errada ou o conteudo nao for um backup
     criptografado valido do DocFlow."""
-    raw = source_path.read_bytes()
     if not raw.startswith(MAGIC_HEADER):
         raise ValidationError("O arquivo selecionado nao e um backup criptografado do DocFlow.")
 
@@ -51,7 +47,17 @@ def decrypt_backup_file(source_path: Path, destination_path: Path, password: str
     salt, ciphertext = payload[:SALT_SIZE], payload[SALT_SIZE:]
     key = _derive_key(password, salt)
     try:
-        plaintext = Fernet(key).decrypt(ciphertext)
+        return Fernet(key).decrypt(ciphertext)
     except InvalidToken as exc:
         raise ValidationError("Senha incorreta para este backup criptografado.") from exc
-    destination_path.write_bytes(plaintext)
+
+
+def encrypt_backup_file(file_path: Path, password: str) -> None:
+    """Criptografa o backup no lugar: le o arquivo em texto claro e sobrescreve com a
+    versao criptografada."""
+    file_path.write_bytes(encrypt_backup_bytes(file_path.read_bytes(), password))
+
+
+def decrypt_backup_file(source_path: Path, destination_path: Path, password: str) -> None:
+    """Descriptografa um backup criptografado para destination_path."""
+    destination_path.write_bytes(decrypt_backup_bytes(source_path.read_bytes(), password))

@@ -7,13 +7,17 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
     QMessageBox,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -21,16 +25,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, make_button
-from documentos_empresa_app.qt_ui.widgets.company_selector import CompanySelector
+from documentos_empresa_app.qt_ui.theme import tokens
+from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, ToolbarRow, make_button
+from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table, selected_key
 from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner
 from documentos_empresa_app.utils.common import MAX_COMPANY_OBSERVATION_LENGTH, ValidationError
+from documentos_empresa_app.utils.helpers import get_documents_directory
 
 
 class ImportLayoutDialog(QDialog):
     def __init__(self, import_service, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Cadastro completo - Layout de importacao")
+        self.setWindowTitle("Layout da planilha de importação")
         self.resize(820, 480)
 
         layout = QVBoxLayout(self)
@@ -38,16 +44,16 @@ class ImportLayoutDialog(QDialog):
         layout.setSpacing(10)
 
         description = QLabel(
-            "Use uma linha por documento. As quatro primeiras colunas identificam a empresa, depois vem "
-            "nome do documento, meio de recebimento, tipo e observacao da empresa. As colunas de meses no "
-            "final sao opcionais e aceitam OK para Recebido, P para Pendente, X para Nao cobrar e vazio "
-            "para nao preencher nada. Para importar so a empresa, deixe as colunas de documento em branco."
+            "Use uma linha por documento. As quatro primeiras colunas identificam a empresa; depois vêm "
+            "nome do documento, meio de recebimento, tipo e observação da empresa. As colunas de meses no "
+            "final são opcionais e aceitam OK para Recebido, P para Pendente, X para Não cobrar e vazio "
+            "para não preencher nada. Para importar só a empresa, deixe as colunas de documento em branco."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
 
         table = QTableWidget(0, 4)
-        table.setHorizontalHeaderLabels(["Ordem", "Coluna", "Obrigatorio", "Exemplo"])
+        table.setHorizontalHeaderLabels(["Ordem", "Coluna", "Obrigatório", "Exemplo"])
         table.verticalHeader().setVisible(False)
         table.setAlternatingRowColors(True)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -60,7 +66,7 @@ class ImportLayoutDialog(QDialog):
             table.insertRow(row)
             table.setItem(row, 0, QTableWidgetItem(str(item["index"])))
             table.setItem(row, 1, QTableWidgetItem(item["field"]))
-            table.setItem(row, 2, QTableWidgetItem("Sim" if item["required"] else "Nao"))
+            table.setItem(row, 2, QTableWidgetItem("Sim" if item["required"] else "Não"))
             table.setItem(row, 3, QTableWidgetItem(str(item["example"])))
         layout.addWidget(table, 1)
 
@@ -72,293 +78,356 @@ class ImportLayoutDialog(QDialog):
         layout.addLayout(buttons)
 
 
+SECTION_STYLE = "font-weight: 600; font-size: 10.5pt; margin-top: 6px;"
+
+
 class EmpresasPage(QWidget):
-    def __init__(self, services, on_data_changed, parent: QWidget | None = None) -> None:
+    """Lista de empresas (com busca) e, ao lado, o cadastro da empresa escolhida, ja
+    editavel. Acoes raras (inativar, remover contato, excluir) ficam em 'Mais acoes'."""
+
+    def __init__(self, services, on_data_changed, on_open_ficha=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.services = services
         self.on_data_changed = on_data_changed
+        self.on_open_ficha = on_open_ficha
+        self.companies: list[dict] = []
         self.selected_company: dict | None = None
-        self.form_mode = "idle"
+        self.creating = False
+        self.dirty = False
+        self._loading = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
-
-        layout.addWidget(PageHeader("Empresas", "Consulte, cadastre e mantenha o cadastro das empresas atendidas."))
-
-        columns = QHBoxLayout()
-        columns.setSpacing(14)
-        layout.addLayout(columns, 1)
-
-        # Coluna esquerda: consulta + resumo
-        left_card = Card()
-        left_layout = QVBoxLayout(left_card)
-        left_layout.setContentsMargins(18, 16, 18, 16)
-        left_layout.setSpacing(10)
-        columns.addWidget(left_card, 1)
-
-        self.company_selector = CompanySelector(
-            self.services.empresa_service, active_only=False, title="Localizar empresa"
+        layout.setSpacing(12)
+        layout.addWidget(
+            PageHeader("Empresas", "Todas as empresas atendidas. Clique numa empresa para ver e editar o cadastro.")
         )
-        self.company_selector.company_selected.connect(self._on_company_selected)
-        self.company_selector.company_cleared.connect(self._on_company_cleared)
-        left_layout.addWidget(self.company_selector)
 
-        self.summary_status = QLabel("Nenhuma empresa consultada.")
-        self.summary_status.setObjectName("Muted")
-        left_layout.addWidget(self.summary_status)
+        toolbar = ToolbarRow()
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Buscar por código, nome ou CNPJ")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setMinimumWidth(320)
+        self.search_edit.textChanged.connect(lambda _text: self._render_list())
+        toolbar.add(self.search_edit)
+        self.show_inactive_check = QCheckBox("Mostrar inativas")
+        self.show_inactive_check.toggled.connect(lambda _checked: self._render_list())
+        toolbar.add(self.show_inactive_check)
+        toolbar.add_stretch()
+        import_button = make_button("Importar planilha")
+        import_menu = QMenu(import_button)
+        import_menu.addAction("Importar empresas e documentos de uma planilha...", self.import_full_registrations)
+        import_menu.addSeparator()
+        import_menu.addAction("Ver colunas da planilha", self.show_import_layout)
+        import_menu.addAction("Baixar planilha modelo...", self.download_import_template)
+        import_button.setMenu(import_menu)
+        toolbar.add(import_button)
+        new_button = make_button("Nova empresa", "primary")
+        new_button.clicked.connect(self.start_new)
+        toolbar.add(new_button)
+        layout.addWidget(toolbar)
 
-        summary_form = QFormLayout()
-        summary_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.summary_fields: dict[str, QLabel] = {}
-        for key, label in (
-            ("codigo", "Codigo"),
-            ("nome", "Nome"),
-            ("email", "Email"),
-            ("contato", "Contato"),
-            ("cnpj", "CNPJ"),
-            ("observacao", "Observacao"),
-            ("cobranca", "Cobranca"),
-        ):
-            value_label = QLabel("-")
-            value_label.setWordWrap(True)
-            self.summary_fields[key] = value_label
-            summary_form.addRow(f"{label}:", value_label)
-        left_layout.addLayout(summary_form)
-        left_layout.addStretch(1)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        layout.addWidget(splitter, 1)
 
-        summary_actions = QHBoxLayout()
-        self.edit_button = make_button("Editar cadastro")
-        self.edit_button.clicked.connect(self.start_edit)
-        summary_actions.addWidget(self.edit_button)
-        self.toggle_active_button = make_button("Inativar")
-        self.toggle_active_button.clicked.connect(self.toggle_active)
-        summary_actions.addWidget(self.toggle_active_button)
-        self.delete_button = make_button("Excluir", "danger")
-        self.delete_button.clicked.connect(self.delete_company)
-        summary_actions.addWidget(self.delete_button)
-        left_layout.addLayout(summary_actions)
+        self.table = make_readonly_table(["Código", "Empresa", "CNPJ", "Contato", "Situação"], stretch_column=1)
+        self.table.itemSelectionChanged.connect(self._on_table_selection)
+        splitter.addWidget(self.table)
 
-        self.clear_contact_button = make_button("Remover dados de contato (LGPD)", "quiet")
-        self.clear_contact_button.setToolTip(
-            "Apaga o email e o nome de contato desta empresa, sem excluir o cadastro nem o "
-            "historico de documentos. Use quando o titular pedir a remocao dos dados dele."
-        )
-        self.clear_contact_button.clicked.connect(self.clear_contact_info)
-        left_layout.addWidget(self.clear_contact_button)
+        self.detail_stack = QStackedWidget()
+        empty = QLabel("Escolha uma empresa na lista\nou clique em Nova empresa.")
+        empty.setObjectName("Muted")
+        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_card = Card()
+        QVBoxLayout(empty_card).addWidget(empty)
+        self.detail_stack.addWidget(empty_card)
+        self.detail_stack.addWidget(self._build_form())
+        splitter.addWidget(self.detail_stack)
+        splitter.setSizes([620, 520])
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
 
-        # Coluna direita: formulario
-        right_card = Card()
-        right_layout = QVBoxLayout(right_card)
-        right_layout.setContentsMargins(18, 16, 18, 16)
-        right_layout.setSpacing(8)
-        columns.addWidget(right_card, 1)
+    # Formulario --------------------------------------------------------------------
 
-        form_title = QLabel("Cadastro e manutencao")
-        form_title.setStyleSheet("font-weight: 600; font-size: 11pt;")
-        right_layout.addWidget(form_title)
+    def _build_form(self) -> QWidget:
+        card = Card()
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(4)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll, 1)
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 16, 20, 12)
+        layout.setSpacing(8)
 
-        grid.addWidget(QLabel("Codigo da empresa"), 0, 0)
+        header = QHBoxLayout()
+        self.form_title = QLabel()
+        self.form_title.setStyleSheet("font-size: 13pt; font-weight: 600;")
+        self.form_title.setWordWrap(True)
+        header.addWidget(self.form_title, 1)
+        self.status_badge = QLabel()
+        header.addWidget(self.status_badge)
+        layout.addLayout(header)
+
+        # Um unico formulario para todas as secoes - assim os rotulos ficam alinhados.
+        form = QFormLayout()
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        layout.addLayout(form)
+
+        def section(title: str) -> QFormLayout:
+            label = QLabel(title)
+            label.setStyleSheet(SECTION_STYLE)
+            form.addRow(label)
+            return form
+
+        ident = section("Identificação")
         self.codigo_edit = QLineEdit()
-        grid.addWidget(self.codigo_edit, 1, 0)
-        grid.addWidget(QLabel("Nome da empresa"), 0, 1)
+        self.codigo_edit.setPlaceholderText("Número usado no escritório")
+        ident.addRow("Código", self.codigo_edit)
         self.nome_edit = QLineEdit()
-        grid.addWidget(self.nome_edit, 1, 1)
-
-        grid.addWidget(QLabel("Email para contato (opcional)"), 2, 0)
-        self.email_edit = QLineEdit()
-        grid.addWidget(self.email_edit, 3, 0)
-        grid.addWidget(QLabel("Nome de contato (opcional)"), 2, 1)
-        self.contato_edit = QLineEdit()
-        grid.addWidget(self.contato_edit, 3, 1)
-
-        grid.addWidget(QLabel("CNPJ (opcional, usado pelo agente de documentos)"), 4, 0)
+        ident.addRow("Nome", self.nome_edit)
         self.cnpj_edit = QLineEdit()
-        self.cnpj_edit.setPlaceholderText("00.000.000/0000-00")
-        grid.addWidget(self.cnpj_edit, 5, 0)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        right_layout.addLayout(grid)
+        self.cnpj_edit.setPlaceholderText("Opcional - ex: 12.345.678/0001-90")
+        self.cnpj_edit.setToolTip("Aceita o CNPJ tradicional e o novo formato alfanumérico da Receita Federal.")
+        ident.addRow("CNPJ", self.cnpj_edit)
 
-        self.opt_out_checkbox = QCheckBox("Nao enviar mala direta por email para esta empresa")
-        self.opt_out_checkbox.setToolTip(
-            "A empresa fica de fora da lista de mala direta mesmo se estiver marcada em Configuracoes."
-        )
-        right_layout.addWidget(self.opt_out_checkbox)
+        contato = section("Contato para cobrança")
+        self.contato_edit = QLineEdit()
+        self.contato_edit.setPlaceholderText("Opcional")
+        contato.addRow("Nome", self.contato_edit)
+        self.email_edit = QLineEdit()
+        self.email_edit.setPlaceholderText("Opcional - usado nos emails de cobrança")
+        contato.addRow("Email", self.email_edit)
+        self.opt_out_checkbox = QCheckBox("Não incluir esta empresa na mala direta por email")
+        contato.addRow("", self.opt_out_checkbox)
 
-        right_layout.addWidget(QLabel(f"Observacao livre (opcional, max {MAX_COMPANY_OBSERVATION_LENGTH} caracteres)"))
+        cobranca = section("Prazos de cobrança")
+        self.own_rule_check = QCheckBox("Usar prazos próprios para esta empresa")
+        self.own_rule_check.setToolTip("Sem marcar, a empresa segue os prazos gerais de Configurações.")
+        self.own_rule_check.toggled.connect(self._on_own_rule_toggled)
+        cobranca.addRow("", self.own_rule_check)
+        self.rule_start_spin = QSpinBox()
+        self.rule_start_spin.setRange(1, 31)
+        self.rule_start_spin.setPrefix("dia ")
+        self.rule_start_spin.setMaximumWidth(120)
+        cobranca.addRow("Começar a cobrar no", self.rule_start_spin)
+        self.rule_end_spin = QSpinBox()
+        self.rule_end_spin.setRange(1, 31)
+        self.rule_end_spin.setPrefix("dia ")
+        self.rule_end_spin.setMaximumWidth(120)
+        cobranca.addRow("Prazo final no", self.rule_end_spin)
+        self.rule_alert_spin = QSpinBox()
+        self.rule_alert_spin.setRange(0, 60)
+        self.rule_alert_spin.setSuffix(" dia(s) de atraso")
+        self.rule_alert_spin.setMaximumWidth(240)
+        cobranca.addRow("Priorizar depois de", self.rule_alert_spin)
+        self.rule_hint = QLabel()
+        self.rule_hint.setObjectName("Muted")
+        self.rule_hint.setWordWrap(True)
+        cobranca.addRow("", self.rule_hint)
+
+        obs_label = QLabel("Observação")
+        obs_label.setStyleSheet(SECTION_STYLE)
+        layout.addWidget(obs_label)
         self.observacao_edit = QTextEdit()
-        self.observacao_edit.setMaximumHeight(84)
+        self.observacao_edit.setPlaceholderText("Qualquer informação útil sobre a empresa (opcional)")
+        self.observacao_edit.setMaximumHeight(80)
         self.observacao_edit.textChanged.connect(self._enforce_observacao_limit)
-        right_layout.addWidget(self.observacao_edit)
+        layout.addWidget(self.observacao_edit)
         self.observacao_counter = QLabel(f"0/{MAX_COMPANY_OBSERVATION_LENGTH}")
         self.observacao_counter.setObjectName("Muted")
         self.observacao_counter.setAlignment(Qt.AlignmentFlag.AlignRight)
-        right_layout.addWidget(self.observacao_counter)
+        layout.addWidget(self.observacao_counter)
+        layout.addStretch(1)
 
-        cobranca_label = QLabel("Regra propria de cobranca (deixe em branco para herdar a regra global)")
-        cobranca_label.setObjectName("Muted")
-        right_layout.addWidget(cobranca_label)
-        cobranca_grid = QGridLayout()
-        cobranca_grid.setHorizontalSpacing(10)
-        cobranca_grid.addWidget(QLabel("Dia inicial"), 0, 0)
-        self.cobranca_inicio_edit = QLineEdit()
-        cobranca_grid.addWidget(self.cobranca_inicio_edit, 1, 0)
-        cobranca_grid.addWidget(QLabel("Dia final"), 0, 1)
-        self.cobranca_fim_edit = QLineEdit()
-        cobranca_grid.addWidget(self.cobranca_fim_edit, 1, 1)
-        cobranca_grid.addWidget(QLabel("Dias para alerta"), 0, 2)
-        self.cobranca_alerta_edit = QLineEdit()
-        cobranca_grid.addWidget(self.cobranca_alerta_edit, 1, 2)
-        right_layout.addLayout(cobranca_grid)
+        for edit in (self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit):
+            edit.textEdited.connect(self._mark_dirty)
+        for check in (self.opt_out_checkbox, self.own_rule_check):
+            check.toggled.connect(self._mark_dirty)
+        for spin in (self.rule_start_spin, self.rule_end_spin, self.rule_alert_spin):
+            spin.valueChanged.connect(self._mark_dirty)
+        self.observacao_edit.textChanged.connect(self._mark_dirty)
 
-        form_actions = QHBoxLayout()
-        self.new_button = make_button("Novo cadastro")
-        self.new_button.clicked.connect(self.start_new)
-        form_actions.addWidget(self.new_button)
+        actions = QHBoxLayout()
+        actions.setContentsMargins(20, 8, 20, 14)
+        self.more_button = make_button("Mais ações")
+        more_menu = QMenu(self.more_button)
+        self.toggle_active_action = more_menu.addAction("Inativar empresa", self.toggle_active)
+        more_menu.addAction("Remover dados de contato (LGPD)...", self.clear_contact_info)
+        more_menu.addSeparator()
+        more_menu.addAction("Excluir empresa...", self.delete_company)
+        self.more_button.setMenu(more_menu)
+        actions.addWidget(self.more_button)
+        self.ficha_button = make_button("Abrir ficha")
+        self.ficha_button.setToolTip("Forma de envio, registro dos documentos e histórico de cobranças")
+        self.ficha_button.clicked.connect(self.open_ficha)
+        actions.addWidget(self.ficha_button)
+        actions.addStretch(1)
+        self.discard_button = make_button("Descartar", "quiet")
+        self.discard_button.clicked.connect(self.discard_changes)
+        actions.addWidget(self.discard_button)
         self.save_button = make_button("Salvar", "primary")
         self.save_button.clicked.connect(self.save_company)
-        form_actions.addWidget(self.save_button)
-        self.cancel_button = make_button("Cancelar", "quiet")
-        self.cancel_button.clicked.connect(self.cancel_edit)
-        form_actions.addWidget(self.cancel_button)
-        form_actions.addStretch(1)
-        right_layout.addLayout(form_actions)
+        actions.addWidget(self.save_button)
+        outer.addLayout(actions)
+        return card
 
-        right_layout.addStretch(1)
-
-        import_row = QHBoxLayout()
-        import_button = make_button("Importar planilha", "primary")
-        import_button.clicked.connect(self.import_full_registrations)
-        import_row.addWidget(import_button)
-        layout_menu_button = make_button("Layout e modelo")
-        layout_menu = QMenu(layout_menu_button)
-        layout_menu.addAction("Ver layout", self.show_import_layout)
-        layout_menu.addAction("Baixar modelo", self.download_import_template)
-        layout_menu_button.setMenu(layout_menu)
-        import_row.addWidget(layout_menu_button)
-        import_row.addStretch(1)
-        right_layout.addLayout(import_row)
-
-        self._set_form_mode("idle")
+    # Lista -------------------------------------------------------------------------
 
     def refresh_data(self) -> None:
-        self.company_selector.refresh_companies()
+        self.companies = self.services.empresa_service.list_empresas(active_only=False)
+        self._render_list()
+        if self.selected_company is not None and not self.dirty:
+            fresh = next((c for c in self.companies if c["id"] == self.selected_company["id"]), None)
+            if fresh is None:
+                self._show_empty()
+            else:
+                self._load_company(fresh)
 
-    # Selecao / resumo
-
-    def _on_company_selected(self, company: dict) -> None:
-        self.selected_company = company
-        self._populate_form(company)
-        self._update_summary(company)
-        self._set_form_mode("view")
-
-    def _on_company_cleared(self) -> None:
-        self.selected_company = None
-        self._clear_form_fields()
-        self._update_summary(None)
-        self._set_form_mode("idle")
-
-    def _update_summary(self, company: dict | None) -> None:
-        if company is None:
-            self.summary_status.setText("Nenhuma empresa consultada.")
-            for value_label in self.summary_fields.values():
-                value_label.setText("-")
-            return
-
-        self.summary_status.setText("Empresa ativa." if company["ativa"] else "Empresa inativa.")
-        self.summary_fields["codigo"].setText(str(company["codigo_empresa"]))
-        self.summary_fields["nome"].setText(company["nome_empresa"])
-        self.summary_fields["email"].setText(company.get("email_contato") or "-")
-        self.summary_fields["contato"].setText(company.get("nome_contato") or "-")
-        self.summary_fields["cnpj"].setText(company.get("cnpj") or "-")
-        self.summary_fields["observacao"].setText(company.get("observacao") or "-")
-        self.summary_fields["cobranca"].setText(self._format_collection_rule(company))
-        self.toggle_active_button.setText("Inativar" if company["ativa"] else "Reativar")
-
-    def _format_collection_rule(self, company: dict) -> str:
-        if (
-            company.get("cobranca_inicio_dia") is None
-            and company.get("cobranca_fim_dia") is None
-            and company.get("cobranca_alerta_dias") is None
-        ):
-            settings = self.services.collection_service.get_global_settings()
-            return (
-                f'Usa regra global: inicio dia {settings["inicio_cobranca_dia"]}, '
-                f'fim dia {settings["encerramento_cobranca_dia"]}, '
-                f'alerta apos {settings["alerta_apos_dias"]} dia(s).'
+    def _render_list(self) -> None:
+        search = self.search_edit.text().strip().casefold()
+        digits = "".join(ch for ch in search if ch.isalnum())
+        rows = []
+        colors = {}
+        muted = tokens()["muted"]
+        for company in self.companies:
+            if not company["ativa"] and not self.show_inactive_check.isChecked():
+                continue
+            if search:
+                haystack = f'{company["codigo_empresa"]} {company["nome_empresa"]}'.casefold()
+                cnpj = (company.get("cnpj") or "").casefold()
+                if search not in haystack and not (digits and digits in cnpj):
+                    continue
+            contato = company.get("nome_contato") or company.get("email_contato") or "-"
+            index = len(rows)
+            rows.append(
+                (
+                    company["id"],
+                    [
+                        str(company["codigo_empresa"]),
+                        company["nome_empresa"],
+                        company.get("cnpj") or "-",
+                        contato,
+                        "Ativa" if company["ativa"] else "Inativa",
+                    ],
+                )
             )
-        parts = []
-        if company.get("cobranca_inicio_dia") is not None:
-            parts.append(f'inicio dia {company["cobranca_inicio_dia"]}')
-        if company.get("cobranca_fim_dia") is not None:
-            parts.append(f'fim dia {company["cobranca_fim_dia"]}')
-        if company.get("cobranca_alerta_dias") is not None:
-            parts.append(f'alerta apos {company["cobranca_alerta_dias"]} dia(s)')
-        return "Regra propria: " + ", ".join(parts) + "."
+            if not company["ativa"]:
+                for column in range(5):
+                    colors[(index, column)] = muted
+        self.table.blockSignals(True)
+        fill_table(self.table, rows, colors)
+        if self.selected_company is not None:
+            for row in range(self.table.rowCount()):
+                if self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) == self.selected_company["id"]:
+                    self.table.selectRow(row)
+                    break
+        self.table.blockSignals(False)
 
-    # Formulario
+    def _on_table_selection(self) -> None:
+        company_id = selected_key(self.table)
+        if company_id is None:
+            return
+        if self.selected_company is not None and self.selected_company["id"] == company_id and not self.creating:
+            return
+        if not self._confirm_discard():
+            self._render_list()
+            return
+        company = next((c for c in self.companies if c["id"] == company_id), None)
+        if company is not None:
+            self._load_company(company)
 
-    def _populate_form(self, company: dict) -> None:
+    # Estado do formulario ------------------------------------------------------------
+
+    def _show_empty(self) -> None:
+        self.selected_company = None
+        self.creating = False
+        self.dirty = False
+        self.detail_stack.setCurrentIndex(0)
+
+    def _load_company(self, company: dict) -> None:
+        self._loading = True
+        self.selected_company = company
+        self.creating = False
+        self.detail_stack.setCurrentIndex(1)
+        self.form_title.setText(f'{company["codigo_empresa"]} - {company["nome_empresa"]}')
+        self._set_badge(bool(company["ativa"]))
         self.codigo_edit.setText(str(company["codigo_empresa"]))
+        self.codigo_edit.setReadOnly(True)
+        self.codigo_edit.setToolTip("O código não pode ser alterado depois do cadastro.")
         self.nome_edit.setText(company["nome_empresa"])
-        self.email_edit.setText(company.get("email_contato") or "")
-        self.contato_edit.setText(company.get("nome_contato") or "")
         self.cnpj_edit.setText(company.get("cnpj") or "")
+        self.contato_edit.setText(company.get("nome_contato") or "")
+        self.email_edit.setText(company.get("email_contato") or "")
         self.opt_out_checkbox.setChecked(bool(company.get("nao_contatar_mala_direta")))
         self.observacao_edit.setPlainText(company.get("observacao") or "")
-        for edit, key in (
-            (self.cobranca_inicio_edit, "cobranca_inicio_dia"),
-            (self.cobranca_fim_edit, "cobranca_fim_dia"),
-            (self.cobranca_alerta_edit, "cobranca_alerta_dias"),
-        ):
-            value = company.get(key)
-            edit.setText("" if value is None else str(value))
+        self._load_rule(company)
+        self.toggle_active_action.setText("Inativar empresa" if company["ativa"] else "Reativar empresa")
+        self.more_button.setEnabled(True)
+        self.ficha_button.setEnabled(True)
+        self._loading = False
+        self._set_dirty(False)
 
-    def _clear_form_fields(self) -> None:
-        for edit in (
-            self.codigo_edit,
-            self.nome_edit,
-            self.email_edit,
-            self.contato_edit,
-            self.cnpj_edit,
-            self.cobranca_inicio_edit,
-            self.cobranca_fim_edit,
-            self.cobranca_alerta_edit,
-        ):
-            edit.clear()
-        self.observacao_edit.clear()
-        self.opt_out_checkbox.setChecked(False)
+    def _load_rule(self, company: dict | None) -> None:
+        settings = self.services.collection_service.get_global_settings()
+        own = company is not None and any(
+            company.get(key) is not None for key in ("cobranca_inicio_dia", "cobranca_fim_dia", "cobranca_alerta_dias")
+        )
 
-    def _set_form_mode(self, mode: str) -> None:
-        self.form_mode = mode
-        editable = mode in {"new", "edit"}
-        has_selection = self.selected_company is not None
+        def value(key: str, global_key: str) -> int:
+            if company is not None and company.get(key) is not None:
+                return int(company[key])
+            return int(settings[global_key])
 
-        self.codigo_edit.setEnabled(mode == "new")
-        for widget in (
-            self.nome_edit,
-            self.email_edit,
-            self.contato_edit,
-            self.cnpj_edit,
-            self.observacao_edit,
-            self.cobranca_inicio_edit,
-            self.cobranca_fim_edit,
-            self.cobranca_alerta_edit,
-        ):
-            widget.setEnabled(editable)
-        self.opt_out_checkbox.setEnabled(editable)
-        self.save_button.setEnabled(editable)
-        self.cancel_button.setEnabled(editable)
-        self.new_button.setEnabled(not editable)
-        self.edit_button.setEnabled(has_selection and not editable)
-        self.delete_button.setEnabled(has_selection and not editable)
-        self.toggle_active_button.setEnabled(has_selection and not editable)
-        self.clear_contact_button.setEnabled(has_selection and not editable)
+        self.rule_start_spin.setValue(value("cobranca_inicio_dia", "inicio_cobranca_dia"))
+        self.rule_end_spin.setValue(value("cobranca_fim_dia", "encerramento_cobranca_dia"))
+        self.rule_alert_spin.setValue(value("cobranca_alerta_dias", "alerta_apos_dias"))
+        self.own_rule_check.setChecked(own)
+        self._on_own_rule_toggled(own)
+        self.rule_hint.setText(
+            f'Prazos gerais: cobrar a partir do dia {settings["inicio_cobranca_dia"]}, prazo final no dia '
+            f'{settings["encerramento_cobranca_dia"]}, prioridade após {settings["alerta_apos_dias"]} dia(s) de atraso.'
+        )
+
+    def _on_own_rule_toggled(self, checked: bool) -> None:
+        for spin in (self.rule_start_spin, self.rule_end_spin, self.rule_alert_spin):
+            spin.setEnabled(checked)
+        self.rule_hint.setVisible(not checked)
+
+    def _set_badge(self, active: bool | None) -> None:
+        t = tokens()
+        if active is None:
+            self.status_badge.setText("")
+            return
+        color, background = (t["success"], t["success_soft"]) if active else (t["muted"], t["surface_alt"])
+        self.status_badge.setText("Ativa" if active else "Inativa")
+        self.status_badge.setStyleSheet(
+            f"color: {color}; background: {background}; border-radius: 9px; padding: 3px 10px; font-weight: 600;"
+        )
+
+    def _mark_dirty(self, *_args) -> None:
+        if not self._loading:
+            self._set_dirty(True)
+
+    def _set_dirty(self, dirty: bool) -> None:
+        self.dirty = dirty
+        self.save_button.setEnabled(dirty or self.creating)
+        self.discard_button.setEnabled(dirty or self.creating)
+        self.save_button.setText("Cadastrar empresa" if self.creating else "Salvar alterações")
+
+    def _confirm_discard(self) -> bool:
+        if not self.dirty:
+            return True
+        answer = QMessageBox.question(
+            self, "Empresas", "Há alterações não salvas nesta empresa. Deseja descartá-las?"
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _enforce_observacao_limit(self) -> None:
         text = self.observacao_edit.toPlainText()
@@ -372,62 +441,49 @@ class EmpresasPage(QWidget):
             text = self.observacao_edit.toPlainText()
         self.observacao_counter.setText(f"{len(text)}/{MAX_COMPANY_OBSERVATION_LENGTH}")
 
-    # Acoes
+    # Acoes -------------------------------------------------------------------------
 
     def start_new(self) -> None:
-        self.company_selector.clear_selection()
-        self._clear_form_fields()
-        self._set_form_mode("new")
+        if not self._confirm_discard():
+            return
+        self._loading = True
+        self.table.clearSelection()
+        self.selected_company = None
+        self.creating = True
+        self.detail_stack.setCurrentIndex(1)
+        self.form_title.setText("Nova empresa")
+        self._set_badge(None)
+        for edit in (self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit):
+            edit.clear()
+        self.codigo_edit.setReadOnly(False)
+        self.codigo_edit.setToolTip("")
+        self.opt_out_checkbox.setChecked(False)
+        self.observacao_edit.clear()
+        self._load_rule(None)
+        self.more_button.setEnabled(False)
+        self.ficha_button.setEnabled(False)
+        self._loading = False
+        self._set_dirty(False)
         self.codigo_edit.setFocus()
 
-    def start_edit(self) -> None:
-        if not self.selected_company:
-            QMessageBox.warning(self, "Empresas", "Selecione uma empresa para editar.")
+    def discard_changes(self) -> None:
+        if self.creating:
+            self._show_empty()
             return
-        company = self.services.empresa_service.get_empresa(self.selected_company["id"])
-        self.selected_company = company
-        self._populate_form(company)
-        self._set_form_mode("edit")
+        if self.selected_company is not None:
+            self._load_company(self.services.empresa_service.get_empresa(self.selected_company["id"]))
 
-    def cancel_edit(self) -> None:
-        if self.selected_company:
-            company = self.services.empresa_service.get_empresa(self.selected_company["id"])
-            self._on_company_selected(company)
-            return
-        self._on_company_cleared()
+    def _rule_values(self) -> tuple[str, str, str]:
+        if not self.own_rule_check.isChecked():
+            return "", "", ""
+        return str(self.rule_start_spin.value()), str(self.rule_end_spin.value()), str(self.rule_alert_spin.value())
 
     def save_company(self) -> None:
-        if self.form_mode not in {"new", "edit"}:
-            return
-
-        target_company_id = self.selected_company["id"] if self.selected_company else None
+        inicio, fim, alerta = self._rule_values()
         try:
-            self.services.collection_service.validate_company_settings_values(
-                self.cobranca_inicio_edit.text(),
-                self.cobranca_fim_edit.text(),
-                self.cobranca_alerta_edit.text(),
-            )
-            if self.form_mode == "edit" and target_company_id:
-                self.services.empresa_service.update_empresa(
-                    target_company_id,
-                    self.nome_edit.text(),
-                    self.email_edit.text(),
-                    self.contato_edit.text(),
-                    self.observacao_edit.toPlainText(),
-                    self.cnpj_edit.text(),
-                )
-                self.services.collection_service.update_company_settings(
-                    target_company_id,
-                    self.cobranca_inicio_edit.text(),
-                    self.cobranca_fim_edit.text(),
-                    self.cobranca_alerta_edit.text(),
-                )
-                self.services.empresa_service.set_nao_contatar_mala_direta(
-                    target_company_id, self.opt_out_checkbox.isChecked()
-                )
-                QMessageBox.information(self, "Empresas", "Empresa atualizada com sucesso.")
-            else:
-                target_company_id = self.services.empresa_service.create_empresa(
+            self.services.collection_service.validate_company_settings_values(inicio, fim, alerta)
+            if self.creating:
+                company_id = self.services.empresa_service.create_empresa(
                     self.codigo_edit.text(),
                     self.nome_edit.text(),
                     self.email_edit.text(),
@@ -435,50 +491,75 @@ class EmpresasPage(QWidget):
                     self.observacao_edit.toPlainText(),
                     self.cnpj_edit.text(),
                 )
-                self.services.collection_service.update_company_settings(
-                    target_company_id,
-                    self.cobranca_inicio_edit.text(),
-                    self.cobranca_fim_edit.text(),
-                    self.cobranca_alerta_edit.text(),
+            else:
+                company_id = self.selected_company["id"]
+                self.services.empresa_service.update_empresa(
+                    company_id,
+                    self.nome_edit.text(),
+                    self.email_edit.text(),
+                    self.contato_edit.text(),
+                    self.observacao_edit.toPlainText(),
+                    self.cnpj_edit.text(),
                 )
-                self.services.empresa_service.set_nao_contatar_mala_direta(
-                    target_company_id, self.opt_out_checkbox.isChecked()
-                )
-                QMessageBox.information(self, "Empresas", "Empresa cadastrada com sucesso.")
+            self.services.collection_service.update_company_settings(company_id, inicio, fim, alerta)
+            self.services.empresa_service.set_nao_contatar_mala_direta(company_id, self.opt_out_checkbox.isChecked())
         except ValidationError as exc:
             QMessageBox.critical(self, "Empresas", str(exc))
             return
 
+        criada = self.creating
+        self.dirty = False
+        self.creating = False
+        self.selected_company = {"id": company_id}
         self.on_data_changed()
-        if target_company_id:
-            self.company_selector.set_company(target_company_id)
+        self.refresh_data()
+        if criada:
+            QMessageBox.information(
+                self,
+                "Empresas",
+                "Empresa cadastrada. Agora cadastre os documentos dela na tela Documentos.",
+            )
+
+    def open_ficha(self) -> None:
+        if self.selected_company and self.on_open_ficha:
+            self.on_open_ficha(self.selected_company["id"])
 
     def toggle_active(self) -> None:
         if not self.selected_company:
             return
-        active = not bool(self.selected_company.get("ativa"))
-        self.services.empresa_service.set_empresa_ativa(self.selected_company["id"], active)
-        estado = "reativada" if active else "inativada"
-        QMessageBox.information(self, "Empresas", f"Empresa {estado} com sucesso.")
-        company_id = self.selected_company["id"]
+        company = self.services.empresa_service.get_empresa(self.selected_company["id"])
+        active = not bool(company.get("ativa"))
+        if not active:
+            answer = QMessageBox.question(
+                self,
+                "Inativar empresa",
+                f'Inativar "{company["nome_empresa"]}"? Ela sai do Panorama e das cobranças, mas o histórico '
+                "fica guardado e dá para reativar depois.",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.services.empresa_service.set_empresa_ativa(company["id"], active)
+        if not active and not self.show_inactive_check.isChecked():
+            self.show_inactive_check.setChecked(True)
         self.on_data_changed()
-        self.company_selector.set_company(company_id)
+        self.refresh_data()
 
     def delete_company(self) -> None:
         if not self.selected_company:
             return
+        company = self.services.empresa_service.get_empresa(self.selected_company["id"])
         answer = QMessageBox.question(
             self,
             "Excluir empresa",
-            "Deseja excluir a empresa selecionada? Os documentos e status mensais vinculados tambem serao apagados.",
+            f'Excluir "{company["nome_empresa"]}" de vez? Todos os documentos, status e o histórico de '
+            "cobranças dela também serão apagados. Se só não atende mais, prefira Inativar.",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-
-        self.services.empresa_service.delete_empresa(self.selected_company["id"])
-        self.company_selector.clear_selection()
+        self.services.empresa_service.delete_empresa(company["id"])
+        self._show_empty()
         self.on_data_changed()
-        QMessageBox.information(self, "Empresas", "Empresa excluida com sucesso.")
+        self.refresh_data()
 
     def clear_contact_info(self) -> None:
         if not self.selected_company:
@@ -486,19 +567,16 @@ class EmpresasPage(QWidget):
         answer = QMessageBox.question(
             self,
             "Remover dados de contato",
-            "Isso apaga o email e o nome de contato desta empresa (o cadastro e o historico de "
-            "documentos continuam intactos). Use quando o titular dos dados pedir a remocao. Continuar?",
+            "Isso apaga o email e o nome de contato desta empresa (o cadastro e o histórico de "
+            "documentos continuam). Use quando o titular dos dados pedir a remoção. Continuar?",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-
-        company_id = self.selected_company["id"]
-        self.services.empresa_service.clear_contact_info(company_id)
+        self.services.empresa_service.clear_contact_info(self.selected_company["id"])
         self.on_data_changed()
-        self.company_selector.set_company(company_id)
-        QMessageBox.information(self, "Empresas", "Dados de contato removidos com sucesso.")
+        self.refresh_data()
 
-    # Importacao
+    # Importacao --------------------------------------------------------------------
 
     def show_import_layout(self) -> None:
         ImportLayoutDialog(self.services.import_service, self).exec()
@@ -506,8 +584,8 @@ class EmpresasPage(QWidget):
     def download_import_template(self) -> None:
         file_path, _filter = QFileDialog.getSaveFileName(
             self,
-            "Salvar modelo de importacao completa",
-            "modelo_importacao_cadastro_completo.xlsx",
+            "Salvar planilha modelo",
+            str(get_documents_directory() / "modelo_importacao_empresas.xlsx"),
             "Planilha Excel (*.xlsx)",
         )
         if not file_path:
@@ -517,40 +595,42 @@ class EmpresasPage(QWidget):
         except ValidationError as exc:
             QMessageBox.critical(self, "Empresas", str(exc))
             return
-        QMessageBox.information(self, "Empresas", f"Modelo salvo com sucesso em:\n{file_path}")
+        QMessageBox.information(self, "Empresas", f"Planilha modelo salva em:\n{file_path}")
 
     def import_full_registrations(self) -> None:
         file_path, _filter = QFileDialog.getOpenFileName(
             self,
-            "Selecione o arquivo Excel do cadastro completo",
-            "",
-            "Arquivos Excel (*.xlsx *.xlsm);;Todos os arquivos (*.*)",
+            "Escolha a planilha com empresas e documentos",
+            str(get_documents_directory()),
+            "Planilhas Excel (*.xlsx *.xlsm);;Todos os arquivos (*.*)",
         )
         if not file_path:
             return
 
         runner = BlockingTaskRunner(self)
         runner.run(
-            "Importando planilha de cadastro completo...",
+            "Importando planilha...",
             lambda: self.services.import_service.import_cadastros_completos(file_path),
             on_success=self._on_import_finished,
-            on_error=lambda message: QMessageBox.critical(self, "Importacao de cadastro completo", message),
+            on_error=lambda message: QMessageBox.critical(self, "Importar planilha", message),
         )
 
     def _on_import_finished(self, result: dict) -> None:
         self.on_data_changed()
+        self.refresh_data()
         summary = [
-            f'Linhas processadas: {result["processed_rows"]}',
-            f'Empresas criadas: {result["companies_created"]}',
+            f'Linhas lidas: {result["processed_rows"]}',
+            f'Empresas novas: {result["companies_created"]}',
             f'Empresas atualizadas: {result["companies_updated"]}',
-            f'Empresas reutilizadas: {result["companies_reused"]}',
-            f'Tipos criados: {result["types_created"]}',
             f'Documentos importados: {result["documents_imported"]}',
             f'Status importados: {result["statuses_imported"]}',
-            f'Linhas com falha: {result["failed"]}',
         ]
+        if result["types_created"]:
+            summary.append(f'Tipos de documento criados: {result["types_created"]}')
+        if result["failed"]:
+            summary.append(f'Linhas com problema: {result["failed"]}')
         if result["errors"]:
             summary.append("")
-            summary.append("Erros encontrados:")
+            summary.append("Problemas encontrados:")
             summary.extend(result["errors"][:10])
-        QMessageBox.information(self, "Importacao de cadastro completo", "\n".join(summary))
+        QMessageBox.information(self, "Importar planilha", "\n".join(summary))

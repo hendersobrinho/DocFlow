@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
-
-from documentos_empresa_app.database.repositories import UserPreferenceRepository, UsuarioRepository
+from documentos_empresa_app.database.connection import IntegrityError
+from documentos_empresa_app.database.repositories import UsuarioRepository
 from documentos_empresa_app.services.auth_service import AuthService
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
@@ -17,42 +16,14 @@ class UserService:
     def __init__(
         self,
         usuario_repository: UsuarioRepository,
-        user_preference_repository: UserPreferenceRepository,
         session_service: SessionService,
         audit_service: AuditService | None = None,
         auth_service: AuthService | None = None,
     ) -> None:
         self.usuario_repository = usuario_repository
-        self.user_preference_repository = user_preference_repository
         self.session_service = session_service
         self.audit_service = audit_service
         self.auth_service = auth_service
-
-    def get_own_inbox_folder(self) -> str | None:
-        usuario_id = self.session_service.get_user_id()
-        if usuario_id is None:
-            return None
-        return self.user_preference_repository.get_pasta_entrada(usuario_id)
-
-    def set_own_inbox_folder(self, pasta_entrada: str | None) -> None:
-        usuario_id = self.session_service.get_user_id()
-        if usuario_id is None:
-            raise ValidationError("Nenhum usuario autenticado.")
-        normalized = str(pasta_entrada or "").strip() or None
-        self.user_preference_repository.set_pasta_entrada(usuario_id, normalized)
-
-    def get_own_empresas_root_folder(self) -> str | None:
-        usuario_id = self.session_service.get_user_id()
-        if usuario_id is None:
-            return None
-        return self.user_preference_repository.get_pasta_raiz_empresas(usuario_id)
-
-    def set_own_empresas_root_folder(self, pasta_raiz_empresas: str | None) -> None:
-        usuario_id = self.session_service.get_user_id()
-        if usuario_id is None:
-            raise ValidationError("Nenhum usuario autenticado.")
-        normalized = str(pasta_raiz_empresas or "").strip() or None
-        self.user_preference_repository.set_pasta_raiz_empresas(usuario_id, normalized)
 
     def change_own_password(self, current_password: str, new_password: str) -> None:
         user_id = self.session_service.get_user_id()
@@ -119,7 +90,7 @@ class UserService:
                             f'"{normalized_username}" como {normalized_tipo}.'
                         ),
                     )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise ValidationError("Nao foi possivel cadastrar o usuario.") from exc
         return user_id
 

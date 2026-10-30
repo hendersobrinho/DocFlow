@@ -10,7 +10,6 @@ from documentos_empresa_app.utils.common import (
     is_chargeable_period,
     normalize_type_occurrence_rule,
 )
-from documentos_empresa_app.utils.file_naming import sanitize_folder_name_component
 
 # ── Text normalization ─────────────────────────────────────────────────────────
 
@@ -566,47 +565,6 @@ def resolve_company_folder(empresa: dict, root_dir: Path) -> tuple[Path | None, 
         return None, 0, f"Erro ao acessar raiz: {exc}"
 
     return None, 0, f"Pasta da empresa {codigo} nao encontrada"
-
-
-_COMPANY_FOLDER_SEPARATORS = [". ", " - ", "-", "_", " "]
-_DEFAULT_COMPANY_FOLDER_SEPARATOR = ". "
-
-
-def suggest_company_folder_name(codigo: str, nome_empresa: str, root_dir: Path) -> str:
-    """Aprende o separador (codigo + separador + nome) dominante entre as pastas de
-    empresa ja existentes em root_dir, para sugerir um nome de pasta nova consistente com
-    a convencao local. Pastas sem separador nem nome (so o codigo puro) nao contam como
-    convencao valida. Raiz vazia ou sem nenhuma pasta reconhecivel usa o padrao
-    "{codigo}. {nome}"."""
-    tally: dict[str, int] = {}
-    try:
-        entries = list(root_dir.iterdir())
-    except (PermissionError, OSError):
-        entries = []
-
-    for child in entries:
-        if not child.is_dir():
-            continue
-        match = re.match(r"^(\d+)(.*)$", child.name)
-        if not match:
-            continue
-        rest = match.group(2)
-        for separator in _COMPANY_FOLDER_SEPARATORS:
-            if rest.startswith(separator) and len(rest) > len(separator):
-                tally[separator] = tally.get(separator, 0) + 1
-                break
-
-    separator = _DEFAULT_COMPANY_FOLDER_SEPARATOR
-    if tally:
-        separator = max(tally.items(), key=lambda item: item[1])[0]
-
-    nome_sanitizado = sanitize_folder_name_component(nome_empresa)
-    return f"{codigo}{separator}{nome_sanitizado}"
-
-
-def suggest_company_folder_path(empresa: dict, root_dir: Path) -> Path:
-    nome = suggest_company_folder_name(str(empresa["codigo_empresa"]), empresa["nome_empresa"], root_dir)
-    return root_dir / nome
 
 
 def bank_display_label(bank_key: str) -> str:

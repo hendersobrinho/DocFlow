@@ -37,33 +37,35 @@ class CompanySelector(QGroupBox):
         self._syncing = False
 
         layout = QGridLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setHorizontalSpacing(10)
+        layout.setContentsMargins(12, 8, 12, 10)
+        layout.setHorizontalSpacing(8)
 
-        layout.addWidget(QLabel("Codigo"), 0, 0)
         self.code_edit = QLineEdit()
-        self.code_edit.setMaximumWidth(140)
+        self.code_edit.setPlaceholderText("Código")
+        self.code_edit.setToolTip("Digite o código da empresa e aperte Enter")
+        self.code_edit.setMaximumWidth(110)
         self.code_edit.editingFinished.connect(self._on_code_search)
         self.code_edit.textEdited.connect(self._on_typed)
-        layout.addWidget(self.code_edit, 1, 0)
+        layout.addWidget(self.code_edit, 0, 0)
 
-        layout.addWidget(QLabel("Buscar por nome"), 0, 1)
         self.name_combo = QComboBox()
         self.name_combo.setEditable(True)
         self.name_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.name_combo.lineEdit().setPlaceholderText("Digite parte do nome ou escolha na lista")
         self.name_combo.lineEdit().textEdited.connect(self._on_name_typed)
         self.name_combo.activated.connect(self._on_name_selected)
-        layout.addWidget(self.name_combo, 1, 1)
+        layout.addWidget(self.name_combo, 0, 1)
         layout.setColumnStretch(1, 1)
 
-        browse_button = make_button("...", None)
-        browse_button.setMaximumWidth(40)
+        browse_button = make_button("Lista...", "quiet")
+        browse_button.setToolTip("Ver todas as empresas e escolher")
         browse_button.clicked.connect(self.open_company_list)
-        layout.addWidget(browse_button, 1, 2)
+        layout.addWidget(browse_button, 0, 2)
 
-        self.status_label = QLabel("Nenhuma empresa selecionada.")
+        self.status_label = QLabel("")
         self.status_label.setObjectName("Muted")
-        layout.addWidget(self.status_label, 2, 0, 1, 3)
+        self.status_label.setVisible(False)
+        layout.addWidget(self.status_label, 1, 0, 1, 3)
 
         self.refresh_companies()
 
@@ -89,7 +91,7 @@ class CompanySelector(QGroupBox):
         self.code_edit.clear()
         self.name_combo.setCurrentText("")
         self._syncing = False
-        self.status_label.setText("Nenhuma empresa selecionada.")
+        self.status_label.setVisible(False)
         if had:
             self.company_cleared.emit()
 
@@ -162,7 +164,8 @@ class CompanySelector(QGroupBox):
         if not company:
             had = self.selected_company_id is not None
             self.selected_company_id = None
-            self.status_label.setText("Empresa nao encontrada para o codigo informado.")
+            self.status_label.setText(f"Nenhuma empresa com o código {raw_code}.")
+            self.status_label.setVisible(True)
             if had:
                 self.company_cleared.emit()
             return
@@ -184,6 +187,9 @@ class CompanySelector(QGroupBox):
         self.code_edit.setText(str(company["codigo_empresa"]))
         self.name_combo.setCurrentText(self._label(company))
         self._syncing = False
-        situacao = "ativa" if company["ativa"] else "inativa"
-        self.status_label.setText(f'Empresa selecionada: {company["nome_empresa"]} ({situacao}).')
+        if company["ativa"]:
+            self.status_label.setVisible(False)
+        else:
+            self.status_label.setText("Esta empresa está inativa.")
+            self.status_label.setVisible(True)
         self.company_selected.emit(company)

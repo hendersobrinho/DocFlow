@@ -7,12 +7,12 @@ MONTH_STATUS_OVERDUE = "mes_em_atraso"
 
 UI_SITUATION_LABELS = {
     MONTH_STATUS_OVERDUE: "Em atraso",
-    PanoramaService.SITUATION_COM_PENDENCIA: "Com pendencia",
+    PanoramaService.SITUATION_COM_PENDENCIA: "Com pendência",
     PanoramaService.SITUATION_EM_ANDAMENTO: "Em andamento",
     PanoramaService.SITUATION_NAO_INICIADA: "Dentro do prazo",
     PanoramaService.SITUATION_SEM_DOCUMENTOS: "Sem documentos",
-    PanoramaService.SITUATION_CONCLUIDA: "Concluida",
-    PanoramaService.SITUATION_SEM_COBRANCA: "Sem cobranca",
+    PanoramaService.SITUATION_CONCLUIDA: "Concluída",
+    PanoramaService.SITUATION_SEM_COBRANCA: "Sem cobrança",
 }
 
 UI_SITUATION_PRIORITIES = {
@@ -48,7 +48,8 @@ class PanoramaViewModel:
         self.periods_by_id = {p["id"]: p for p in periodos}
 
         monthly_view = self.services.panorama_service.build_monthly_view(period_id, active_only=active_only)
-        queue_view = self.services.collection_service.build_collection_queue(active_only=active_only)
+        # So leitura: os itens sao copiados em _build_queue_item_until_selected_period.
+        queue_view = self.services.collection_service.queue_snapshot(active_only=active_only)
 
         self.periodo = monthly_view.get("periodo")
         self.queue_by_company = {
@@ -61,13 +62,6 @@ class PanoramaViewModel:
         counts = {key: 0 for key in UI_SITUATION_LABELS}
         for row in rows if rows is not None else self.rows:
             counts[row["month_status_key"]] += 1
-        return counts
-
-    def count_collection_statuses(self, rows: list[dict] | None = None) -> dict[str, int]:
-        counts: dict[str, int] = {"em_dia": 0, CollectionService.PHASE_EM_COBRANCA: 0, CollectionService.PHASE_EM_ATRASO: 0}
-        for row in rows if rows is not None else self.rows:
-            key = row.get("collection_status_key") or "em_dia"
-            counts[key] = counts.get(key, 0) + 1
         return counts
 
     # Derivacao portada
@@ -90,8 +84,6 @@ class PanoramaViewModel:
             previous_period_items = self._previous_period_items(queue_item, selected_period_key)
             merged["queue_item"] = queue_item
             merged["previous_period_items"] = previous_period_items
-            merged["previous_pending_count"] = len(previous_period_items)
-            merged["previous_pending_summary"] = self._build_previous_pending_summary(previous_period_items)
             merged["selected_period_collection_item"] = self._selected_period_collection_item(
                 queue_item, selected_period_id
             )
@@ -214,16 +206,6 @@ class PanoramaViewModel:
             return 1
         return 2
 
-    def _build_previous_pending_summary(self, period_items: list[dict]) -> str:
-        if not period_items:
-            return "-"
-        labels = [period_item["periodo_label"] for period_item in period_items]
-        if len(labels) == 1:
-            return labels[0]
-        if len(labels) == 2:
-            return f"{labels[0]} e {labels[1]}"
-        return f"{labels[0]}, {labels[1]} e mais {len(labels) - 2} mes(es)"
-
     def _pick_primary_period(self, period_items: list[dict]) -> dict:
         overdue_items = [item for item in period_items if item["phase_key"] == CollectionService.PHASE_EM_ATRASO]
         target_items = overdue_items or period_items
@@ -237,7 +219,7 @@ class PanoramaViewModel:
             return period_items[0]["periodo_label"]
         first_label = period_items[0]["periodo_label"]
         last_label = period_items[-1]["periodo_label"]
-        return f"{first_label} ate {last_label} ({len(period_items)} meses)"
+        return f"{first_label} até {last_label} ({len(period_items)} meses)"
 
     def _resolve_suggested_channel(self, item: dict, documents: list[dict]) -> str:
         available_methods: list[str] = []

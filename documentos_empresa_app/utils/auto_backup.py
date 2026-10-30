@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from documentos_empresa_app.utils.common import APP_NAME
+from documentos_empresa_app.utils.common import APP_DATA_DIRNAME
 from documentos_empresa_app.utils.helpers import load_config, save_config
 
 
@@ -23,7 +23,7 @@ def get_default_auto_backup_directory() -> Path:
         if documents_dir.exists():
             base_dir = documents_dir
             break
-    return base_dir / APP_NAME / "backups"
+    return base_dir / APP_DATA_DIRNAME / "backups"  # mesma pasta de sempre (grafia antiga)
 
 
 def normalize_auto_backup_settings(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape as html_escape
 from io import BytesIO
 from pathlib import Path
 import textwrap
@@ -254,6 +255,69 @@ class PendingReportService:
         closure_rows = self.status_repository.list_closures_for_documents(document_ids)
         return build_chargeable_closure_key_map(closure_rows, occurrence_by_document)
 
+    def build_printable_report(
+        self,
+        company_ids: list[int] | None,
+        start_period_id: int,
+        end_period_id: int,
+    ) -> dict:
+        """Relatorio de pendencias em HTML simples (tabelas e cores basicas), pronto para
+        virar PDF vetorial ou ir direto para a impressora pela interface. Devolve
+        {"html", "result"} - result tem os mesmos totais da exportacao."""
+        context = self._build_export_context(company_ids, start_period_id, end_period_id)
+        report = context["report"]
+        rows = context["rows"]
+
+        periodos = report["periodos"]
+        inicio = f'{periodos[0]["mes"]:02d}/{periodos[0]["ano"]}'
+        fim = f'{periodos[-1]["mes"]:02d}/{periodos[-1]["ano"]}'
+        short_period_text = inicio if inicio == fim else f"{inicio} a {fim}"
+
+        by_company: dict[tuple[int, str], list[dict]] = {}
+        for row in rows:
+            by_company.setdefault((row["codigo_empresa"], row["nome_empresa"]), []).append(row)
+
+        def esc(value) -> str:
+            return html_escape(str(value))
+
+        parts = [
+            "<html><body style=\"font-family: 'Segoe UI', Arial, sans-serif; color: #1f2d3d;\">",
+            "<table width='100%' cellspacing='0' cellpadding='0'><tr>",
+            "<td><span style='font-size: 20pt; font-weight: 600;'>Relatório de pendências</span><br>",
+            f"<span style='color:#5b6b7f;'>Período: {esc(short_period_text)}"
+            f" &nbsp;|&nbsp; Empresas: {esc(context['company_label'])}</span></td>",
+            f"<td align='right' style='color:#5b6b7f;'>DocFlow<br>Gerado em {esc(context['generated_at'])}</td>",
+            "</tr></table>",
+            "<p style='margin-top: 10px;'>",
+            f"<b>{len(rows)}</b> documento(s) pendente(s) em "
+            f"<b>{report['pending_company_count']}</b> de {len(report['companies'])} empresa(s).",
+            "</p>",
+        ]
+        for (codigo, nome), company_rows in by_company.items():
+            parts.append(
+                f"<p style='margin-top: 14px; margin-bottom: 4px; font-size: 12pt; font-weight: 600;'>"
+                f"{esc(codigo)} - {esc(nome)} <span style='color:#5b6b7f; font-weight: 400;'>"
+                f"({len(company_rows)} pendente(s))</span></p>"
+            )
+            parts.append(
+                "<table width='100%' cellspacing='0' cellpadding='5' "
+                "style='border-collapse: collapse; border: 1px solid #c9d4e0;'>"
+                "<tr style='background-color: #e8eef6;'>"
+                "<th align='left' width='16%'>Competência</th>"
+                "<th align='left' width='27%'>Tipo</th>"
+                "<th align='left'>Documento</th></tr>"
+            )
+            for index, row in enumerate(company_rows):
+                background = "#ffffff" if index % 2 == 0 else "#f6f8fb"
+                parts.append(
+                    f"<tr style='background-color: {background};'>"
+                    f"<td>{row['mes']:02d}/{row['ano']}</td><td>{esc(row['tipo_documento'])}</td>"
+                    f"<td>{esc(row['nome_documento'])}</td></tr>"
+                )
+            parts.append("</table>")
+        parts.append("</body></html>")
+        return {"html": "".join(parts), "result": self._build_export_result(report)}
+
     def _build_export_context(
         self,
         company_ids: list[int] | None,
@@ -298,8 +362,8 @@ class PendingReportService:
 class _PendingReportPdfBuilder:
     SCALE = 2
     PDF_RESOLUTION = 150.0 * SCALE
-    PAGE_WIDTH = 1684 * SCALE
-    PAGE_HEIGHT = 1191 * SCALE
+    PAGE_WIDTH = 1754 * SCALE  # A4 paisagem a 300 dpi (297 x 210 mm)
+    PAGE_HEIGHT = 1240 * SCALE
     MARGIN_X = 72 * SCALE
     MARGIN_Y = 60 * SCALE
     HEADER_HEIGHT = 122 * SCALE

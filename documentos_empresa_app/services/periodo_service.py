@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from documentos_empresa_app.database.repositories import PeriodoRepository
 from documentos_empresa_app.utils.common import ValidationError, count_months_between, format_period_label
 
@@ -24,24 +26,17 @@ class PeriodoService:
     def list_available_years(self) -> list[int]:
         return self.periodo_repository.list_years()
 
-    def get_or_create_periodo(self, ano, mes) -> dict:
-        """Devolve o periodo do mes/ano informado, gerando o ano inteiro (generate_year e
-        idempotente) se aquele mes ainda nao existir - usado pelo "dar baixa" via chat pra
-        nunca esbarrar num beco sem saida so porque o calendario daquele ano nao foi gerado."""
-        ano_int = self._parse_year(ano)
-        try:
-            mes_int = int(mes)
-        except (TypeError, ValueError) as exc:
-            raise ValidationError("Mes invalido (use um valor entre 1 e 12).") from exc
-        if not 1 <= mes_int <= 12:
-            raise ValidationError("Mes invalido (use um valor entre 1 e 12).")
+    # A partir deste mes o ano seguinte ja e criado, para janeiro chegar com tudo pronto.
+    MES_PARA_CRIAR_PROXIMO_ANO = 11
 
-        periodo = self.periodo_repository.get_by_year_month(ano_int, mes_int)
-        if periodo is None:
-            self.generate_year(ano_int)
-            periodo = self.periodo_repository.get_by_year_month(ano_int, mes_int)
-        periodo["label"] = format_period_label(periodo["ano"], periodo["mes"])
-        return periodo
+    def ensure_operational_years(self, today: date | None = None) -> list[int]:
+        """Garante os meses do ano atual e, de novembro em diante, os do ano seguinte.
+        Chamado ao abrir o sistema; devolve os anos em que algum mes foi criado."""
+        today = today or date.today()
+        anos = [today.year]
+        if today.month >= self.MES_PARA_CRIAR_PROXIMO_ANO:
+            anos.append(today.year + 1)
+        return [ano for ano in anos if self.generate_year(ano)["created"]]
 
     def generate_year(self, ano) -> dict:
         ano_int = self._parse_year(ano)

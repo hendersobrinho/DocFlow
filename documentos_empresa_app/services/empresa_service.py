@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-import sqlite3
 
+from documentos_empresa_app.database.connection import IntegrityError
 from documentos_empresa_app.database.repositories import EmpresaRepository
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.utils.common import (
     MAX_COMPANY_OBSERVATION_LENGTH,
     ValidationError,
+    normalize_delivery_methods,
 )
 
 
@@ -80,7 +81,7 @@ class EmpresaService:
                     empresa_id=empresa_id,
                     empresa_nome=nome,
                 )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise ValidationError("Nao foi possivel cadastrar a empresa.") from exc
         return empresa_id
 
@@ -153,7 +154,7 @@ class EmpresaService:
                         empresa_id=empresa_id,
                         empresa_nome=nome,
                     )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise ValidationError("Nao foi possivel atualizar a empresa.") from exc
 
     def set_empresa_ativa(self, empresa_id: int, ativa: bool) -> None:
@@ -176,6 +177,42 @@ class EmpresaService:
                     empresa_id=empresa_id,
                     empresa_nome=empresa["nome_empresa"],
                 )
+
+    def set_recebimento(
+        self,
+        empresa_id: int,
+        canais_recebimento: str | list[str] | tuple[str, ...] | None,
+        emails_origem_documentos: str | list[str] | tuple[str, ...] | None,
+        instrucoes_busca: str | None,
+    ) -> None:
+        """Como a empresa envia os documentos: canais (Email, Onvio...), enderecos de email
+        de onde os documentos chegam e instrucoes livres de onde/como procura-los."""
+        canais = normalize_delivery_methods(canais_recebimento)
+        if isinstance(emails_origem_documentos, (list, tuple)):
+            emails_origem_documentos = ", ".join(emails_origem_documentos)
+        emails = self._normalize_email_list(emails_origem_documentos)
+        instrucoes = self._normalize_optional_text(instrucoes_busca)
+        with self.empresa_repository.db_manager.connect():
+            empresa = self.get_empresa(empresa_id)
+            antes = (
+                empresa.get("canais_recebimento") or "",
+                empresa.get("emails_origem_documentos") or "",
+                empresa.get("instrucoes_busca") or "",
+            )
+            if antes == (canais or "", emails or "", instrucoes or ""):
+                return
+            self.empresa_repository.update_reception(empresa_id, canais, emails, instrucoes)
+            self._log(
+                "EDICAO_EMPRESA",
+                "empresa",
+                empresa_id,
+                (
+                    f'Usuario {self._actor_name()} atualizou como a empresa "{empresa["nome_empresa"]}" '
+                    f'envia os documentos (canais: {canais or "-"}).'
+                ),
+                empresa_id=empresa_id,
+                empresa_nome=empresa["nome_empresa"],
+            )
 
     def set_empresa_directory(self, empresa_id: int, diretorio_documentos: str | None) -> None:
         normalized_directory = self._normalize_optional_directory(diretorio_documentos)
@@ -287,6 +324,19 @@ class EmpresaService:
             raise ValidationError("Informe um email valido ou deixe o campo em branco.")
         return normalized
 
+    def _normalize_email_list(self, value: str | None) -> str | None:
+        """Aceita virgula, ponto-e-virgula ou quebra de linha como separador, valida cada
+        email e remove duplicatas (sem diferenciar maiusculas)."""
+        normalized_items: list[str] = []
+        seen: set[str] = set()
+        for raw_item in re.split(r"[,;\n]+", str(value or "")):
+            email = self._normalize_optional_email(raw_item)
+            if not email or email.casefold() in seen:
+                continue
+            seen.add(email.casefold())
+            normalized_items.append(email)
+        return ", ".join(normalized_items) if normalized_items else None
+
     def _normalize_optional_text(self, value: str | None) -> str | None:
         normalized = str(value or "").strip()
         return normalized or None
@@ -300,12 +350,18 @@ class EmpresaService:
         return normalized
 
     def _normalize_optional_cnpj(self, value: str | None) -> str | None:
-        digits = re.sub(r"\D", "", str(value or ""))
-        if not digits:
+        # So remove a pontuacao de formatacao (. / - e espacos) - o formato novo do
+        # CNPJ (Receita Federal, 2026) permite letras nas 12 primeiras posicoes, so os
+        # 2 digitos verificadores finais continuam sempre numericos.
+        cleaned = re.sub(r"[.\-/\s]", "", str(value or "")).upper()
+        if not cleaned:
             return None
-        if len(digits) != 14:
-            raise ValidationError("O CNPJ deve conter 14 digitos ou ficar em branco.")
-        return digits
+        if not re.fullmatch(r"[A-Z0-9]{12}\d{2}", cleaned):
+            raise ValidationError(
+                "O CNPJ deve ter 14 caracteres (letras ou numeros nas 12 primeiras posicoes e 2 "
+                "numeros no final) ou ficar em branco."
+            )
+        return cleaned
 
     def _normalize_optional_directory(self, value: str | None) -> str | None:
         normalized = self._normalize_optional_text(value)

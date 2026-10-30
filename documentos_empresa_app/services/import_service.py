@@ -22,6 +22,7 @@ from documentos_empresa_app.utils.common import (
     MONTH_NAMES,
     ValidationError,
 )
+from documentos_empresa_app.utils.diagnostics import get_diagnostics_logger
 
 
 EMPRESA_IMPORT_LAYOUT = (
@@ -186,6 +187,9 @@ CADASTRO_COMPLETO_FIELD_ALIASES = {
     "meios_recebimento": set(DOCUMENTO_IMPORT_HEADER_ALIASES[0]) | {"forma_recebimento", "forma_de_recebimento"},
     "nome_tipo": set(DOCUMENTO_IMPORT_HEADER_ALIASES[2]),
     "observacao": set(EMPRESA_IMPORT_HEADER_ALIASES[4]),
+    # Colunas opcionais, so pelo cabecalho.
+    "observacao_documento": {"observacao_do_documento", "observacao_documento", "obs_do_documento", "obs_documento"},
+    "regra_tipo": {"regra_do_tipo", "regra_tipo", "regra_de_ocorrencia", "regra_ocorrencia"},
 }
 
 CADASTRO_COMPLETO_LEGACY_FIELD_INDEXES = {
@@ -245,7 +249,11 @@ class ImportService:
         documento_service: DocumentoService,
         periodo_service: PeriodoService,
         status_service: StatusService,
+        delivery_method_service=None,
     ) -> None:
+        self.delivery_method_service = delivery_method_service
+        self._last_document_reused = False
+        self._month_warnings: list[str] = []
         self.empresa_service = empresa_service
         self.tipo_service = tipo_service
         self.documento_service = documento_service
@@ -289,6 +297,7 @@ class ImportService:
         imported = 0
         failed = 0
         errors: list[str] = []
+        logger = get_diagnostics_logger()
 
         for row_number, row in self._iter_data_rows(worksheet, self._looks_like_empresa_header):
             try:
@@ -297,6 +306,11 @@ class ImportService:
             except ValidationError as exc:
                 failed += 1
                 errors.append(f"Linha {row_number}: {exc}")
+                logger.warning("IMPORT_EMPRESA_LINHA_FALHOU | linha=%s | erro=%s", row_number, exc)
+            except Exception as exc:  # pragma: no cover - salvaguarda de linha
+                failed += 1
+                errors.append(f"Linha {row_number}: erro inesperado ao processar esta linha - veja o log de diagnostico.")
+                logger.exception("IMPORT_EMPRESA_LINHA_ERRO_INESPERADO | linha=%s | erro=%s", row_number, exc)
 
         return {"imported": imported, "failed": failed, "errors": errors}
 
@@ -307,6 +321,7 @@ class ImportService:
         imported = 0
         failed = 0
         errors: list[str] = []
+        logger = get_diagnostics_logger()
 
         for row_number, row in self._iter_data_rows(worksheet, self._looks_like_documento_header):
             try:
@@ -323,6 +338,21 @@ class ImportService:
             except ValidationError as exc:
                 failed += 1
                 errors.append(f"Linha {row_number}: {exc}")
+                logger.warning(
+                    "IMPORT_DOCUMENTO_LINHA_FALHOU | empresa_id=%s | linha=%s | erro=%s",
+                    empresa_id,
+                    row_number,
+                    exc,
+                )
+            except Exception as exc:  # pragma: no cover - salvaguarda de linha
+                failed += 1
+                errors.append(f"Linha {row_number}: erro inesperado ao processar esta linha - veja o log de diagnostico.")
+                logger.exception(
+                    "IMPORT_DOCUMENTO_LINHA_ERRO_INESPERADO | empresa_id=%s | linha=%s | erro=%s",
+                    empresa_id,
+                    row_number,
+                    exc,
+                )
 
         return {"imported": imported, "failed": failed, "errors": errors}
 
@@ -340,6 +370,7 @@ class ImportService:
         created_type_ids: set[int] = set()
         current_company: dict | None = None
         db_manager = self.empresa_service.empresa_repository.db_manager
+        logger = get_diagnostics_logger()
 
         for row_number, row in self._iter_complete_data_rows(worksheet, import_structure["has_header"]):
             next_company: dict | None = None
@@ -373,14 +404,21 @@ class ImportService:
                             meios_recebimento,
                             nome_documento,
                             nome_tipo,
+                            observacao=self._get_mapped_row_value(
+                                row, import_structure["field_indexes"], "observacao_documento"
+                            ),
+                            regra_tipo=self._get_mapped_row_value(row, import_structure["field_indexes"], "regra_tipo"),
                         )
                         if tipo_created:
                             created_type_ids.add(tipo_id)
+                        self._month_warnings = []
                         statuses_imported += self._import_status_columns_for_row(
                             documento_id,
                             row,
                             import_structure["status_columns"],
+                            somente_vazios=self._last_document_reused,
                         )
+                        errors.extend(f"Linha {row_number} (aviso): {aviso}" for aviso in self._month_warnings)
                         documents_imported += 1
 
                     self._register_company_outcome(company_outcomes, company["id"], outcome)
@@ -389,6 +427,20 @@ class ImportService:
             except ValidationError as exc:
                 failed += 1
                 errors.append(f"Linha {row_number}: {exc}")
+                current_company = self._company_after_failed_row(
+                    row, import_structure["field_indexes"], current_company
+                )
+                logger.warning("IMPORT_CADASTRO_COMPLETO_LINHA_FALHOU | linha=%s | erro=%s", row_number, exc)
+                continue
+            except Exception as exc:  # pragma: no cover - salvaguarda de linha
+                failed += 1
+                errors.append(f"Linha {row_number}: erro inesperado ao processar esta linha - veja o log de diagnostico.")
+                logger.exception(
+                    "IMPORT_CADASTRO_COMPLETO_LINHA_ERRO_INESPERADO | linha=%s | erro=%s", row_number, exc
+                )
+                current_company = self._company_after_failed_row(
+                    row, import_structure["field_indexes"], current_company
+                )
                 continue
 
             current_company = next_company
@@ -415,7 +467,13 @@ class ImportService:
         try:
             return load_workbook(file_path, read_only=True, data_only=True)
         except Exception as exc:
-            raise ValidationError("Nao foi possivel abrir o arquivo Excel informado.") from exc
+            get_diagnostics_logger().exception(
+                "IMPORT_ABERTURA_ARQUIVO_FALHOU | arquivo=%s | erro=%s", file_path, exc
+            )
+            raise ValidationError(
+                "Nao foi possivel abrir o arquivo Excel informado - confira se o arquivo nao "
+                "esta aberto em outro programa e se o formato e .xlsx ou .xlsm."
+            ) from exc
 
     def _export_template(
         self,
@@ -649,24 +707,83 @@ class ImportService:
         observacao = self._get_row_value(row, 4)
         return self.empresa_service.create_empresa(codigo, nome or "", email, contato, observacao)
 
-    def _import_documento_row(self, empresa_id: int, meios_recebimento, nome_documento, nome_tipo) -> tuple[int, bool, int]:
+    def _import_documento_row(
+        self,
+        empresa_id: int,
+        meios_recebimento,
+        nome_documento,
+        nome_tipo,
+        *,
+        observacao=None,
+        regra_tipo=None,
+    ) -> tuple[int, bool, int]:
         if not self._has_value(nome_documento):
             raise ValidationError("O nome do documento deve ser informado.")
         if not self._has_value(nome_tipo):
             raise ValidationError("O tipo do documento deve ser informado.")
 
-        tipo, tipo_created = self.tipo_service.ensure_tipo(str(nome_tipo))
-        documento_id = self.documento_service.create_documento(
-            empresa_id,
-            tipo["id"],
-            str(nome_documento or ""),
-            meios_recebimento,
-        )
+        # A regra so vale para tipo novo; tipo que ja existe mantem a regra cadastrada.
+        if self._has_value(regra_tipo):
+            tipo, tipo_created = self.tipo_service.ensure_tipo(str(nome_tipo), str(regra_tipo))
+        else:
+            tipo, tipo_created = self.tipo_service.ensure_tipo(str(nome_tipo))
+        nome = " ".join(str(nome_documento).split())
+        existente = self.documento_service.documento_repository.find_duplicate(empresa_id, tipo["id"], nome)
+        if existente:
+            # Reimportacao: o documento ja existe - reaproveita (e completa a observacao, se
+            # estava vazia) em vez de falhar a linha inteira.
+            documento = self.documento_service.get_documento(existente["id"])
+            if self._has_value(observacao) and not documento.get("observacao"):
+                self.documento_service.update_documento(
+                    documento["id"], tipo["id"], nome, documento.get("meios_recebimento"), observacao=str(observacao)
+                )
+            self._last_document_reused = True
+            return documento["id"], tipo_created, tipo["id"]
+        self._last_document_reused = False
+        extras = {"observacao": str(observacao)} if self._has_value(observacao) else {}
+        documento_id = self.documento_service.create_documento(empresa_id, tipo["id"], nome, meios_recebimento, **extras)
+        self._register_delivery_methods(meios_recebimento)
         return documento_id, tipo_created, tipo["id"]
 
-    def _import_status_columns_for_row(self, documento_id: int, row, status_columns: list[dict]) -> int:
+    def _register_delivery_methods(self, meios_recebimento) -> None:
+        """Meio de recebimento novo na planilha (ex: Fisico) entra na lista do sistema, para
+        aparecer como opcao na tela de Documentos."""
+        if self.delivery_method_service is None or not self._has_value(meios_recebimento):
+            return
+        existentes = {m["nome_meio"].casefold() for m in self.delivery_method_service.list_methods()}
+        for meio in str(meios_recebimento).split(","):
+            meio = meio.strip()
+            if meio and meio.casefold() not in existentes:
+                try:
+                    self.delivery_method_service.create_method(meio)
+                except ValidationError:
+                    continue  # sem permissao ou nome invalido: o documento ja guardou o meio
+                existentes.add(meio.casefold())
+
+    def _import_status_columns_for_row(
+        self, documento_id: int, row, status_columns: list[dict], somente_vazios: bool = False
+    ) -> int:
+        """somente_vazios: documento que ja existia - so preenche os meses ainda sem status,
+        para nunca desfazer o que alguem ja marcou no sistema."""
         imported = 0
         for column in status_columns:
+            if somente_vazios:
+                existente = self.status_service.status_repository.get_by_document_and_period(
+                    documento_id, column["periodo_id"]
+                )
+                if existente and existente.get("status"):
+                    continue
+                # Documento que ja existia: um mes que o sistema recusa (ex: depois de um
+                # Encerrado marcado na tela) e pulado com aviso, sem perder a linha.
+                raw_status = self._get_row_value(row, column["index"])
+                try:
+                    normalized_status = self._parse_imported_status(raw_status, column["header_label"])
+                    if normalized_status is not None:
+                        self.status_service.update_status(documento_id, column["periodo_id"], normalized_status)
+                        imported += 1
+                except ValidationError as exc:
+                    self._month_warnings.append(f'{column["header_label"]} não marcado: {exc}')
+                continue
             raw_status = self._get_row_value(row, column["index"])
             normalized_status = self._parse_imported_status(raw_status, column["header_label"])
             if normalized_status is None:
@@ -690,6 +807,19 @@ class ImportService:
                 'Use OK para Recebido, P para Pendente, X para Nao cobrar ou deixe em branco.'
             )
         )
+
+    def _company_after_failed_row(self, row, field_indexes: dict[str, int], current_company: dict | None) -> dict | None:
+        """Linha que falhou: se ela abria uma empresa (tem codigo), as linhas seguintes sem
+        codigo sao dessa empresa - nunca da empresa anterior. Se a empresa era nova e foi
+        desfeita junto com a linha, as seguintes falham pedindo o codigo (em vez de irem para
+        a empresa de cima)."""
+        codigo = self._get_mapped_row_value(row, field_indexes, "codigo_empresa")
+        if not self._has_value(codigo):
+            return current_company
+        try:
+            return self.empresa_service.get_empresa_by_code(codigo, active_only=False)
+        except ValidationError:
+            return None
 
     def _resolve_company_for_complete_row(
         self,

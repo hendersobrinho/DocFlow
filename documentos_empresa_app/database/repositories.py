@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
-
 from documentos_empresa_app.database.connection import DatabaseManager
+from documentos_empresa_app.database.schema import UTC_NOW_FUNCTION
 
-SQLITE_MAX_VARIABLE_NUMBER = 900
+# Limite de parametros por consulta nas buscas "IN (...)" - o PostgreSQL aceita bem mais,
+# mas lotes menores mantem as queries curtas.
+MAX_QUERY_PARAMETERS = 900
 
 
 class BaseRepository:
@@ -22,9 +23,16 @@ class BaseRepository:
         return dict(row) if row else None
 
     def _execute(self, query: str, params: tuple = ()) -> int:
+        """Executa um comando de escrita e devolve a quantidade de linhas afetadas."""
         with self.db_manager.connect() as connection:
             cursor = connection.execute(query, params)
-            return cursor.lastrowid
+            return cursor.rowcount
+
+    def _insert(self, query: str, params: tuple = ()) -> int:
+        """Executa um INSERT e devolve o id gerado para a nova linha."""
+        with self.db_manager.connect() as connection:
+            row = connection.execute(f"{query.rstrip()} RETURNING id", params).fetchone()
+            return int(row["id"])
 
     def _executemany(self, query: str, params_list: list[tuple]) -> None:
         with self.db_manager.connect() as connection:
@@ -42,7 +50,7 @@ class BaseRepository:
         return unique_values
 
     @staticmethod
-    def _chunk_values(values: list[int], chunk_size: int = SQLITE_MAX_VARIABLE_NUMBER) -> list[list[int]]:
+    def _chunk_values(values: list[int], chunk_size: int = MAX_QUERY_PARAMETERS) -> list[list[int]]:
         return [values[index:index + chunk_size] for index in range(0, len(values), chunk_size)]
 
 
@@ -51,7 +59,8 @@ class EmpresaRepository(BaseRepository):
         query = """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
+                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca
             FROM empresas
         """
         params: tuple = ()
@@ -65,7 +74,8 @@ class EmpresaRepository(BaseRepository):
             """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
+                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca
             FROM empresas
             WHERE id = ?
             """,
@@ -76,7 +86,8 @@ class EmpresaRepository(BaseRepository):
         query = """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
+                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca
             FROM empresas
             WHERE codigo_empresa = ?
         """
@@ -97,7 +108,8 @@ class EmpresaRepository(BaseRepository):
                     f"""
                     SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                            observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                           cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
+                           cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca
                     FROM empresas
                     WHERE id IN ({placeholders})
                     """,
@@ -120,7 +132,7 @@ class EmpresaRepository(BaseRepository):
         cobranca_alerta_dias: int | None = None,
         cnpj: str | None = None,
     ) -> int:
-        return self._execute(
+        return self._insert(
             """
             INSERT INTO empresas (
                 codigo_empresa,
@@ -187,28 +199,26 @@ class EmpresaRepository(BaseRepository):
             ),
         )
 
+    def update_reception(
+        self,
+        empresa_id: int,
+        canais_recebimento: str | None,
+        emails_origem_documentos: str | None,
+        instrucoes_busca: str | None,
+    ) -> None:
+        self._execute(
+            """
+            UPDATE empresas
+            SET canais_recebimento = ?, emails_origem_documentos = ?, instrucoes_busca = ?
+            WHERE id = ?
+            """,
+            (canais_recebimento, emails_origem_documentos, instrucoes_busca, empresa_id),
+        )
+
     def update_directory(self, empresa_id: int, diretorio_documentos: str | None) -> None:
         self._execute(
             "UPDATE empresas SET diretorio_documentos = ? WHERE id = ?",
             (diretorio_documentos, empresa_id),
-        )
-
-    def update_cnpj(self, empresa_id: int, cnpj: str | None) -> None:
-        self._execute(
-            "UPDATE empresas SET cnpj = ? WHERE id = ?",
-            (cnpj, empresa_id),
-        )
-
-    def get_by_cnpj(self, cnpj: str) -> dict | None:
-        return self._fetchone(
-            """
-            SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
-                   observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
-                   cobranca_alerta_dias, cnpj, nao_contatar_mala_direta
-            FROM empresas
-            WHERE cnpj = ?
-            """,
-            (cnpj,),
         )
 
     def update_collection_settings(
@@ -269,7 +279,7 @@ class DeliveryMethodRepository(BaseRepository):
         )
 
     def create(self, nome_meio: str) -> int:
-        return self._execute("INSERT INTO meios_recebimento_sistema (nome_meio) VALUES (?)", (nome_meio,))
+        return self._insert("INSERT INTO meios_recebimento_sistema (nome_meio) VALUES (?)", (nome_meio,))
 
     def update(self, method_id: int, nome_meio: str) -> None:
         self._execute("UPDATE meios_recebimento_sistema SET nome_meio = ? WHERE id = ?", (nome_meio, method_id))
@@ -286,7 +296,10 @@ class CollectionConfigRepository(BaseRepository):
                 id,
                 inicio_cobranca_dia,
                 encerramento_cobranca_dia,
-                alerta_apos_dias
+                alerta_apos_dias,
+                dias_entre_cobrancas,
+                max_recobrancas,
+                problema_vai_para_pessoa
             FROM configuracoes_cobranca
             WHERE id = 1
             """
@@ -296,7 +309,26 @@ class CollectionConfigRepository(BaseRepository):
             "inicio_cobranca_dia": 5,
             "encerramento_cobranca_dia": 12,
             "alerta_apos_dias": 4,
+            "dias_entre_cobrancas": 3,
+            "max_recobrancas": 3,
+            "problema_vai_para_pessoa": 1,
         }
+
+    def update_rules(self, dias_entre_cobrancas: int, max_recobrancas: int, problema_vai_para_pessoa: int) -> None:
+        self._execute(
+            """
+            INSERT INTO configuracoes_cobranca (
+                id, inicio_cobranca_dia, encerramento_cobranca_dia, alerta_apos_dias,
+                dias_entre_cobrancas, max_recobrancas, problema_vai_para_pessoa
+            )
+            VALUES (1, 5, 12, 4, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+                dias_entre_cobrancas = excluded.dias_entre_cobrancas,
+                max_recobrancas = excluded.max_recobrancas,
+                problema_vai_para_pessoa = excluded.problema_vai_para_pessoa
+            """,
+            (dias_entre_cobrancas, max_recobrancas, problema_vai_para_pessoa),
+        )
 
     def upsert_settings(
         self,
@@ -345,7 +377,7 @@ class TipoRepository(BaseRepository):
         )
 
     def create(self, nome_tipo: str, regra_ocorrencia: str) -> int:
-        return self._execute(
+        return self._insert(
             "INSERT INTO tipos_documento (nome_tipo, regra_ocorrencia) VALUES (?, ?)",
             (nome_tipo, regra_ocorrencia),
         )
@@ -390,7 +422,7 @@ class UsuarioRepository(BaseRepository):
         return self._fetchone(f"SELECT {fields} FROM usuarios WHERE username = ?", (username,))
 
     def create(self, username: str, senha_hash: str, tipo_usuario: str, ativa: int = 1) -> int:
-        return self._execute(
+        return self._insert(
             """
             INSERT INTO usuarios (username, senha_hash, tipo_usuario, ativa)
             VALUES (?, ?, ?, ?)
@@ -436,7 +468,7 @@ class RememberedSessionRepository(BaseRepository):
         )
 
     def create(self, usuario_id: int, selector: str, token_hash: str) -> int:
-        return self._execute(
+        return self._insert(
             """
             INSERT INTO sessoes_lembradas (usuario_id, selector, token_hash)
             VALUES (?, ?, ?)
@@ -446,9 +478,9 @@ class RememberedSessionRepository(BaseRepository):
 
     def touch(self, session_id: int) -> None:
         self._execute(
-            """
+            f"""
             UPDATE sessoes_lembradas
-            SET ultimo_uso_em = CURRENT_TIMESTAMP
+            SET ultimo_uso_em = {UTC_NOW_FUNCTION}
             WHERE id = ?
             """,
             (session_id,),
@@ -475,7 +507,7 @@ class LogRepository(BaseRepository):
         descricao: str,
         data_hora: str,
     ) -> int:
-        return self._execute(
+        return self._insert(
             """
             INSERT INTO logs (
                 usuario_id,
@@ -600,7 +632,7 @@ class DocumentoRepository(BaseRepository):
     def list_all(self) -> list[dict]:
         return self._fetchall(
             """
-            SELECT id, empresa_id, tipo_documento_id, meios_recebimento, nome_documento
+            SELECT id, empresa_id, tipo_documento_id, meios_recebimento, nome_documento, observacao
             FROM documentos_empresa
             ORDER BY empresa_id, nome_documento
             """
@@ -615,6 +647,7 @@ class DocumentoRepository(BaseRepository):
                 d.tipo_documento_id,
                 d.meios_recebimento,
                 d.nome_documento,
+                d.observacao,
                 t.nome_tipo,
                 t.regra_ocorrencia
             FROM documentos_empresa d
@@ -641,6 +674,7 @@ class DocumentoRepository(BaseRepository):
                         d.tipo_documento_id,
                         d.meios_recebimento,
                         d.nome_documento,
+                        d.observacao,
                         t.nome_tipo,
                         t.regra_ocorrencia
                     FROM documentos_empresa d
@@ -662,6 +696,7 @@ class DocumentoRepository(BaseRepository):
                 d.tipo_documento_id,
                 d.meios_recebimento,
                 d.nome_documento,
+                d.observacao,
                 t.nome_tipo,
                 t.regra_ocorrencia
             FROM documentos_empresa d
@@ -687,6 +722,7 @@ class DocumentoRepository(BaseRepository):
                         d.tipo_documento_id,
                         d.meios_recebimento,
                         d.nome_documento,
+                        d.observacao,
                         t.nome_tipo,
                         t.regra_ocorrencia
                     FROM documentos_empresa d
@@ -710,7 +746,7 @@ class DocumentoRepository(BaseRepository):
 
         normalized_search = str(search or "").strip()
         if normalized_search:
-            filters.append("n.nome_documento LIKE ? COLLATE NOCASE")
+            filters.append("n.nome_documento ILIKE ?")
             params.append(f"%{normalized_search}%")
 
         query = """
@@ -737,7 +773,7 @@ class DocumentoRepository(BaseRepository):
 
         normalized_search = str(search or "").strip()
         if normalized_search:
-            filters.append("nome_documento LIKE ? COLLATE NOCASE")
+            filters.append("nome_documento ILIKE ?")
             params.append(f"%{normalized_search}%")
 
         query = """
@@ -785,7 +821,7 @@ class DocumentoRepository(BaseRepository):
         return self._fetchone(query, tuple(params))
 
     def create_system_name(self, tipo_documento_id: int, nome_documento: str) -> int:
-        return self._execute(
+        return self._insert(
             """
             INSERT INTO nomes_documento_padrao_sistema (tipo_documento_id, nome_documento)
             VALUES (?, ?)
@@ -816,7 +852,7 @@ class DocumentoRepository(BaseRepository):
 
         normalized_search = str(search or "").strip()
         if normalized_search:
-            filters.append("nome_documento LIKE ? COLLATE NOCASE")
+            filters.append("nome_documento ILIKE ?")
             params.append(f"%{normalized_search}%")
 
         query = """
@@ -856,13 +892,14 @@ class DocumentoRepository(BaseRepository):
         tipo_documento_id: int,
         meios_recebimento: str | None,
         nome_documento: str,
+        observacao: str | None = None,
     ) -> int:
-        return self._execute(
+        return self._insert(
             """
-            INSERT INTO documentos_empresa (empresa_id, tipo_documento_id, meios_recebimento, nome_documento)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO documentos_empresa (empresa_id, tipo_documento_id, meios_recebimento, nome_documento, observacao)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (empresa_id, tipo_documento_id, meios_recebimento, nome_documento),
+            (empresa_id, tipo_documento_id, meios_recebimento, nome_documento, observacao),
         )
 
     def update(
@@ -871,14 +908,15 @@ class DocumentoRepository(BaseRepository):
         tipo_documento_id: int,
         meios_recebimento: str | None,
         nome_documento: str,
+        observacao: str | None = None,
     ) -> None:
         self._execute(
             """
             UPDATE documentos_empresa
-            SET tipo_documento_id = ?, meios_recebimento = ?, nome_documento = ?
+            SET tipo_documento_id = ?, meios_recebimento = ?, nome_documento = ?, observacao = ?
             WHERE id = ?
             """,
-            (tipo_documento_id, meios_recebimento, nome_documento, documento_id),
+            (tipo_documento_id, meios_recebimento, nome_documento, observacao, documento_id),
         )
 
     def update_delivery_methods(self, documento_id: int, meios_recebimento: str | None) -> None:
@@ -916,7 +954,7 @@ class PeriodoRepository(BaseRepository):
         return self._fetchone("SELECT id, ano, mes FROM periodos WHERE ano = ? AND mes = ?", (ano, mes))
 
     def create(self, ano: int, mes: int) -> int:
-        return self._execute("INSERT INTO periodos (ano, mes) VALUES (?, ?)", (ano, mes))
+        return self._insert("INSERT INTO periodos (ano, mes) VALUES (?, ?)", (ano, mes))
 
     def exists(self, ano: int, mes: int) -> bool:
         row = self._fetchone("SELECT id FROM periodos WHERE ano = ? AND mes = ?", (ano, mes))
@@ -977,7 +1015,7 @@ class StatusRepository(BaseRepository):
         updated_by_user_id: int | None,
     ) -> None:
         self._execute(
-            """
+            f"""
             INSERT INTO status_documento_mensal (
                 documento_empresa_id,
                 periodo_id,
@@ -985,12 +1023,12 @@ class StatusRepository(BaseRepository):
                 updated_by_user_id,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, {UTC_NOW_FUNCTION})
             ON CONFLICT(documento_empresa_id, periodo_id)
             DO UPDATE SET
                 status = excluded.status,
                 updated_by_user_id = excluded.updated_by_user_id,
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = {UTC_NOW_FUNCTION}
             """,
             (documento_empresa_id, periodo_id, status, updated_by_user_id),
         )
@@ -1000,7 +1038,7 @@ class StatusRepository(BaseRepository):
         unique_period_ids = self._unique_values(periodo_ids)
         if not unique_document_ids or not unique_period_ids:
             return []
-        max_document_chunk = max(SQLITE_MAX_VARIABLE_NUMBER - len(unique_period_ids), 1)
+        max_document_chunk = max(MAX_QUERY_PARAMETERS - len(unique_period_ids), 1)
         period_placeholders = ", ".join("?" for _ in unique_period_ids)
         rows: list[dict] = []
         for doc_chunk in self._chunk_values(unique_document_ids, max_document_chunk):
@@ -1130,142 +1168,501 @@ class StatusRepository(BaseRepository):
         )
 
 
-class DocumentoPendenteRevisaoRepository(BaseRepository):
+class CobrancaRepository(BaseRepository):
     def create(
         self,
-        caminho_arquivo_original: str,
-        nome_arquivo: str,
-        cnpj_extraido: str | None,
-        empresa_sugerida_id: int | None,
-        empresa_sugerida_nome: str | None,
-        tipo_documento_sugerido: str | None,
-        confianca_sugestao: float | None,
-        origem_sugestao: str,
-        motivo: str | None,
+        empresa_id: int,
+        canal: str,
+        destinatario: str | None,
+        assunto: str | None,
+        mensagem: str | None,
+        observacao: str | None,
+        usuario_id: int | None,
+        rodada_id: int | None = None,
     ) -> int:
-        return self._execute(
+        return self._insert(
             """
-            INSERT INTO documentos_pendentes_revisao (
-                caminho_arquivo_original,
-                nome_arquivo,
-                cnpj_extraido,
-                empresa_sugerida_id,
-                empresa_sugerida_nome,
-                tipo_documento_sugerido,
-                confianca_sugestao,
-                origem_sugestao,
-                motivo
+            INSERT INTO cobrancas (empresa_id, canal, destinatario, assunto, mensagem, observacao, usuario_id, rodada_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (empresa_id, canal, destinatario, assunto, mensagem, observacao, usuario_id, rodada_id),
+        )
+
+    def next_sequence(self, documento_empresa_id: int, periodo_id: int) -> int:
+        row = self._fetchone(
+            """
+            SELECT COALESCE(MAX(sequencia), 0) + 1 AS proxima
+            FROM cobranca_itens
+            WHERE documento_empresa_id = ? AND periodo_id = ?
+            """,
+            (documento_empresa_id, periodo_id),
+        )
+        return int(row["proxima"])
+
+    def add_item(self, cobranca_id: int, documento_empresa_id: int, periodo_id: int, sequencia: int) -> int:
+        return self._insert(
+            """
+            INSERT INTO cobranca_itens (cobranca_id, documento_empresa_id, periodo_id, sequencia)
+            VALUES (?, ?, ?, ?)
+            """,
+            (cobranca_id, documento_empresa_id, periodo_id, sequencia),
+        )
+
+    def list_recent(self, limit: int = 100, empresa_id: int | None = None) -> list[dict]:
+        query = """
+            SELECT
+                c.id,
+                c.empresa_id,
+                e.codigo_empresa,
+                e.nome_empresa,
+                c.canal,
+                c.destinatario,
+                c.assunto,
+                c.mensagem,
+                c.observacao,
+                c.realizada_em,
+                c.rodada_id,
+                COALESCE(u.username, 'Sistema') AS username
+            FROM cobrancas c
+            INNER JOIN empresas e ON e.id = c.empresa_id
+            LEFT JOIN usuarios u ON u.id = c.usuario_id
+        """
+        params: list = []
+        if empresa_id is not None:
+            query += " WHERE c.empresa_id = ?"
+            params.append(empresa_id)
+        query += " ORDER BY c.realizada_em DESC, c.id DESC LIMIT ?"
+        params.append(limit)
+        return self._fetchall(query, tuple(params))
+
+    def list_items(self, cobranca_ids: list[int]) -> list[dict]:
+        unique_ids = self._unique_values(cobranca_ids)
+        if not unique_ids:
+            return []
+        rows: list[dict] = []
+        for chunk in self._chunk_values(unique_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows.extend(
+                self._fetchall(
+                    f"""
+                    SELECT
+                        ci.cobranca_id,
+                        ci.documento_empresa_id,
+                        ci.periodo_id,
+                        ci.sequencia,
+                        d.nome_documento,
+                        p.ano,
+                        p.mes
+                    FROM cobranca_itens ci
+                    INNER JOIN documentos_empresa d ON d.id = ci.documento_empresa_id
+                    INNER JOIN periodos p ON p.id = ci.periodo_id
+                    WHERE ci.cobranca_id IN ({placeholders})
+                    ORDER BY p.ano, p.mes, d.nome_documento
+                    """,
+                    tuple(chunk),
+                )
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        return rows
+
+    def document_stats(self, empresa_id: int) -> list[dict]:
+        """Por documento da empresa: quantas cobrancas (primeira de cada competencia),
+        quantas recobrancas e quando foi a ultima."""
+        return self._fetchall(
+            """
+            SELECT
+                ci.documento_empresa_id,
+                COUNT(*) FILTER (WHERE ci.sequencia = 1) AS cobrancas,
+                COUNT(*) FILTER (WHERE ci.sequencia > 1) AS recobrancas,
+                MAX(c.realizada_em) AS ultima_cobranca_em
+            FROM cobranca_itens ci
+            INNER JOIN cobrancas c ON c.id = ci.cobranca_id
+            WHERE c.empresa_id = ?
+            GROUP BY ci.documento_empresa_id
+            """,
+            (empresa_id,),
+        )
+
+    def count_contacts(self, empresa_id: int) -> dict:
+        """Contatos de cobranca da empresa: total e quantos foram recobranca (cobraram de
+        novo algum documento/competencia ja cobrado antes)."""
+        return self._fetchone(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (
+                    WHERE EXISTS (
+                        SELECT 1 FROM cobranca_itens ci WHERE ci.cobranca_id = c.id AND ci.sequencia > 1
+                    )
+                ) AS recobrancas
+            FROM cobrancas c
+            WHERE c.empresa_id = ?
+            """,
+            (empresa_id,),
+        )
+
+    def counts_by_document_period(self, documento_ids: list[int]) -> list[dict]:
+        """Quantas vezes cada documento ja foi cobrado em cada competencia, e quando foi a
+        ultima - alimenta a fila de cobranca (cobrar pela primeira vez x recobrar)."""
+        unique_ids = self._unique_values(documento_ids)
+        if not unique_ids:
+            return []
+        rows: list[dict] = []
+        for chunk in self._chunk_values(unique_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows.extend(
+                self._fetchall(
+                    f"""
+                    SELECT
+                        ci.documento_empresa_id,
+                        ci.periodo_id,
+                        COUNT(*) AS vezes,
+                        MAX(c.realizada_em) AS ultima_cobranca_em
+                    FROM cobranca_itens ci
+                    INNER JOIN cobrancas c ON c.id = ci.cobranca_id
+                    WHERE ci.documento_empresa_id IN ({placeholders})
+                    GROUP BY ci.documento_empresa_id, ci.periodo_id
+                    """,
+                    tuple(chunk),
+                )
+            )
+        return rows
+
+    def list_items_by_document(self, documento_empresa_id: int) -> list[dict]:
+        return self._fetchall(
+            """
+            SELECT
+                c.id AS cobranca_id,
+                c.canal,
+                c.destinatario,
+                c.realizada_em,
+                COALESCE(u.username, 'Sistema') AS username,
+                ci.periodo_id,
+                ci.sequencia,
+                p.ano,
+                p.mes
+            FROM cobranca_itens ci
+            INNER JOIN cobrancas c ON c.id = ci.cobranca_id
+            INNER JOIN periodos p ON p.id = ci.periodo_id
+            LEFT JOIN usuarios u ON u.id = c.usuario_id
+            WHERE ci.documento_empresa_id = ?
+            ORDER BY c.realizada_em DESC, c.id DESC
+            """,
+            (documento_empresa_id,),
+        )
+
+
+class VerificacaoRepository(BaseRepository):
+    def create(
+        self, empresa_id: int, fontes: str, resumo: str | None, usuario_id: int | None, rodada_id: int | None = None
+    ) -> int:
+        return self._insert(
+            "INSERT INTO verificacoes (empresa_id, fontes, resumo, usuario_id, rodada_id) VALUES (?, ?, ?, ?, ?)",
+            (empresa_id, fontes, resumo, usuario_id, rodada_id),
+        )
+
+    def add_item(
+        self,
+        verificacao_id: int,
+        documento_empresa_id: int,
+        periodo_id: int,
+        resultado: str,
+        onde: str | None,
+        observacao: str | None,
+        motivo: str | None = None,
+        baixa_feita: bool = False,
+        baixa_erro: str | None = None,
+        arquivo: str | None = None,
+    ) -> int:
+        encontrado = resultado in ("recebido", "documento_com_problema")
+        return self._insert(
+            """
+            INSERT INTO verificacao_itens (
+                verificacao_id, documento_empresa_id, periodo_id, encontrado, onde, observacao,
+                resultado, motivo, baixa_feita, baixa_erro, arquivo
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                caminho_arquivo_original,
-                nome_arquivo,
-                cnpj_extraido,
-                empresa_sugerida_id,
-                empresa_sugerida_nome,
-                tipo_documento_sugerido,
-                confianca_sugestao,
-                origem_sugestao,
-                motivo,
+                verificacao_id, documento_empresa_id, periodo_id, 1 if encontrado else 0, onde, observacao,
+                resultado, motivo, 1 if baixa_feita else 0, baixa_erro, arquivo,
             ),
         )
 
-    def get_by_original_path(self, caminho_arquivo_original: str) -> dict | None:
-        return self._fetchone(
-            """
-            SELECT id, caminho_arquivo_original, nome_arquivo, cnpj_extraido, empresa_sugerida_id,
-                   empresa_sugerida_nome, tipo_documento_sugerido, confianca_sugestao, origem_sugestao,
-                   status, motivo, criado_em, resolvido_em, resolvido_por_usuario_id, empresa_confirmada_id
-            FROM documentos_pendentes_revisao
-            WHERE caminho_arquivo_original = ? AND status = 'pendente'
-            """,
-            (caminho_arquivo_original,),
-        )
+    def list_recent(self, limit: int = 100, empresa_id: int | None = None) -> list[dict]:
+        query = """
+            SELECT
+                v.id,
+                v.empresa_id,
+                e.codigo_empresa,
+                e.nome_empresa,
+                v.fontes,
+                v.resumo,
+                v.realizada_em,
+                v.rodada_id,
+                COALESCE(u.username, 'Sistema') AS username,
+                (SELECT COUNT(*) FROM verificacao_itens i WHERE i.verificacao_id = v.id AND i.resultado = 'recebido')
+                    AS recebidos,
+                (SELECT COUNT(*) FROM verificacao_itens i
+                    WHERE i.verificacao_id = v.id AND i.resultado = 'documento_com_problema') AS com_problema,
+                (SELECT COUNT(*) FROM verificacao_itens i
+                    WHERE i.verificacao_id = v.id AND i.resultado = 'nao_encontrado') AS nao_encontrados,
+                (SELECT COUNT(*) FROM verificacao_itens i
+                    WHERE i.verificacao_id = v.id AND i.resultado = 'verificacao_falhou') AS falhas,
+                (SELECT COUNT(*) FROM verificacao_itens i
+                    WHERE i.verificacao_id = v.id AND i.resultado = 'recebido' AND i.baixa_feita = 0) AS sem_baixa
+            FROM verificacoes v
+            INNER JOIN empresas e ON e.id = v.empresa_id
+            LEFT JOIN usuarios u ON u.id = v.usuario_id
+        """
+        params: list = []
+        if empresa_id is not None:
+            query += " WHERE v.empresa_id = ?"
+            params.append(empresa_id)
+        query += " ORDER BY v.realizada_em DESC, v.id DESC LIMIT ?"
+        params.append(limit)
+        return self._fetchall(query, tuple(params))
 
-    def get_by_id(self, pendente_id: int) -> dict | None:
-        return self._fetchone(
-            """
-            SELECT id, caminho_arquivo_original, nome_arquivo, cnpj_extraido, empresa_sugerida_id,
-                   empresa_sugerida_nome, tipo_documento_sugerido, confianca_sugestao, origem_sugestao,
-                   status, motivo, criado_em, resolvido_em, resolvido_por_usuario_id, empresa_confirmada_id
-            FROM documentos_pendentes_revisao
-            WHERE id = ?
-            """,
-            (pendente_id,),
-        )
+    def list_items(self, verificacao_ids: list[int]) -> list[dict]:
+        unique_ids = self._unique_values(verificacao_ids)
+        if not unique_ids:
+            return []
+        rows: list[dict] = []
+        for chunk in self._chunk_values(unique_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows.extend(
+                self._fetchall(
+                    f"""
+                    SELECT
+                        vi.verificacao_id,
+                        vi.documento_empresa_id,
+                        vi.periodo_id,
+                        vi.encontrado,
+                        vi.onde,
+                        vi.observacao,
+                        vi.resultado,
+                        vi.motivo,
+                        vi.baixa_feita,
+                        vi.baixa_erro,
+                        vi.arquivo,
+                        d.nome_documento,
+                        p.ano,
+                        p.mes
+                    FROM verificacao_itens vi
+                    INNER JOIN documentos_empresa d ON d.id = vi.documento_empresa_id
+                    INNER JOIN periodos p ON p.id = vi.periodo_id
+                    WHERE vi.verificacao_id IN ({placeholders})
+                    ORDER BY p.ano, p.mes, d.nome_documento
+                    """,
+                    tuple(chunk),
+                )
+            )
+        return rows
 
-    def list_pendentes(self) -> list[dict]:
+    def list_items_by_document(self, documento_empresa_id: int) -> list[dict]:
         return self._fetchall(
             """
-            SELECT id, caminho_arquivo_original, nome_arquivo, cnpj_extraido, empresa_sugerida_id,
-                   empresa_sugerida_nome, tipo_documento_sugerido, confianca_sugestao, origem_sugestao,
-                   status, motivo, criado_em, resolvido_em, resolvido_por_usuario_id, empresa_confirmada_id
-            FROM documentos_pendentes_revisao
-            WHERE status = 'pendente'
-            ORDER BY criado_em DESC
-            """
+            SELECT
+                v.id AS verificacao_id,
+                v.fontes,
+                v.realizada_em,
+                COALESCE(u.username, 'Sistema') AS username,
+                vi.periodo_id,
+                vi.encontrado,
+                vi.onde,
+                vi.observacao,
+                vi.resultado,
+                vi.motivo,
+                vi.baixa_feita,
+                vi.baixa_erro,
+                vi.arquivo,
+                p.ano,
+                p.mes
+            FROM verificacao_itens vi
+            INNER JOIN verificacoes v ON v.id = vi.verificacao_id
+            INNER JOIN periodos p ON p.id = vi.periodo_id
+            LEFT JOIN usuarios u ON u.id = v.usuario_id
+            WHERE vi.documento_empresa_id = ?
+            ORDER BY v.realizada_em DESC, v.id DESC
+            """,
+            (documento_empresa_id,),
         )
 
-    def mark_resolved(self, pendente_id: int, empresa_confirmada_id: int, resolvido_por_usuario_id: int | None) -> None:
-        self._execute(
+
+class SituacaoCobrancaRepository(BaseRepository):
+    def list_for_documents(self, documento_ids: list[int]) -> list[dict]:
+        unique_ids = self._unique_values(documento_ids)
+        if not unique_ids:
+            return []
+        rows: list[dict] = []
+        for chunk in self._chunk_values(unique_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows.extend(
+                self._fetchall(
+                    f"""
+                    SELECT documento_empresa_id, periodo_id, situacao, motivo, detalhe, aguardar_ate,
+                           atualizado_em, rodada_id
+                    FROM situacoes_cobranca
+                    WHERE documento_empresa_id IN ({placeholders})
+                    """,
+                    tuple(chunk),
+                )
+            )
+        return rows
+
+    def get(self, documento_empresa_id: int, periodo_id: int) -> dict | None:
+        return self._fetchone(
             """
-            UPDATE documentos_pendentes_revisao
-            SET status = 'resolvido',
-                empresa_confirmada_id = ?,
-                resolvido_por_usuario_id = ?,
-                resolvido_em = CURRENT_TIMESTAMP
+            SELECT documento_empresa_id, periodo_id, situacao, motivo, detalhe, aguardar_ate, atualizado_em, rodada_id
+            FROM situacoes_cobranca
+            WHERE documento_empresa_id = ? AND periodo_id = ?
+            """,
+            (documento_empresa_id, periodo_id),
+        )
+
+    def upsert(
+        self,
+        documento_empresa_id: int,
+        periodo_id: int,
+        situacao: str,
+        motivo: str | None,
+        detalhe: str | None,
+        aguardar_ate: str | None,
+        usuario_id: int | None,
+        rodada_id: int | None,
+    ) -> None:
+        self._execute(
+            f"""
+            INSERT INTO situacoes_cobranca (
+                documento_empresa_id, periodo_id, situacao, motivo, detalhe, aguardar_ate, usuario_id, rodada_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (documento_empresa_id, periodo_id) DO UPDATE SET
+                situacao = excluded.situacao,
+                motivo = excluded.motivo,
+                detalhe = excluded.detalhe,
+                aguardar_ate = excluded.aguardar_ate,
+                usuario_id = excluded.usuario_id,
+                rodada_id = excluded.rodada_id,
+                atualizado_em = {UTC_NOW_FUNCTION}
+            """,
+            (documento_empresa_id, periodo_id, situacao, motivo, detalhe, aguardar_ate, usuario_id, rodada_id),
+        )
+
+    def add_event(
+        self,
+        documento_empresa_id: int,
+        periodo_id: int,
+        situacao_anterior: str | None,
+        situacao_nova: str,
+        motivo: str | None,
+        detalhe: str | None,
+        usuario_id: int | None,
+        rodada_id: int | None,
+    ) -> int:
+        return self._insert(
+            """
+            INSERT INTO situacao_eventos (
+                documento_empresa_id, periodo_id, situacao_anterior, situacao_nova, motivo, detalhe,
+                usuario_id, rodada_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (documento_empresa_id, periodo_id, situacao_anterior, situacao_nova, motivo, detalhe, usuario_id, rodada_id),
+        )
+
+    def list_events_by_document(self, documento_empresa_id: int) -> list[dict]:
+        return self._fetchall(
+            """
+            SELECT
+                ev.periodo_id,
+                p.ano,
+                p.mes,
+                ev.situacao_anterior,
+                ev.situacao_nova,
+                ev.motivo,
+                ev.detalhe,
+                ev.criado_em,
+                ev.rodada_id,
+                COALESCE(u.username, 'Sistema') AS username
+            FROM situacao_eventos ev
+            INNER JOIN periodos p ON p.id = ev.periodo_id
+            LEFT JOIN usuarios u ON u.id = ev.usuario_id
+            WHERE ev.documento_empresa_id = ?
+            ORDER BY ev.criado_em DESC, ev.id DESC
+            """,
+            (documento_empresa_id,),
+        )
+
+
+class RodadaRepository(BaseRepository):
+    def create(self, origem: str, usuario_id: int | None) -> int:
+        return self._insert("INSERT INTO rodadas (origem, usuario_id) VALUES (?, ?)", (origem, usuario_id))
+
+    def finish(self, rodada_id: int, status: str, resumo: str | None) -> None:
+        self._execute(
+            f"""
+            UPDATE rodadas
+            SET status = ?, resumo = ?, finalizada_em = {UTC_NOW_FUNCTION}
             WHERE id = ?
             """,
-            (empresa_confirmada_id, resolvido_por_usuario_id, pendente_id),
+            (status, resumo, rodada_id),
         )
 
-    def mark_ignored(self, pendente_id: int) -> None:
-        self._execute(
-            """
-            UPDATE documentos_pendentes_revisao
-            SET status = 'ignorado', resolvido_em = CURRENT_TIMESTAMP
-            WHERE id = ?
+    def add_ocorrencia(self, rodada_id: int, empresa_id: int | None, tipo: str, mensagem: str) -> int:
+        return self._insert(
+            "INSERT INTO rodada_ocorrencias (rodada_id, empresa_id, tipo, mensagem) VALUES (?, ?, ?, ?)",
+            (rodada_id, empresa_id, tipo, mensagem),
+        )
+
+    def get(self, rodada_id: int) -> dict | None:
+        rows = self.list_recent(1, rodada_id=rodada_id)
+        return rows[0] if rows else None
+
+    def list_recent(self, limit: int = 30, rodada_id: int | None = None) -> list[dict]:
+        query = """
+            SELECT
+                r.id,
+                r.origem,
+                r.iniciada_em,
+                r.finalizada_em,
+                r.status,
+                r.resumo,
+                COALESCE(u.username, 'Sistema') AS username,
+                (SELECT COUNT(*) FROM rodada_ocorrencias o WHERE o.rodada_id = r.id AND o.tipo = 'falha') AS falhas,
+                (SELECT COUNT(*) FROM rodada_ocorrencias o WHERE o.rodada_id = r.id AND o.tipo = 'aviso') AS avisos,
+                (SELECT COUNT(*) FROM verificacoes v WHERE v.rodada_id = r.id) AS verificacoes,
+                (SELECT COUNT(*) FROM cobrancas c WHERE c.rodada_id = r.id) AS cobrancas,
+                (SELECT COUNT(DISTINCT empresa_id) FROM (
+                    SELECT empresa_id FROM verificacoes WHERE rodada_id = r.id
+                    UNION SELECT empresa_id FROM cobrancas WHERE rodada_id = r.id
+                    UNION SELECT empresa_id FROM rodada_ocorrencias WHERE rodada_id = r.id AND empresa_id IS NOT NULL
+                    UNION SELECT d.empresa_id FROM situacao_eventos se
+                        INNER JOIN documentos_empresa d ON d.id = se.documento_empresa_id
+                        WHERE se.rodada_id = r.id
+                ) empresas_rodada) AS empresas
+            FROM rodadas r
+            LEFT JOIN usuarios u ON u.id = r.usuario_id
+        """
+        params: list = []
+        if rodada_id is not None:
+            query += " WHERE r.id = ?"
+            params.append(rodada_id)
+        query += " ORDER BY r.iniciada_em DESC, r.id DESC LIMIT ?"
+        params.append(limit)
+        return self._fetchall(query, tuple(params))
+
+    def list_ocorrencias(self, rodada_ids: list[int]) -> list[dict]:
+        unique_ids = self._unique_values(rodada_ids)
+        if not unique_ids:
+            return []
+        placeholders = ", ".join("?" for _ in unique_ids)
+        return self._fetchall(
+            f"""
+            SELECT o.id, o.rodada_id, o.tipo, o.mensagem, o.criado_em, e.codigo_empresa, e.nome_empresa
+            FROM rodada_ocorrencias o
+            LEFT JOIN empresas e ON e.id = o.empresa_id
+            WHERE o.rodada_id IN ({placeholders})
+            ORDER BY o.criado_em, o.id
             """,
-            (pendente_id,),
+            tuple(unique_ids),
         )
-
-
-class UserPreferenceRepository(BaseRepository):
-    def get_pasta_entrada(self, usuario_id: int) -> str | None:
-        row = self._fetchone(
-            "SELECT pasta_entrada FROM usuario_preferencias WHERE usuario_id = ?",
-            (usuario_id,),
-        )
-        return row["pasta_entrada"] if row else None
-
-    def set_pasta_entrada(self, usuario_id: int, pasta_entrada: str | None) -> None:
-        self._execute(
-            """
-            INSERT INTO usuario_preferencias (usuario_id, pasta_entrada)
-            VALUES (?, ?)
-            ON CONFLICT(usuario_id) DO UPDATE SET pasta_entrada = excluded.pasta_entrada
-            """,
-            (usuario_id, pasta_entrada),
-        )
-
-    def get_pasta_raiz_empresas(self, usuario_id: int) -> str | None:
-        row = self._fetchone(
-            "SELECT pasta_raiz_empresas FROM usuario_preferencias WHERE usuario_id = ?",
-            (usuario_id,),
-        )
-        return row["pasta_raiz_empresas"] if row else None
-
-    def set_pasta_raiz_empresas(self, usuario_id: int, pasta_raiz_empresas: str | None) -> None:
-        self._execute(
-            """
-            INSERT INTO usuario_preferencias (usuario_id, pasta_raiz_empresas)
-            VALUES (?, ?)
-            ON CONFLICT(usuario_id) DO UPDATE SET pasta_raiz_empresas = excluded.pasta_raiz_empresas
-            """,
-            (usuario_id, pasta_raiz_empresas),
-        )
-
-    def count_all(self) -> int:
-        row = self._fetchone("SELECT COUNT(*) AS total FROM usuario_preferencias")
-        return int(row["total"]) if row else 0

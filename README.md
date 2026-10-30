@@ -10,7 +10,7 @@ Versao atual: `1.0.0`
 
 Este repositorio publico foi preparado para portfolio tecnico. O codigo-fonte, a interface e o fluxo principal estao aqui para estudo e demonstracao, mas materiais operacionais privados de licenciamento e distribuicao comercial nao acompanham esta edicao.
 
-O projeto foi pensado para substituir planilhas e controles manuais por um fluxo local, auditavel e simples de operar. O foco e manter o uso direto no escritorio: cadastro de empresas, documentos por tipo, controle mensal de recebimento, dashboard executivo, relatorio de pendencias e backup do banco sem depender de servidor.
+O projeto foi pensado para substituir planilhas e controles manuais por um fluxo local, auditavel e simples de operar. O foco e manter o uso direto no escritorio: cadastro de empresas, documentos por tipo, controle mensal de recebimento, dashboard executivo, relatorio de pendencias e backup do banco. Os dados ficam em um servidor PostgreSQL, que pode ser compartilhado entre as estacoes do escritorio.
 
 ## Visao geral
 
@@ -22,7 +22,6 @@ O DocFLow permite:
 - controlar status por periodo em uma grade mensal, com selecao em lote
 - acompanhar a conferencia mensal por empresa em uma visao panoramica
 - visualizar um dashboard executivo com KPIs e graficos (distribuicao por situacao, tendencia de conclusao)
-- organizar automaticamente documentos recebidos: um agente le arquivos de uma pasta de entrada, identifica a empresa pelo CNPJ e move o arquivo para a pasta correta, com fallback opcional via IA (Claude Haiku) e fila de revisao manual para casos duvidosos
 - aplicar regras de ocorrencia mensal, trimestral e anual em janeiro
 - exportar pendencias em PDF e Excel
 - manter logs administrativos
@@ -31,9 +30,9 @@ O DocFLow permite:
 
 ## Principais recursos
 
-- aplicacao desktop em Python, PySide6 (Qt) e SQLite
+- aplicacao desktop em Python, PySide6 (Qt) e PostgreSQL
 - interface com navegacao lateral (sidebar), tema claro/escuro persistente e graficos nativos (QtCharts)
-- banco local separado da pasta instalada do programa
+- banco PostgreSQL acessado por rede, configurado na primeira abertura
 - autenticacao com perfis `admin` e `comum`
 - login lembrado por perfil do computador, com expiracao de `60` dias e rotacao do token
 - logs de alteracoes relevantes
@@ -41,7 +40,6 @@ O DocFLow permite:
 - status automatico `Nao cobrar` para meses fora da ocorrencia do tipo
 - regra de encerramento que bloqueia meses posteriores
 - dashboard com indicadores e graficos separados da grade operacional (Panorama)
-- agente organizador de documentos com classificacao em camadas (regex de CNPJ local, depois IA como fallback)
 - backup automatico configuravel em pasta fora da instalacao
 - importacao e exportacao em Excel
 - build com `PyInstaller`
@@ -59,14 +57,22 @@ O DocFLow permite:
 - `PySide6`
 - `openpyxl`
 - `Pillow`
-- `pypdf`
-- `anthropic`
 - `cryptography`
+- `psycopg` (driver do PostgreSQL, com a `libpq` embutida no pacote `psycopg[binary]`)
 - `PyInstaller`
+
+### Servidor de banco
+
+- PostgreSQL `13+` com a extensao `citext` (pacote `contrib`, padrao nas instalacoes)
+- um banco vazio criado previamente; as tabelas sao criadas na primeira conexao
+
+```sql
+CREATE ROLE docflow LOGIN PASSWORD 'troque-esta-senha';
+CREATE DATABASE docflow OWNER docflow;
+```
 
 ### Dependencias opcionais
 
-- `ANTHROPIC_API_KEY` (variavel de ambiente) para habilitar o fallback por IA do agente organizador de documentos; sem ela, o agente funciona apenas com o casamento local por CNPJ e envia o restante para revisao manual
 - `Inno Setup` para gerar o instalador Windows
 
 ## Instalacao do ambiente
@@ -91,6 +97,8 @@ python -m pip install -r requirements.txt
 
 ## Execucao local
 
+Na primeira abertura, o sistema pede os dados de conexao do PostgreSQL (servidor, porta, banco, usuario e senha). Tambem e possivel definir `DOCFLOW_DATABASE_URL` (por exemplo `postgresql://docflow:senha@localhost:5432/docflow`).
+
 ### Linux / macOS
 
 ```bash
@@ -101,6 +109,69 @@ python -m pip install -r requirements.txt
 
 ```powershell
 .\.venv\Scripts\python.exe main.py
+```
+
+## Servidor MCP
+
+O pacote `docflow_mcp/` expoe o DocFlow como servidor [MCP](https://modelcontextprotocol.io), para ser usado a partir do Claude (Claude Code, Claude Desktop) ou de outro cliente MCP. Ele usa os mesmos services do app desktop, entao as validacoes, as permissoes de admin e o log de auditoria sao os mesmos.
+
+Tools disponiveis (56):
+
+- consulta: empresas, documentos, tipos, meios de recebimento, competencias, `panorama`, `controle_empresa`, relatorio de pendencias, fila e mensagem de cobranca, configuracao de cobranca, logs e usuarios
+- cobranca: `o_que_fazer_agora`, `ficha_empresa`, `registro_documento`, `definir_recebimento_empresa` (canais, emails de origem e onde procurar), `registrar_verificacao`, `registrar_cobranca`, `registrar_promessa_envio`, `encaminhar_para_pessoa`, `historico_cobrancas`, `historico_verificacoes` e `definir_regras_acompanhamento`
+- rodadas: `iniciar_rodada`, `registrar_ocorrencia`, `finalizar_rodada` e `historico_rodadas`
+- cadastro e edicao: empresas (dados, ativa/inativa, pasta, mala direta, regra de cobranca), documentos, `marcar_status` (um ou varios documentos numa competencia), tipos, meios de recebimento, periodos do ano, usuarios e regra global de cobranca
+- arquivos: exportar relatorio de pendencias (xlsx/pdf), importar planilhas, criar e restaurar backup
+- exclusoes (empresa, documento, tipo, meio, ano, logs antigos, restauracao de backup) so executam com `confirmar=true`
+
+Empresas sao identificadas pelo codigo e competencias pelo formato `MM/AAAA`.
+
+O DocFlow e a memoria da cobranca. Rotina pensada para o Claude:
+
+1. `iniciar_rodada` abre uma passada; tudo o que for registrado depois fica ligado a ela.
+2. `o_que_fazer_agora` diz, por documento e competencia, a acao pelas regras do sistema (verificar, cobrar, recobrar, aguardar ou com uma pessoa) e o porque.
+3. O Claude procura nos canais da empresa (email, Onvio) com as proprias ferramentas e registra com `registrar_verificacao` um resultado por documento: `recebido` (o sistema da baixa), `documento_com_problema` (com motivo), `nao_encontrado` ou `verificacao_falhou` (nao deu para olhar; nao gera cobranca). Na duvida, nunca `recebido`.
+4. Para cobrar ou recobrar, envia a mensagem e registra com `registrar_cobranca`, que numera cobranca e recobranca. Promessas do cliente vao em `registrar_promessa_envio`; o que precisa de decisao humana vai em `encaminhar_para_pessoa`.
+5. Falhas que nao sao de um documento (email fora do ar, sem acesso) vao em `registrar_ocorrencia`, e `finalizar_rodada` fecha a passada.
+
+Os prazos e limites (dias de espera depois de cobrar, maximo de recobrancas, documento com problema vai para uma pessoa) ficam em Configuracoes > Depois de cobrar. As pessoas acompanham tudo em `Cobrancas` (proximas acoes, relatorios de verificacao, rodadas), `Precisa de atencao` e `Ficha da empresa`.
+
+### Instalacao
+
+```bash
+.venv/bin/python -m pip install -r requirements-mcp.txt
+```
+
+O servidor age em nome de um usuario do DocFlow (as alteracoes aparecem nos logs com esse usuario). Crie um usuario proprio para ele pela tela `Usuarios` e entre uma vez com ele no app para definir a senha definitiva.
+
+### Configuracao no Claude Code
+
+```bash
+claude mcp add docflow \
+  -e DOCFLOW_MCP_USUARIO=mcp \
+  -e DOCFLOW_MCP_SENHA=sua-senha \
+  -e DOCFLOW_DATABASE_URL=postgresql://docflow:senha@localhost:5432/docflow \
+  -- /caminho/do/projeto/.venv/bin/python /caminho/do/projeto/docflow_mcp
+```
+
+`DOCFLOW_DATABASE_URL` e opcional: sem ela, o servidor usa a conexao salva pelo app desktop no perfil do usuario do sistema.
+
+### Configuracao em clientes com arquivo JSON (Claude Desktop e outros)
+
+```json
+{
+  "mcpServers": {
+    "docflow": {
+      "command": "/caminho/do/projeto/.venv/bin/python",
+      "args": ["/caminho/do/projeto/docflow_mcp"],
+      "env": {
+        "DOCFLOW_MCP_USUARIO": "mcp",
+        "DOCFLOW_MCP_SENHA": "sua-senha",
+        "DOCFLOW_DATABASE_URL": "postgresql://docflow:senha@localhost:5432/docflow"
+      }
+    }
+  }
+}
 ```
 
 ## Licenciamento na edicao publica
@@ -125,6 +196,8 @@ Recomendacao importante:
 - altere essa senha imediatamente apos o primeiro login
 
 ## Testes
+
+Os testes de banco rodam em um PostgreSQL real: cada teste cria um schema proprio e descartavel no banco apontado por `DOCFLOW_TEST_DATABASE_URL` (padrao: `dbname=docflow_test` no servidor local, com o usuario do sistema operacional; o banco e criado automaticamente se o usuario tiver permissao). Sem servidor acessivel, esses testes sao pulados.
 
 ### Suite completa
 
@@ -227,8 +300,9 @@ scripts\build_release.bat
 ## Pastas principais
 
 - `documentos_empresa_app/`: codigo-fonte da aplicacao
-- `documentos_empresa_app/database/`: conexao, repositorios e schema SQLite
-- `documentos_empresa_app/services/`: regras de negocio (inclui o agente organizador de documentos)
+- `docflow_mcp/`: servidor MCP do DocFlow
+- `documentos_empresa_app/database/`: conexao, repositorios e schema PostgreSQL
+- `documentos_empresa_app/services/`: regras de negocio
 - `documentos_empresa_app/qt_ui/`: interface PySide6 (paginas, dialogos, widgets, tema e viewmodels)
 - `documentos_empresa_app/utils/`: constantes, seguranca, recursos e helpers
 - `assets/installer/`: script do Inno Setup para Windows
@@ -246,8 +320,9 @@ scripts\build_release.bat
 
 ## Banco e seguranca
 
-- o banco e SQLite local
-- o caminho do banco e salvo no perfil do usuario do computador
+- o banco e PostgreSQL (detalhes, requisitos e migracao em [Banco de dados](docs/10-banco-de-dados.md))
+- os dados de conexao sao salvos no perfil do usuario do computador (senha protegida com DPAPI no Windows); a variavel `DOCFLOW_DATABASE_URL` tem prioridade quando definida
+- para trazer os dados de uma instalacao antiga (SQLite), use **Banco > Restaurar backup...** e selecione o arquivo `.db` antigo
 - o login lembrado e local ao perfil do sistema operacional
 - a credencial lembrada expira em `60` dias sem uso
 - o token lembrado e renovado automaticamente a cada autenticacao bem-sucedida
@@ -258,15 +333,14 @@ scripts\build_release.bat
 ## Fluxo principal de uso
 
 1. Fazer login.
-2. Cadastrar empresas manualmente ou por importacao (incluindo CNPJ, se for usar o agente organizador).
+2. Cadastrar empresas manualmente ou por importacao.
 3. Cadastrar documentos por empresa.
 4. Definir ou revisar tipos e meios de recebimento.
 5. Gerar os periodos do ano.
 6. Controlar os status na aba `Controle`.
 7. Acompanhar o resumo executivo na aba `Dashboard` e a grade operacional em `Panorama`.
-8. Processar a pasta de entrada em `Revisao de Documentos` para organizar arquivos recebidos automaticamente.
-9. Exportar pendencias ou consultar logs quando necessario.
-10. Configurar backup automatico ou gerar backup manual periodicamente.
+8. Exportar pendencias ou consultar logs quando necessario.
+9. Configurar backup automatico ou gerar backup manual periodicamente.
 
 ## Regras de negocio principais
 
@@ -276,7 +350,6 @@ scripts\build_release.bat
 - tipos podem ser `Mensal`, `Trimestral` ou `Anual em janeiro`
 - meses fora da ocorrencia aparecem como `Nao cobrar`
 - `Encerrado` bloqueia meses posteriores do documento
-- o agente organizador nunca cadastra empresa nova sozinho: documentos sem correspondencia clara vao para a fila de revisao manual
 
 ## Documentacao tecnica
 
@@ -286,7 +359,7 @@ Os documentos detalhados continuam na pasta [`docs/`](docs). Alguns refletem ain
 - [Dependencias e bibliotecas](docs/13-dependencias-e-bibliotecas-usadas.md)
 - [Icones e empacotamento](docs/18-icones-e-empacotamento-por-sistema-operacional.md)
 - [Git e empacotamento](docs/19-observacoes-importantes-para-git-e-empacotamento.md)
-- [Configuracao de seguranca, IA e backup](docs/21-configuracao-seguranca-ia-e-backup.md)
+- [Configuracao de seguranca e backup](docs/21-configuracao-seguranca-e-backup.md)
 
 ## O que nao deve ir para o Git
 
@@ -299,6 +372,5 @@ Os documentos detalhados continuam na pasta [`docs/`](docs). Alguns refletem ain
 ## Status desta revisao
 
 - interface reconstruida em PySide6 (Qt), com tema claro/escuro, dashboard com graficos e todas as telas migradas do Tkinter
-- agente organizador de documentos com classificacao por CNPJ e fallback opcional via IA
 - `.gitignore` ampliado para artefatos de release e arquivos SQLite auxiliares
 - README refeito para uso, manutencao e distribuicao

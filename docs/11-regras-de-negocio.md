@@ -110,7 +110,7 @@
 
 ## 11.13 Backup e restauracao
 
-- backup gera uma copia completa do SQLite em outro arquivo
+- backup exporta todas as tabelas do PostgreSQL para um arquivo `.dfbak` (JSON compactado, opcionalmente criptografado); a restauracao aceita tambem os `.db` das versoes antigas (SQLite)
 - backup automatico gera copias datadas em pasta configuravel pelo usuario
 - a pasta padrao fica fora da instalacao, em `Documents/DocFLow/backups` ou `Documentos/DocFLow/backups` quando disponivel
 - o usuario configura intervalo em dias e quantos backups automaticos devem ser mantidos

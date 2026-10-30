@@ -216,6 +216,103 @@ def _parse_simple_svg_path(path_data: str) -> list[list[tuple[float, float]]]:
     return paths
 
 
+_IDENTITY_MATRIX: tuple[float, float, float, float, float, float] = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+_TRANSFORM_FUNC_PATTERN = re.compile(r"(\w+)\(([^)]*)\)")
+
+
+def _multiply_matrices(
+    outer: tuple[float, float, float, float, float, float],
+    inner: tuple[float, float, float, float, float, float],
+) -> tuple[float, float, float, float, float, float]:
+    a1, b1, c1, d1, e1, f1 = outer
+    a2, b2, c2, d2, e2, f2 = inner
+    return (
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    )
+
+
+def _parse_transform(transform_str: str | None) -> tuple[float, float, float, float, float, float]:
+    """Suporta apenas translate()/scale(), unicas funcoes usadas no icone mestre."""
+    matrix = _IDENTITY_MATRIX
+    if not transform_str:
+        return matrix
+
+    for name, args_str in _TRANSFORM_FUNC_PATTERN.findall(transform_str):
+        args = [float(value) for value in re.split(r"[\s,]+", args_str.strip()) if value]
+        if name == "translate":
+            tx = args[0] if args else 0.0
+            ty = args[1] if len(args) > 1 else 0.0
+            local_matrix = (1.0, 0.0, 0.0, 1.0, tx, ty)
+        elif name == "scale":
+            sx = args[0] if args else 1.0
+            sy = args[1] if len(args) > 1 else sx
+            local_matrix = (sx, 0.0, 0.0, sy, 0.0, 0.0)
+        else:
+            continue
+        matrix = _multiply_matrices(matrix, local_matrix)
+
+    return matrix
+
+
+def _get_href(element: ElementTree.Element) -> str | None:
+    href = element.attrib.get("href")
+    if href:
+        return href
+    for key, value in element.attrib.items():
+        if key.endswith("}href"):
+            return value
+    return None
+
+
+def _average_gradient_color(gradient_element: ElementTree.Element) -> str:
+    from PIL import ImageColor
+
+    stop_colors = [
+        stop.attrib["stop-color"]
+        for stop in gradient_element
+        if _strip_svg_namespace(stop.tag) == "stop" and stop.attrib.get("stop-color")
+    ]
+    if not stop_colors:
+        return "#000000"
+
+    rgb_values = [ImageColor.getrgb(color) for color in stop_colors]
+    averaged = tuple(round(sum(channel) / len(channel)) for channel in zip(*rgb_values))
+    return "#%02x%02x%02x" % averaged
+
+
+def _collect_defs(
+    root: ElementTree.Element,
+) -> tuple[dict[str, ElementTree.Element], dict[str, str]]:
+    """Indexa por id: elementos reutilizaveis (para <use href="#id">) e gradientes
+    (reduzidos a uma cor solida media, ja que este renderer nao suporta degrade)."""
+    elements_by_id: dict[str, ElementTree.Element] = {}
+    gradients_by_id: dict[str, str] = {}
+    for element in root.iter():
+        element_id = element.attrib.get("id")
+        if not element_id:
+            continue
+        if _strip_svg_namespace(element.tag) in ("linearGradient", "radialGradient"):
+            gradients_by_id[element_id] = _average_gradient_color(element)
+        else:
+            elements_by_id[element_id] = element
+    return elements_by_id, gradients_by_id
+
+
+def _resolve_fill(raw_fill: str | None, gradients_by_id: dict[str, str]) -> str | None:
+    color = _parse_color(raw_fill)
+    if color is None:
+        return None
+    match = re.fullmatch(r"url\(#([^)]+)\)", color)
+    if match:
+        return gradients_by_id.get(match.group(1))
+    return color
+
+
 def render_simple_svg(svg_path: Path) -> Image.Image:
     image_module = get_pillow_image_module()
     from PIL import ImageDraw
@@ -225,42 +322,54 @@ def render_simple_svg(svg_path: Path) -> Image.Image:
     scale = min(OUTPUT_SIZE / viewbox_width, OUTPUT_SIZE / viewbox_height)
     image = image_module.new("RGBA", (OUTPUT_SIZE, OUTPUT_SIZE), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
+    elements_by_id, gradients_by_id = _collect_defs(root)
 
-    def transform(point: tuple[float, float]) -> tuple[float, float]:
-        return (point[0] - min_x) * scale, (point[1] - min_y) * scale
+    def transform(
+        matrix: tuple[float, float, float, float, float, float],
+        point: tuple[float, float],
+    ) -> tuple[float, float]:
+        a, b, c, d, e, f = matrix
+        x, y = point
+        world_x, world_y = a * x + c * y + e, b * x + d * y + f
+        return (world_x - min_x) * scale, (world_y - min_y) * scale
 
-    for element in root:
+    def draw_shape(
+        element: ElementTree.Element,
+        matrix: tuple[float, float, float, float, float, float],
+    ) -> None:
         tag_name = _strip_svg_namespace(element.tag)
         if tag_name == "rect":
-            fill = _parse_color(element.attrib.get("fill"))
+            fill = _resolve_fill(element.attrib.get("fill"), gradients_by_id)
             if not fill:
-                continue
+                return
             x = _parse_float(element.attrib.get("x"))
             y = _parse_float(element.attrib.get("y"))
             width = _parse_float(element.attrib.get("width"))
             height = _parse_float(element.attrib.get("height"))
             radius = _parse_float(element.attrib.get("rx"))
+            corner_a = transform(matrix, (x, y))
+            corner_b = transform(matrix, (x + width, y + height))
             draw.rounded_rectangle(
                 [
-                    transform((x, y)),
-                    transform((x + width, y + height)),
+                    (min(corner_a[0], corner_b[0]), min(corner_a[1], corner_b[1])),
+                    (max(corner_a[0], corner_b[0]), max(corner_a[1], corner_b[1])),
                 ],
                 radius=radius * scale,
                 fill=fill,
             )
-            continue
+            return
 
         if tag_name != "path":
-            continue
+            return
 
         paths = _parse_simple_svg_path(element.attrib.get("d", ""))
-        fill = _parse_color(element.attrib.get("fill"))
-        stroke = _parse_color(element.attrib.get("stroke"))
+        fill = _resolve_fill(element.attrib.get("fill"), gradients_by_id)
+        stroke = _resolve_fill(element.attrib.get("stroke"), gradients_by_id)
         stroke_width = max(1, round(_parse_float(element.attrib.get("stroke-width"), 1.0) * scale))
         linecap = element.attrib.get("stroke-linecap", "").strip().lower()
 
         for path in paths:
-            transformed_path = [transform(point) for point in path]
+            transformed_path = [transform(matrix, point) for point in path]
             if fill and len(transformed_path) >= 3:
                 draw.polygon(transformed_path, fill=fill)
             if stroke and len(transformed_path) >= 2:
@@ -270,6 +379,34 @@ def render_simple_svg(svg_path: Path) -> Image.Image:
                     for x, y in (transformed_path[0], transformed_path[-1]):
                         draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=stroke)
 
+    def walk(
+        parent: ElementTree.Element,
+        matrix: tuple[float, float, float, float, float, float],
+    ) -> None:
+        for child in parent:
+            tag_name = _strip_svg_namespace(child.tag)
+            if tag_name == "defs":
+                continue
+
+            local_matrix = _multiply_matrices(matrix, _parse_transform(child.attrib.get("transform")))
+
+            if tag_name == "use":
+                href = _get_href(child)
+                referenced = elements_by_id.get(href.lstrip("#")) if href else None
+                if referenced is not None:
+                    use_offset = (
+                        _parse_float(child.attrib.get("x")),
+                        _parse_float(child.attrib.get("y")),
+                    )
+                    use_matrix = _multiply_matrices(local_matrix, (1.0, 0.0, 0.0, 1.0, *use_offset))
+                    draw_shape(referenced, use_matrix)
+                    walk(referenced, use_matrix)
+                continue
+
+            draw_shape(child, local_matrix)
+            walk(child, local_matrix)
+
+    walk(root, _IDENTITY_MATRIX)
     return image
 
 

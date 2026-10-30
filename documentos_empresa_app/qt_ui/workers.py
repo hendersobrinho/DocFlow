@@ -6,10 +6,18 @@ from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import QWidget
 
 from documentos_empresa_app.qt_ui.widgets.busy_dialog import BusyDialog
+from documentos_empresa_app.utils.diagnostics import get_diagnostics_logger
 
 
 class CallableWorker(QObject):
-    """Executa uma funcao sem argumentos em thread de fundo e emite o resultado."""
+    """Executa uma funcao sem argumentos em thread de fundo e emite o resultado.
+
+    Toda tarefa em segundo plano do app (verificar email, backup,
+    importacao em lote etc.) passa por aqui - por isso qualquer falha e sempre gravada
+    no log tecnico com o traceback completo antes de emitir so a mensagem resumida pra
+    UI. Sem isso, um erro inesperado (nao previsto como ValidationError) so aparecia
+    como uma frase crua na tela e desaparecia pra sempre ao fechar o aviso.
+    """
 
     finished = Signal(object)
     failed = Signal(str)
@@ -22,6 +30,7 @@ class CallableWorker(QObject):
         try:
             result = self._func()
         except Exception as exc:  # pragma: no cover - salvaguarda da thread
+            get_diagnostics_logger().exception("TAREFA_EM_SEGUNDO_PLANO_FALHOU | erro=%s", exc)
             self.failed.emit(str(exc))
             return
         self.finished.emit(result)

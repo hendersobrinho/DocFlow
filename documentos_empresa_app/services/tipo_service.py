@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
-
+from documentos_empresa_app.database.connection import IntegrityError
 from documentos_empresa_app.database.repositories import TipoRepository
 from documentos_empresa_app.utils.common import (
     TYPE_OCCURRENCE_MENSAL,
@@ -36,14 +35,6 @@ class TipoService:
         tipo_id = self.create_tipo(nome, regra_ocorrencia)
         return self.get_tipo(tipo_id), True
 
-    def find_tipo_by_name(self, nome_tipo: str) -> dict | None:
-        """Consulta somente-leitura, sem criar nada - usada pelo chat pra decidir se um tipo
-        citado pelo usuario ja existe antes de propor cadastrar um novo."""
-        nome = canonicalize_tipo_name(nome_tipo)
-        if not nome:
-            return None
-        return self.tipo_repository.get_by_name(nome)
-
     def create_tipo(self, nome_tipo: str, regra_ocorrencia: str = TYPE_OCCURRENCE_MENSAL) -> int:
         nome = self._normalize_name(nome_tipo)
         regra = self._normalize_occurrence_rule(regra_ocorrencia)
@@ -51,7 +42,7 @@ class TipoService:
             raise ValidationError("Ja existe um tipo com esse nome.")
         try:
             return self.tipo_repository.create(nome, regra)
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise ValidationError("Nao foi possivel cadastrar o tipo.") from exc
 
     def update_tipo(self, tipo_id: int, nome_tipo: str, regra_ocorrencia: str = TYPE_OCCURRENCE_MENSAL) -> None:

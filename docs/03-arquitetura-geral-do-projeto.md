@@ -12,7 +12,7 @@ As camadas sao:
 2. Interface grafica
 3. Servicos de negocio
 4. Repositórios
-5. Persistencia SQLite
+5. Persistencia PostgreSQL
 6. Utilitarios transversais
 
 ## 3.2 Descricao das camadas
@@ -70,7 +70,7 @@ Responsabilidade:
 - isolar operacoes CRUD e consultas
 - devolver dados em formato de dicionario
 
-### 5. Persistencia SQLite
+### 5. Persistencia PostgreSQL
 
 Arquivos:
 
@@ -104,7 +104,7 @@ Responsabilidade:
 
 O fluxo de dependencia segue, em geral, esta direcao:
 
-`UI -> Services -> Repositories -> SQLite`
+`UI -> Services -> Repositories -> PostgreSQL`
 
 Componentes auxiliares:
 

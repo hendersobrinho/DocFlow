@@ -6,6 +6,7 @@ from documentos_empresa_app.database.repositories import (
     PeriodoRepository,
     StatusRepository,
 )
+from documentos_empresa_app.utils.cache import ResultCache
 from documentos_empresa_app.utils.common import (
     AUTO_STATUS_NAO_COBRAR,
     ValidationError,
@@ -56,8 +57,16 @@ class PanoramaService:
         self.documento_repository = documento_repository
         self.periodo_repository = periodo_repository
         self.status_repository = status_repository
+        self._month_cache = ResultCache(empresa_repository.db_manager)
 
     def build_monthly_view(self, periodo_id: int, active_only: bool = False) -> dict:
+        """Situacao de cada empresa no mes. Em cache ate a proxima escrita (o Painel pede 7
+        meses de uma vez para o grafico; o Panorama, o mesmo mes a cada clique)."""
+        return self._month_cache.get(
+            (periodo_id, active_only), lambda: self._build_monthly_view(periodo_id, active_only)
+        )
+
+    def _build_monthly_view(self, periodo_id: int, active_only: bool) -> dict:
         periodo = self.periodo_repository.get_by_id(periodo_id)
         if not periodo:
             raise ValidationError("Periodo nao encontrado.")

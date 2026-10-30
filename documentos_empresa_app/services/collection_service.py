@@ -10,6 +10,7 @@ from documentos_empresa_app.database.repositories import (
     PeriodoRepository,
     StatusRepository,
 )
+from documentos_empresa_app.utils.cache import ResultCache
 from documentos_empresa_app.utils.common import (
     ValidationError,
     build_chargeable_closure_key_map,
@@ -39,6 +40,7 @@ class CollectionService:
         status_repository: StatusRepository,
     ) -> None:
         self.collection_config_repository = collection_config_repository
+        self._queue_cache = ResultCache(collection_config_repository.db_manager)
         self.empresa_repository = empresa_repository
         self.documento_repository = documento_repository
         self.periodo_repository = periodo_repository
@@ -70,6 +72,38 @@ class CollectionService:
             normalized["alerta_apos_dias"],
         )
         return self.get_global_settings()
+
+    # Regras do acompanhamento (o que fazer depois de cobrar): valem para todas as empresas.
+    RULE_LIMITS = {
+        "dias_entre_cobrancas": (0, 60),
+        "max_recobrancas": (0, 20),
+    }
+
+    def get_followup_rules(self) -> dict:
+        settings = self.collection_config_repository.get_settings()
+        return {
+            "dias_entre_cobrancas": int(settings.get("dias_entre_cobrancas") if settings.get("dias_entre_cobrancas") is not None else 3),
+            "max_recobrancas": int(settings.get("max_recobrancas") if settings.get("max_recobrancas") is not None else 3),
+            "problema_vai_para_pessoa": bool(
+                settings.get("problema_vai_para_pessoa") if settings.get("problema_vai_para_pessoa") is not None else 1
+            ),
+        }
+
+    def update_followup_rules(self, dias_entre_cobrancas, max_recobrancas, problema_vai_para_pessoa) -> dict:
+        values = {}
+        for key, raw in (("dias_entre_cobrancas", dias_entre_cobrancas), ("max_recobrancas", max_recobrancas)):
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                raise ValidationError("As regras de acompanhamento precisam ser números inteiros.") from None
+            low, high = self.RULE_LIMITS[key]
+            if not low <= value <= high:
+                raise ValidationError(f"O valor de {key.replace('_', ' ')} precisa ficar entre {low} e {high}.")
+            values[key] = value
+        self.collection_config_repository.update_rules(
+            values["dias_entre_cobrancas"], values["max_recobrancas"], 1 if problema_vai_para_pessoa else 0
+        )
+        return self.get_followup_rules()
 
     def get_company_settings(self, company_id: int) -> dict:
         company = self.empresa_repository.get_by_id(company_id)
@@ -133,7 +167,33 @@ class CollectionService:
         reference_date: date | None = None,
         active_only: bool = True,
     ) -> dict:
+        """Fila de cobranca (o que esta em aberto hoje). E a leitura mais pesada do sistema e
+        varias telas pedem a mesma coisa num clique: fica em cache ate a proxima escrita."""
+        return self._filtered_queue(reference_date, active_only, copy=True)
+
+    def queue_snapshot(self, reference_date: date | None = None, active_only: bool = True) -> dict:
+        """Mesma fila, sem copia: so para quem le e nao altera (os outros services)."""
+        return self._filtered_queue(reference_date, active_only, copy=False)
+
+    def _filtered_queue(self, reference_date: date | None, active_only: bool, *, copy: bool) -> dict:
+        # Calcula uma vez com todas as empresas e filtra as ativas em memoria: assim as
+        # telas que pedem "so ativas" e "todas" no mesmo clique usam o mesmo calculo.
         today = reference_date or date.today()
+        full = self._queue_cache.get(today, lambda: self._build_collection_queue(today, False), copy=copy)
+        if not active_only:
+            return full
+        items = [item for item in full["items"] if item["empresa_ativa"]]
+        return {**full, "items": items, "summary": self._summarize(items)}
+
+    def _summarize(self, items: list[dict]) -> dict:
+        return {
+            "total": len(items),
+            self.PHASE_EM_COBRANCA: sum(1 for item in items if item["phase_key"] == self.PHASE_EM_COBRANCA),
+            self.PHASE_EM_ATRASO: sum(1 for item in items if item["phase_key"] == self.PHASE_EM_ATRASO),
+            "alert_ready": sum(1 for item in items if item["alert_ready"]),
+        }
+
+    def _build_collection_queue(self, today: date, active_only: bool) -> dict:
         global_settings = self.get_global_settings()
         companies = self.empresa_repository.list_all(active_only=active_only)
         company_ids = [company["id"] for company in companies]
@@ -179,6 +239,7 @@ class CollectionService:
                             "documento_id": document["id"],
                             "tipo_documento": document["nome_tipo"],
                             "nome_documento": document["nome_documento"],
+                            "observacao": document.get("observacao"),
                             "status": status or "Nao iniciado",
                             "meios_recebimento": parse_delivery_methods(document.get("meios_recebimento")),
                             "updated_at": status_row.get("updated_at") if status_row else None,
@@ -219,12 +280,7 @@ class CollectionService:
                 )
 
         items = self._group_company_items(period_items)
-        summary = {
-            "total": len(items),
-            self.PHASE_EM_COBRANCA: sum(1 for item in items if item["phase_key"] == self.PHASE_EM_COBRANCA),
-            self.PHASE_EM_ATRASO: sum(1 for item in items if item["phase_key"] == self.PHASE_EM_ATRASO),
-            "alert_ready": sum(1 for item in items if item["alert_ready"]),
-        }
+        summary = self._summarize(items)
 
         items.sort(
             key=lambda item: (

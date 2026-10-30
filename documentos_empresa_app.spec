@@ -19,6 +19,10 @@ def get_build_icon_path() -> Path | None:
 
 icon_file = get_build_icon_path()
 icon_datas = [(str(path), "assets/icons") for path in sorted(ICONS_DIR.iterdir()) if path.is_file()]
+# Identidade visual: logos/simbolo (assets/brand) e as fontes da marca (assets/fonts).
+for _folder in ("brand", "fonts"):
+    _dir = ROOT_DIR / "assets" / _folder
+    icon_datas += [(str(path), f"assets/{_folder}") for path in sorted(_dir.iterdir()) if path.is_file()]
 
 
 a = Analysis(
@@ -26,7 +30,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=icon_datas,
-    hiddenimports=[],
+    # O psycopg carrega a implementacao binaria (com a libpq embutida) dinamicamente.
+    hiddenimports=["psycopg_binary"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
