@@ -77,15 +77,17 @@ class PageHeader(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        self.title_label = QLabel(title)
+        self.title_label = QLabel(title, self)
         self.title_label.setObjectName("PageTitle")
         layout.addWidget(self.title_label)
 
-        self.subtitle_label = QLabel(subtitle)
+        # Com pai desde o inicio: um QLabel solto que recebe setVisible(True) vira uma janela
+        # propria - era isso que piscava varias janelinhas ao abrir o sistema.
+        self.subtitle_label = QLabel(subtitle, self)
         self.subtitle_label.setObjectName("PageSubtitle")
         self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setVisible(bool(subtitle))
         layout.addWidget(self.subtitle_label)
+        self.subtitle_label.setVisible(bool(subtitle))
 
     def set_subtitle(self, subtitle: str) -> None:
         self.subtitle_label.setText(subtitle)

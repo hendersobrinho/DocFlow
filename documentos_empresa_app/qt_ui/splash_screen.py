@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+from PySide6.QtCore import QElapsedTimer, QEasingCurve, QPropertyAnimation, Qt, QThread
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from documentos_empresa_app.qt_ui.brand import TAGLINE, BrandPanel
@@ -43,17 +43,37 @@ class SplashScreen(QWidget):
         y = geometry.y() + (geometry.height() - self.height()) // 2
         self.move(x, y)
 
-    def show_message(self, text: str) -> None:
+    def show_message(self, text: str, progress: float | None = None) -> None:
+        """Atualiza o status (e a barra, de 0 a 1). Da um instante para a tela se desenhar
+        antes do trabalho pesado seguinte - sem isso a janela congela no meio da animacao."""
         self.panel.set_footer(text)
-        QApplication.processEvents()
+        if progress is not None:
+            self.panel.set_progress(progress)
+        self._pump(40)
 
     def show_animated(self) -> None:
+        if self.isVisible() and self.windowOpacity() > 0.99:
+            return
         self.setWindowOpacity(0.0)
         self.show()
+        self.raise_()
         self._fade_animation.start()
-        QApplication.processEvents()
+        self._pump(self._fade_animation.duration())
 
     def finish(self, window: QWidget | None = None) -> None:
+        self.panel.set_progress(1.0)
+        self.panel.set_footer("Pronto!")
+        self._pump(220)
         if window is not None:
             window.show()
+            window.raise_()
+            window.activateWindow()
         self.close()
+
+    @staticmethod
+    def _pump(milliseconds: int) -> None:
+        relogio = QElapsedTimer()
+        relogio.start()
+        while relogio.elapsed() < milliseconds:
+            QApplication.processEvents()
+            QThread.msleep(10)

@@ -156,6 +156,8 @@ class BrandPanel(QWidget):
         self.corner_radius = corner_radius
         self.show_progress = show_progress
         self.footer_text = ""
+        self.progress: float | None = None  # None = barra indeterminada
+        self._shown_progress = 0.0
         self._phase = 0.0
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(260, 260)
@@ -175,6 +177,16 @@ class BrandPanel(QWidget):
 
     def _tick(self) -> None:
         self._phase = (self._phase + 0.006) % 1.0
+        if self.progress is not None:
+            # A barra desliza ate o valor novo em vez de pular.
+            self._shown_progress += (self.progress - self._shown_progress) * 0.22
+        self.update()
+
+    def set_progress(self, value: float | None) -> None:
+        """0 a 1 enche a barra (com animacao); None volta a barra indeterminada."""
+        self.progress = None if value is None else max(0.0, min(1.0, float(value)))
+        if self.progress is not None and not self._animated:
+            self._shown_progress = self.progress
         self.update()
 
     def set_footer(self, text: str) -> None:
@@ -247,21 +259,43 @@ class BrandPanel(QWidget):
 
     def _paint_footer(self, painter: QPainter, rect: QRectF) -> None:
         """Status em texto e barra indeterminada em ciano no pe do painel."""
-        bottom = rect.height() - 22
+        bottom = rect.height() - 24
         if self.show_progress:
-            track = QRectF(40, bottom, rect.width() - 80, 4)
+            track = QRectF(48, bottom, rect.width() - 96, 5)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(255, 255, 255, 28))
-            painter.drawRoundedRect(track, 2, 2)
-            segment = track.width() * 0.28
-            x = track.left() - segment + (track.width() + segment) * ((self._phase * 2.2) % 1.0)
-            left, right = max(track.left(), x), min(track.right(), x + segment)
-            if right > left:
+            painter.setBrush(QColor(255, 255, 255, 30))
+            painter.drawRoundedRect(track, 2.5, 2.5)
+            if self.progress is None:
+                segment = track.width() * 0.28
+                x = track.left() - segment + (track.width() + segment) * ((self._phase * 2.2) % 1.0)
+                left, right = max(track.left(), x), min(track.right(), x + segment)
+            else:
+                left, right = track.left(), track.left() + track.width() * self._shown_progress
+            if right - left > 1:
+                fill = QRectF(left, track.top(), right - left, track.height())
                 gradient = QLinearGradient(left, 0, right, 0)
-                gradient.setColorAt(0.0, QColor(75, 189, 205, 40))
+                gradient.setColorAt(0.0, QColor(75, 189, 205, 90))
                 gradient.setColorAt(1.0, QColor(CIANO))
                 painter.setBrush(gradient)
-                painter.drawRoundedRect(QRectF(left, track.top(), right - left, track.height()), 2, 2)
+                painter.drawRoundedRect(fill, 2.5, 2.5)
+                if self.progress is not None:
+                    # Brilho que corre por dentro da parte cheia e ponto de luz na ponta.
+                    shine_w = min(70.0, fill.width())
+                    shine_x = fill.left() - shine_w + (fill.width() + shine_w) * ((self._phase * 3.0) % 1.0)
+                    shine = QLinearGradient(shine_x, 0, shine_x + shine_w, 0)
+                    shine.setColorAt(0.0, QColor(255, 255, 255, 0))
+                    shine.setColorAt(0.5, QColor(255, 255, 255, 110))
+                    shine.setColorAt(1.0, QColor(255, 255, 255, 0))
+                    painter.save()
+                    painter.setClipRect(fill)
+                    painter.setBrush(shine)
+                    painter.drawRect(QRectF(shine_x, fill.top(), shine_w, fill.height()))
+                    painter.restore()
+                    glow = QRadialGradient(QPointF(right, fill.center().y()), 10)
+                    glow.setColorAt(0.0, QColor(75, 189, 205, 170))
+                    glow.setColorAt(1.0, QColor(75, 189, 205, 0))
+                    painter.setBrush(glow)
+                    painter.drawEllipse(QPointF(right, fill.center().y()), 10, 10)
             bottom -= 12
         if self.footer_text:
             font = QFont(FONT_UI)

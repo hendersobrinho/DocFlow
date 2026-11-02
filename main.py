@@ -93,14 +93,14 @@ def main() -> None:
     splash.show_animated()
 
     while True:
-        splash.show_message("Verificando banco de dados...")
+        splash.show_message("Verificando banco de dados...", 0.08)
         conninfo = ensure_database_connection_qt()
         if conninfo is None:
             splash.close()
             return
 
         try:
-            splash.show_message("Conectando ao banco de dados...")
+            splash.show_message("Conectando ao banco de dados...", 0.2)
             services = build_application_services(conninfo)
             # Meses do ano atual (e do proximo, a partir de novembro) sempre prontos.
             services.periodo_service.ensure_operational_years()
@@ -122,7 +122,7 @@ def main() -> None:
 
         while True:
             services.session_service.logout()
-            splash.show_message("Restaurando sessão...")
+            splash.show_message("Restaurando sessão...", 0.32)
             authenticated_user = try_restore_saved_login(services)
             if authenticated_user is None:
                 splash.close()
@@ -139,8 +139,13 @@ def main() -> None:
                     splash.show_animated()
                     continue
 
-            splash.show_message("Abrindo o sistema...")
-            window = MainWindow(services)
+            # Depois do login a tela de carregamento volta e fica ate o sistema estar pronto.
+            splash.show_animated()
+            splash.show_message("Abrindo o sistema...", 0.4)
+            window = MainWindow(
+                services,
+                on_progress=lambda texto, fracao: splash.show_message(texto, 0.4 + fracao * 0.55),
+            )
             splash.finish(window)
             app.exec()
             if window.logout_requested:
