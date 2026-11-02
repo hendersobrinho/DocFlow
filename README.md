@@ -115,14 +115,16 @@ Na primeira abertura, o sistema pede os dados de conexao do PostgreSQL (servidor
 
 O pacote `docflow_mcp/` expoe o DocFlow como servidor [MCP](https://modelcontextprotocol.io), para ser usado a partir do Claude (Claude Code, Claude Desktop) ou de outro cliente MCP. Ele usa os mesmos services do app desktop, entao as validacoes, as permissoes de admin e o log de auditoria sao os mesmos.
 
-Tools disponiveis (56):
+Tools disponiveis (76):
 
 - consulta: empresas, documentos, tipos, meios de recebimento, competencias, `panorama`, `controle_empresa`, relatorio de pendencias, fila e mensagem de cobranca, configuracao de cobranca, logs e usuarios
 - cobranca: `o_que_fazer_agora`, `ficha_empresa`, `registro_documento`, `definir_recebimento_empresa` (canais, emails de origem e onde procurar), `registrar_verificacao`, `registrar_cobranca`, `registrar_promessa_envio`, `encaminhar_para_pessoa`, `historico_cobrancas`, `historico_verificacoes` e `definir_regras_acompanhamento`
 - rodadas: `iniciar_rodada`, `registrar_ocorrencia`, `finalizar_rodada` e `historico_rodadas`
-- cadastro e edicao: empresas (dados, ativa/inativa, pasta, mala direta, regra de cobranca), documentos, `marcar_status` (um ou varios documentos numa competencia), tipos, meios de recebimento, periodos do ano, usuarios e regra global de cobranca
+- cadastro e edicao: empresas (dados, ativa/inativa, pasta, mala direta, WhatsApp, regra de cobranca), documentos, `marcar_status` (um ou varios documentos numa competencia), tipos, meios de recebimento, periodos do ano, usuarios e regra global de cobranca
 - arquivos: exportar relatorio de pendencias (xlsx/pdf), importar planilhas, criar e restaurar backup
-- exclusoes (empresa, documento, tipo, meio, ano, logs antigos, restauracao de backup) so executam com `confirmar=true`
+- envios automaticos (cobranca e mala direta, email e WhatsApp): `listar_envios_programados`, `envios_a_fazer`, `conferir_envio`, `previa_envio`, `registrar_envio`, `enviar_whatsapp`, `historico_envios`, `cadastrar_envio_programado`, `atualizar_envio_programado`, `excluir_envio_programado`, `lista_mala_direta`, `incluir_na_mala_direta`, `remover_da_mala_direta`, `enviar_emails_pelo_docflow` (envia pelo email do escritorio cadastrado) e os modelos de texto (`listar_modelos_mensagem`, `salvar_modelo_mensagem`, `excluir_modelo_mensagem`)
+- acesso livre ao banco (admin): `consultar_banco` roda qualquer SELECT numa transacao somente leitura; `executar_sql` roda qualquer comando de escrita/exclusao numa transacao (fica no Historico de acoes)
+- exclusoes (empresa, documento, tipo, meio, ano, envio automatico, logs antigos, restauracao de backup) e `executar_sql` so executam com `confirmar=true`
 
 Empresas sao identificadas pelo codigo e competencias pelo formato `MM/AAAA`.
 
@@ -135,6 +137,22 @@ O DocFlow e a memoria da cobranca. Rotina pensada para o Claude:
 5. Falhas que nao sao de um documento (email fora do ar, sem acesso) vao em `registrar_ocorrencia`, e `finalizar_rodada` fecha a passada.
 
 Os prazos e limites (dias de espera depois de cobrar, maximo de recobrancas, documento com problema vai para uma pessoa) ficam em Configuracoes > Depois de cobrar. As pessoas acompanham tudo em `Cobrancas` (proximas acoes, relatorios de verificacao, rodadas), `Precisa de atencao` e `Ficha da empresa`.
+
+### Envios automaticos (email e WhatsApp)
+
+Em `Administracao > Envios automaticos` ficam as cobrancas e malas diretas recorrentes. Tudo e por competencia: o envio diz quais competencias cobrar (ex: Informe de Rendimentos = 3, 6, 9, 12) e, por padrao, sai no mes seguinte a partir do dia escolhido (a competencia 12 e cobrada em janeiro), porque o documento so fica pronto no fim do mes. Publico: as empresas com um tipo de documento (opcionalmente so as que ainda nao entregaram), ou mala direta para todas as ativas ou para empresas escolhidas (respeitando quem pediu para nao receber). Qualquer envio aceita tirar empresas (num envio por tipo elas ficam como excecao, `empresa_ids_excluidas`) e incluir de volta. O texto aceita campos como `{empresa}`, `{competencia}` e `{documentos}`, com um texto proprio opcional para o WhatsApp (`corpo_whatsapp`); textos prontos ficam em `modelos_mensagem`.
+
+A tela e mestre-detalhe: a esquerda todos os envios (com quantas empresas estao para enviar agora); a direita o envio escolhido em tres abas - Quem recebe (por competencia, dividido em Email, WhatsApp e Fica de fora, com a mensagem exata de cada empresa), Mensagem (textos, campos e modelos) e Historico. Ha ainda o Historico geral, com filtro por envio.
+
+WhatsApp: so vai por WhatsApp para a empresa que liberou no cadastro (`Pode usar o WhatsApp nos envios`, coluna `whatsapp_envios`); empresas atendidas num grupo guardam o link de convite (`whatsapp_grupo`), que tem preferencia sobre o numero. No canal automatico quem liberou recebe por WhatsApp e os demais por email. O WhatsApp em sequencia abre uma conversa por vez com a mensagem pronta (wa.me); no grupo, que nao aceita texto no link, a mensagem vai para a area de transferencia.
+
+Email: `email_sender_service.py` envia por SMTP com o login do escritorio, cadastrado na tela (`Email de envio...`, com envio de teste) e guardado no `config.json` (chave `email_envio`, senha protegida com DPAPI). O botao `Enviar emails agora` envia os emails pendentes e registra cada empresa; a copia oculta vai so no envelope (nunca no cabecalho) e listas grandes sao divididas em varios emails. Continua dando para abrir o rascunho no programa de email.
+
+Mala direta em copia oculta: como o escritorio faz, um email so para o email do escritorio (`Para`) com os clientes em copia oculta, todo mes com a competencia anterior; quem liberou o WhatsApp sai da copia oculta e recebe a mensagem individual no WhatsApp. No MCP: modo `cco` em `cadastrar_envio_programado`, e `registrar_envio` sem `codigo_empresa` registra o email para todas as empresas da Cco.
+
+O DocFlow e o centro de informacao. O Claude chama `envios_a_fazer`, envia cada email pela propria ferramenta de email (ou com `enviar_emails_pelo_docflow`) e, no WhatsApp, usa `enviar_whatsapp`; registra tudo com `registrar_envio`. A mesma mensagem nunca vai duas vezes para a mesma empresa na mesma competencia; quem perde o dia continua na lista ate o fim do mes.
+
+Envio direto pelo WhatsApp: `whatsapp_service.py` ja traz o cliente da WhatsApp Cloud API (Meta). Para ligar, grave em `config.json` a chave `whatsapp` com `provedor: "cloud_api"`, `phone_number_id` e `token` (use `save_whatsapp_settings`, que protege o token com DPAPI). Fora da janela de 24h a Meta so aceita mensagens de modelo (template) aprovadas.
 
 ### Instalacao
 
@@ -249,6 +267,7 @@ Saidas esperadas:
 - executavel principal: `dist\DocFLow\DocFLow.exe`
 - pacote versionado: `dist_release\DocFLow-win64-v<versao>.zip`
 - se o `Inno Setup` estiver no `PATH`, o script tambem tenta gerar o instalador
+- o instalador nao pede administrador: instala por usuario em `%LOCALAPPDATA%\Programs\DocFLow` (a tela inicial ainda oferece instalar para todos, o que pede elevacao)
 
 Se a pasta `dist\DocFLow\` for criada vazia ou sem `DocFLow.exe`, o build nao terminou corretamente. Nesse caso, rode manualmente:
 

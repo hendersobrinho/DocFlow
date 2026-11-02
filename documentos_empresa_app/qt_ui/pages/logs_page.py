@@ -44,6 +44,14 @@ ACTION_LABELS = {
     "INATIVACAO_USUARIO": "Usuário inativado",
     "REATIVACAO_USUARIO": "Usuário reativado",
     "ALTERACAO_SENHA_USUARIO": "Senha alterada",
+    "CADASTRO_ENVIO_PROGRAMADO": "Envio automático cadastrado",
+    "EDICAO_ENVIO_PROGRAMADO": "Envio automático editado",
+    "EXCLUSAO_ENVIO_PROGRAMADO": "Envio automático excluído",
+    "ENVIO_EMAIL_REGISTRADO": "Email enviado",
+    "ENVIO_EMAIL_FALHOU": "Falha no envio de email",
+    "ENVIO_WHATSAPP_REGISTRADO": "WhatsApp enviado",
+    "ENVIO_WHATSAPP_FALHOU": "Falha no envio de WhatsApp",
+    "SQL_DIRETO": "SQL direto no banco (Claude)",
 }
 
 ALL_COMPANIES = "Todas as empresas"

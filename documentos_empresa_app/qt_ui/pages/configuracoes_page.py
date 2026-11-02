@@ -7,17 +7,14 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QScrollArea,
     QSpinBox,
     QTabWidget,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSelectDialog
 from documentos_empresa_app.qt_ui.widgets.common import PageHeader, make_button
 from documentos_empresa_app.utils.common import ValidationError
 
@@ -37,8 +34,8 @@ class ConfiguracoesPage(QWidget):
         layout.addWidget(
             PageHeader(
                 "Configurações",
-                "Regras que valem para o escritório inteiro: prazos de cobrança, o que fazer depois de "
-                "cobrar e mala direta.",
+                "Regras que valem para o escritório inteiro: prazos de cobrança e o que fazer depois de "
+                "cobrar. A mala direta fica em Envios automáticos.",
             )
         )
 
@@ -47,7 +44,6 @@ class ConfiguracoesPage(QWidget):
 
         self.tabs.addTab(self._build_collection_rule_tab(), "Prazos de cobrança")
         self.tabs.addTab(self._build_followup_tab(), "Depois de cobrar")
-        self.tabs.addTab(self._build_mailing_tab(), "Mala direta por email")
 
     def refresh_data(self) -> None:
         self._load_collection_rule()
@@ -246,143 +242,3 @@ class ConfiguracoesPage(QWidget):
             return
         QMessageBox.information(self, "Configurações", "Regras salvas.")
         self.on_data_changed()
-
-    # Aba admin - mala direta por email --------------------------------------
-
-    def _build_mailing_tab(self) -> QWidget:
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
-
-        hint = QLabel(
-            "Monta um rascunho no seu cliente de email padrão com as empresas selecionadas em "
-            "copia oculta (BCC) - ninguém ve o email dos outros. Nada e enviado por aqui: você "
-            "revisa e clica em enviar no próprio cliente de email."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        campaign = self.services.email_campaign_service.get_campaign()
-        self.mailing_selected_empresa_ids: list[int] = list(campaign.empresa_ids)
-
-        layout.addWidget(self._section_title("Mensagem"))
-
-        message_form = self._new_form()
-        self.mailing_subject_edit = QLineEdit(campaign.subject)
-        message_form.addRow("Assunto", self.mailing_subject_edit)
-        layout.addLayout(message_form)
-
-        body_label = QLabel("Corpo do email (mesmo texto para todas as empresas selecionadas)")
-        body_label.setWordWrap(True)
-        layout.addWidget(body_label)
-        self.mailing_body_edit = QTextEdit()
-        self.mailing_body_edit.setPlainText(campaign.body)
-        self.mailing_body_edit.setMinimumHeight(160)
-        layout.addWidget(self.mailing_body_edit, 1)
-
-        layout.addWidget(self._section_title("Empresas"))
-
-        companies_row = QHBoxLayout()
-        choose_companies_button = make_button("Selecionar empresas...")
-        choose_companies_button.clicked.connect(self.choose_mailing_companies)
-        companies_row.addWidget(choose_companies_button)
-        companies_row.addStretch(1)
-        layout.addLayout(companies_row)
-
-        self.mailing_companies_summary_label = QLabel("")
-        self.mailing_companies_summary_label.setObjectName("Muted")
-        self.mailing_companies_summary_label.setWordWrap(True)
-        layout.addWidget(self.mailing_companies_summary_label)
-        self._update_mailing_companies_summary()
-
-        actions = QHBoxLayout()
-        save_mailing_button = make_button("Salvar")
-        save_mailing_button.clicked.connect(self.save_mailing_settings)
-        actions.addWidget(save_mailing_button)
-        open_draft_button = make_button("Abrir rascunho de email", "primary")
-        open_draft_button.clicked.connect(self.open_mailing_draft)
-        actions.addWidget(open_draft_button)
-        actions.addStretch(1)
-        layout.addLayout(actions)
-
-        return self._wrap_in_scroll_area(content)
-
-    def choose_mailing_companies(self) -> None:
-        companies = self.services.empresa_service.list_empresas(active_only=False)
-        dialog = CompanyMultiSelectDialog(self, companies, self.mailing_selected_empresa_ids)
-        if dialog.exec():
-            self.mailing_selected_empresa_ids = dialog.selected_company_ids
-            self._update_mailing_companies_summary()
-            # Salva a selecao na hora - sem isso, escolher as empresas so "colava" ate
-            # a proxima vez que a tela fosse aberta, entao no fim das contas era preciso
-            # selecionar de novo todo mes se ninguem lembrasse de clicar em "Salvar".
-            try:
-                self._persist_mailing_settings()
-            except ValidationError as exc:
-                QMessageBox.critical(self, "Mala direta", str(exc))
-
-    def _update_mailing_companies_summary(self) -> None:
-        if not self.mailing_selected_empresa_ids:
-            self.mailing_companies_summary_label.setText("Nenhuma empresa selecionada.")
-            return
-
-        emails, missing, opted_out = self.services.email_campaign_service.build_recipients(
-            self.mailing_selected_empresa_ids
-        )
-        text = (
-            f"{len(self.mailing_selected_empresa_ids)} empresa(s) selecionada(s), "
-            f"{len(emails)} com email de contato cadastrado."
-        )
-        if missing:
-            shown = ", ".join(missing[:5])
-            extra = f" e mais {len(missing) - 5}" if len(missing) > 5 else ""
-            text += f" Sem email cadastrado: {shown}{extra}."
-        if opted_out:
-            shown = ", ".join(opted_out[:5])
-            extra = f" e mais {len(opted_out) - 5}" if len(opted_out) > 5 else ""
-            text += f" Marcadas para não receber (opt-out): {shown}{extra}."
-        self.mailing_companies_summary_label.setText(text)
-
-    def save_mailing_settings(self) -> None:
-        try:
-            self._persist_mailing_settings()
-        except ValidationError as exc:
-            QMessageBox.critical(self, "Mala direta", str(exc))
-            return
-        QMessageBox.information(self, "Mala direta", "Configurações da mala direta salvas com sucesso.")
-
-    def _persist_mailing_settings(self) -> None:
-        self.services.email_campaign_service.save_campaign(
-            self.mailing_subject_edit.text(),
-            self.mailing_body_edit.toPlainText(),
-            self.mailing_selected_empresa_ids,
-        )
-
-    def open_mailing_draft(self) -> None:
-        try:
-            self._persist_mailing_settings()
-        except ValidationError as exc:
-            QMessageBox.critical(self, "Mala direta", str(exc))
-            return
-
-        try:
-            result = self.services.email_campaign_service.open_draft(
-                self.mailing_subject_edit.text(),
-                self.mailing_body_edit.toPlainText(),
-                self.mailing_selected_empresa_ids,
-            )
-        except ValidationError as exc:
-            QMessageBox.critical(self, "Mala direta", str(exc))
-            return
-
-        message = (
-            f'Rascunho aberto no seu cliente de email com {result["recipient_count"]} '
-            "destinatario(s) em copia oculta (BCC). Revise e clique em enviar por la."
-        )
-        if result["missing_companies"]:
-            message += "\n\nFicaram de fora (sem email cadastrado): " + ", ".join(result["missing_companies"])
-        if result["opted_out_companies"]:
-            message += "\n\nFicaram de fora (optaram por não receber): " + ", ".join(result["opted_out_companies"])
-        QMessageBox.information(self, "Mala direta", message)

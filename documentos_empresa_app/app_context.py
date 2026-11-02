@@ -9,7 +9,9 @@ from documentos_empresa_app.database.repositories import (
     DeliveryMethodRepository,
     DocumentoRepository,
     EmpresaRepository,
+    EnvioProgramadoRepository,
     LogRepository,
+    ModeloMensagemRepository,
     PeriodoRepository,
     RememberedSessionRepository,
     RodadaRepository,
@@ -28,7 +30,9 @@ from documentos_empresa_app.services.database_maintenance_service import Databas
 from documentos_empresa_app.services.delivery_method_service import DeliveryMethodService
 from documentos_empresa_app.services.documento_service import DocumentoService
 from documentos_empresa_app.services.email_campaign_service import EmailCampaignService
+from documentos_empresa_app.services.email_sender_service import EmailSenderService
 from documentos_empresa_app.services.empresa_service import EmpresaService
+from documentos_empresa_app.services.envio_programado_service import EnvioProgramadoService
 from documentos_empresa_app.services.import_service import ImportService
 from documentos_empresa_app.services.log_service import LogService
 from documentos_empresa_app.services.panorama_service import PanoramaService
@@ -36,6 +40,7 @@ from documentos_empresa_app.services.pending_report_service import PendingReport
 from documentos_empresa_app.services.periodo_service import PeriodoService
 from documentos_empresa_app.services.rodada_service import RodadaService
 from documentos_empresa_app.services.session_service import SessionService
+from documentos_empresa_app.services.whatsapp_service import WhatsAppService
 from documentos_empresa_app.services.status_service import StatusService
 from documentos_empresa_app.services.tipo_service import TipoService
 from documentos_empresa_app.services.user_service import UserService
@@ -61,6 +66,10 @@ class ApplicationServices:
     email_campaign_service: EmailCampaignService
     cobranca_service: CobrancaService
     rodada_service: RodadaService
+    envio_programado_service: EnvioProgramadoService
+    audit_service: AuditService
+    whatsapp_service: WhatsAppService
+    email_sender_service: EmailSenderService
 
 
 def build_application_services(
@@ -164,6 +173,14 @@ def build_application_services(
         audit_service=audit_service,
         session_service=session,
     )
+    envio_programado_service = EnvioProgramadoService(
+        EnvioProgramadoRepository(db_manager),
+        empresa_repository,
+        tipo_repository,
+        audit_service=audit_service,
+        session_service=session,
+        modelo_repository=ModeloMensagemRepository(db_manager),
+    )
 
     return ApplicationServices(
         empresa_service=empresa_service,
@@ -184,5 +201,9 @@ def build_application_services(
         email_campaign_service=email_campaign_service,
         cobranca_service=cobranca_service,
         rodada_service=rodada_service,
+        envio_programado_service=envio_programado_service,
+        audit_service=audit_service,
+        whatsapp_service=WhatsAppService(),
+        email_sender_service=EmailSenderService(),
     )
 

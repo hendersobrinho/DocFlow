@@ -29,6 +29,7 @@ from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, ToolbarRow, make_button
 from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table, selected_key
 from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner
+from documentos_empresa_app.services.whatsapp_service import format_whatsapp, normalize_grupo_link, normalize_whatsapp
 from documentos_empresa_app.utils.common import MAX_COMPANY_OBSERVATION_LENGTH, ValidationError
 from documentos_empresa_app.utils.helpers import get_documents_directory
 
@@ -204,6 +205,22 @@ class EmpresasPage(QWidget):
         self.email_edit = QLineEdit()
         self.email_edit.setPlaceholderText("Opcional - usado nos emails de cobrança")
         contato.addRow("Email", self.email_edit)
+        self.whatsapp_edit = QLineEdit()
+        self.whatsapp_edit.setPlaceholderText("Opcional - ex: (27) 99999-8888; usado nas cobranças por WhatsApp")
+        contato.addRow("WhatsApp", self.whatsapp_edit)
+        self.whatsapp_grupo_edit = QLineEdit()
+        self.whatsapp_grupo_edit.setPlaceholderText("Opcional - link do grupo, se a empresa é atendida num grupo")
+        self.whatsapp_grupo_edit.setToolTip(
+            "No WhatsApp: abra o grupo > Convidar via link > Copiar link (https://chat.whatsapp.com/...).\n"
+            "Com o link, os envios abrem o grupo em vez da conversa com o número."
+        )
+        contato.addRow("Grupo do WhatsApp", self.whatsapp_grupo_edit)
+        self.whatsapp_envios_check = QCheckBox("Pode usar o WhatsApp nos envios (cobranças e mala direta)")
+        self.whatsapp_envios_check.setToolTip(
+            "Marcado: os envios automáticos vão por WhatsApp para esta empresa (no grupo, se houver link),\n"
+            "em vez de email. Sem marcar, o WhatsApp fica só como contato."
+        )
+        contato.addRow("", self.whatsapp_envios_check)
         self.opt_out_checkbox = QCheckBox("Não incluir esta empresa na mala direta por email")
         contato.addRow("", self.opt_out_checkbox)
 
@@ -246,9 +263,12 @@ class EmpresasPage(QWidget):
         layout.addWidget(self.observacao_counter)
         layout.addStretch(1)
 
-        for edit in (self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit):
+        for edit in (
+            self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit,
+            self.whatsapp_edit, self.whatsapp_grupo_edit,
+        ):
             edit.textEdited.connect(self._mark_dirty)
-        for check in (self.opt_out_checkbox, self.own_rule_check):
+        for check in (self.opt_out_checkbox, self.own_rule_check, self.whatsapp_envios_check):
             check.toggled.connect(self._mark_dirty)
         for spin in (self.rule_start_spin, self.rule_end_spin, self.rule_alert_spin):
             spin.valueChanged.connect(self._mark_dirty)
@@ -365,6 +385,9 @@ class EmpresasPage(QWidget):
         self.cnpj_edit.setText(company.get("cnpj") or "")
         self.contato_edit.setText(company.get("nome_contato") or "")
         self.email_edit.setText(company.get("email_contato") or "")
+        self.whatsapp_edit.setText(format_whatsapp(company.get("whatsapp")))
+        self.whatsapp_grupo_edit.setText(company.get("whatsapp_grupo") or "")
+        self.whatsapp_envios_check.setChecked(bool(company.get("whatsapp_envios")))
         self.opt_out_checkbox.setChecked(bool(company.get("nao_contatar_mala_direta")))
         self.observacao_edit.setPlainText(company.get("observacao") or "")
         self._load_rule(company)
@@ -453,11 +476,15 @@ class EmpresasPage(QWidget):
         self.detail_stack.setCurrentIndex(1)
         self.form_title.setText("Nova empresa")
         self._set_badge(None)
-        for edit in (self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit):
+        for edit in (
+            self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit,
+            self.whatsapp_edit, self.whatsapp_grupo_edit,
+        ):
             edit.clear()
         self.codigo_edit.setReadOnly(False)
         self.codigo_edit.setToolTip("")
         self.opt_out_checkbox.setChecked(False)
+        self.whatsapp_envios_check.setChecked(False)
         self.observacao_edit.clear()
         self._load_rule(None)
         self.more_button.setEnabled(False)
@@ -482,6 +509,10 @@ class EmpresasPage(QWidget):
         inicio, fim, alerta = self._rule_values()
         try:
             self.services.collection_service.validate_company_settings_values(inicio, fim, alerta)
+            # Numero ou link invalido barra antes de gravar a empresa.
+            tem_whatsapp = normalize_whatsapp(self.whatsapp_edit.text()) or normalize_grupo_link(self.whatsapp_grupo_edit.text())
+            if self.whatsapp_envios_check.isChecked() and not tem_whatsapp:
+                raise ValidationError("Para usar o WhatsApp nos envios, informe o número ou o link do grupo.")
             if self.creating:
                 company_id = self.services.empresa_service.create_empresa(
                     self.codigo_edit.text(),
@@ -503,6 +534,10 @@ class EmpresasPage(QWidget):
                 )
             self.services.collection_service.update_company_settings(company_id, inicio, fim, alerta)
             self.services.empresa_service.set_nao_contatar_mala_direta(company_id, self.opt_out_checkbox.isChecked())
+            self.services.empresa_service.set_whatsapp(company_id, self.whatsapp_edit.text())
+            self.services.empresa_service.set_whatsapp_envios(
+                company_id, self.whatsapp_envios_check.isChecked(), self.whatsapp_grupo_edit.text()
+            )
         except ValidationError as exc:
             QMessageBox.critical(self, "Empresas", str(exc))
             return
@@ -567,7 +602,7 @@ class EmpresasPage(QWidget):
         answer = QMessageBox.question(
             self,
             "Remover dados de contato",
-            "Isso apaga o email e o nome de contato desta empresa (o cadastro e o histórico de "
+            "Isso apaga o email, o WhatsApp e o nome de contato desta empresa (o cadastro e o histórico de "
             "documentos continuam). Use quando o titular dos dados pedir a remoção. Continuar?",
         )
         if answer != QMessageBox.StandardButton.Yes:

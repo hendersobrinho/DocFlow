@@ -7,6 +7,11 @@ from documentos_empresa_app.database.connection import IntegrityError
 from documentos_empresa_app.database.repositories import EmpresaRepository
 from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
+from documentos_empresa_app.services.whatsapp_service import (
+    format_whatsapp,
+    normalize_grupo_link,
+    normalize_whatsapp,
+)
 from documentos_empresa_app.utils.common import (
     MAX_COMPANY_OBSERVATION_LENGTH,
     ValidationError,
@@ -274,13 +279,57 @@ class EmpresaService:
                 empresa_nome=empresa["nome_empresa"],
             )
 
+    def set_whatsapp(self, empresa_id: int, whatsapp: str | None) -> str | None:
+        """Grava o WhatsApp de cobranca da empresa (so digitos, com DDI). Vazio apaga."""
+        numero = normalize_whatsapp(whatsapp)
+        with self.empresa_repository.db_manager.connect():
+            empresa = self.get_empresa(empresa_id)
+            if (empresa.get("whatsapp") or None) == numero:
+                return numero
+            self.empresa_repository.update_whatsapp(empresa_id, numero)
+            self._log(
+                "EDICAO_EMPRESA",
+                "empresa",
+                empresa_id,
+                (
+                    f'Usuario {self._actor_name()} alterou o WhatsApp da empresa "{empresa["nome_empresa"]}" '
+                    f'para {format_whatsapp(numero) or "(vazio)"}.'
+                ),
+                empresa_id=empresa_id,
+                empresa_nome=empresa["nome_empresa"],
+            )
+        return numero
+
+    def set_whatsapp_envios(self, empresa_id: int, usar: bool, grupo: str | None = None) -> None:
+        """Autoriza (ou nao) mandar as cobrancas e malas diretas pelo WhatsApp da empresa e
+        guarda o link do grupo, quando ela e atendida num grupo."""
+        grupo = normalize_grupo_link(grupo)
+        with self.empresa_repository.db_manager.connect():
+            empresa = self.get_empresa(empresa_id)
+            if usar and not (empresa.get("whatsapp") or grupo):
+                raise ValidationError("Para enviar pelo WhatsApp, cadastre o número ou o link do grupo.")
+            if bool(empresa.get("whatsapp_envios")) == bool(usar) and (empresa.get("whatsapp_grupo") or None) == grupo:
+                return
+            self.empresa_repository.update_whatsapp_envios(empresa_id, usar, grupo)
+            descricao = (
+                f'Usuario {self._actor_name()} '
+                + ("autorizou" if usar else "desligou")
+                + f' os envios por WhatsApp da empresa "{empresa["nome_empresa"]}"'
+                + (" (grupo)" if grupo else "")
+                + "."
+            )
+            self._log(
+                "EDICAO_EMPRESA", "empresa", empresa_id, descricao,
+                empresa_id=empresa_id, empresa_nome=empresa["nome_empresa"],
+            )
+
     def clear_contact_info(self, empresa_id: int) -> None:
         """Remove email/nome de contato sem excluir o cadastro da empresa -
         atende ao direito ao esquecimento da LGPD para dados de uma pessoa
         fisica de contato, mantendo o historico fiscal/documental da empresa."""
         with self.empresa_repository.db_manager.connect():
             empresa = self.get_empresa(empresa_id)
-            if not empresa.get("email_contato") and not empresa.get("nome_contato"):
+            if not any(empresa.get(c) for c in ("email_contato", "nome_contato", "whatsapp", "whatsapp_grupo")):
                 return
             self.empresa_repository.clear_contact_info(empresa_id)
             self._log(
@@ -288,7 +337,7 @@ class EmpresaService:
                 "empresa",
                 empresa_id,
                 (
-                    f'Usuario {self._actor_name()} removeu os dados de contato (email/nome) '
+                    f'Usuario {self._actor_name()} removeu os dados de contato (email/nome/WhatsApp) '
                     f'da empresa "{empresa["nome_empresa"]}" a pedido do titular.'
                 ),
                 empresa_id=empresa_id,

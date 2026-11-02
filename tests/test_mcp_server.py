@@ -53,6 +53,93 @@ class DocflowMcpServerTests(unittest.TestCase):
         self.assertTrue(panorama.annotations.read_only_hint)
         self.assertTrue(excluir.annotations.destructive_hint)
 
+    def test_scheduled_sending_flow(self) -> None:
+        self.call("gerar_periodos_ano", ano=2026)
+        self.call("cadastrar_empresa", codigo_empresa=20, nome_empresa="Padaria", email_contato="fin@pao.com")
+        self.call("cadastrar_empresa", codigo_empresa=21, nome_empresa="Oficina")
+        for codigo in (20, 21):
+            self.call("cadastrar_documento", codigo_empresa=codigo, tipo="Informe de Rendimentos", nome_documento="Bradesco")
+        empresa = self.call("definir_whatsapp_empresa", codigo_empresa=21, whatsapp="(27) 98888-7777")
+        self.assertEqual((empresa["whatsapp"], empresa["whatsapp_usar_nos_envios"]), ("5527988887777", False))
+        empresa = self.call("definir_whatsapp_empresa", codigo_empresa=21, usar_nos_envios=True)
+        self.assertTrue(empresa["whatsapp_usar_nos_envios"])
+        self.assertEqual(empresa["whatsapp"], "5527988887777")  # omitido: mantem o numero
+        envio = self.call(
+            "cadastrar_envio_programado",
+            nome="Informe trimestral",
+            competencias="trimestral",
+            dia_envio=5,
+            assunto="Informe {competencia}",
+            corpo="Olá {contato}, faltam:\n{documentos}",
+            tipo_documento="informe de rendimentos",
+        )
+        self.assertEqual((envio["competencias"], envio["enviar_em"], envio["canal"]), ([3, 6, 9, 12], "mes_seguinte", "automatico"))
+
+        # A competencia 06 e cobrada em julho.
+        self.assertEqual(self.call("envios_a_fazer", data="2026-06-05")["total"], 0)
+        a_fazer = self.call("envios_a_fazer", data="2026-07-05")
+        itens = {item["codigo_empresa"]: item for item in a_fazer["itens"]}
+        self.assertEqual((itens[20]["assunto"], itens[20]["canal"]), ("Informe 06/2026", "email"))
+        self.assertEqual(itens[21]["canal"], "whatsapp")  # liberou o WhatsApp: vai por ele
+        previa = self.call("enviar_emails_pelo_docflow", envio_id=envio["envio_id"], competencia="06/2026")
+        self.assertEqual(previa["emails_a_enviar"], 1)
+        self.assertIn("confirmar=true", previa["aviso"])
+
+        whatsapp = self.call("enviar_whatsapp", whatsapp=itens[21]["whatsapp"], mensagem=itens[21]["mensagem_whatsapp"])
+        self.assertFalse(whatsapp["enviado"])  # sem API configurada: devolve o link
+        self.assertTrue(whatsapp["link"].startswith("https://wa.me/5527988887777?text="))
+
+        self.call("registrar_envio", envio_id=envio["envio_id"], codigo_empresa=20, competencia="06/2026",
+                  status="enviado", destinatarios=["fin@pao.com"])
+        self.call("registrar_envio", envio_id=envio["envio_id"], codigo_empresa=21, competencia="06/2026",
+                  status="enviado", canal="whatsapp")
+        self.assertEqual(self.call("envios_a_fazer", data="2026-07-05")["total"], 0)
+        self.assertEqual({r["canal"] for r in self.call("historico_envios")}, {"email", "whatsapp"})
+
+        mala = self.call(
+            "cadastrar_envio_programado", nome="Aviso", competencias=[7], enviar_em="mesmo_mes", dia_envio=1,
+            assunto="Aviso", corpo="Recesso", codigos_empresas=[20], canal="email",
+        )
+        self.assertEqual(mala["publico"], "Mala direta: 1 empresa(s) escolhida(s)")
+        self.assertEqual([i["codigo_empresa"] for i in self.call("envios_a_fazer", data="2026-07-02", envio_id=mala["envio_id"])["itens"]], [20])
+
+        cco = self.call(
+            "cadastrar_envio_programado", nome="Distribuicao de lucros", competencias="mensal", dia_envio=5,
+            assunto="Distribuicao {competencia}", corpo="Segue.", codigos_empresas=[20], modo="cco",
+            email_para="contato@escritorio.com", canal="email",
+        )
+        self.call("incluir_na_mala_direta", envio_id=cco["envio_id"], codigos_empresas=[21])
+        # Canal 'email' forcado: a Oficina (so WhatsApp) fica sem contato.
+        self.assertEqual({e["situacao"] for e in self.call("lista_mala_direta", envio_id=cco["envio_id"])}, {"recebe", "sem_email"})
+        modelo = self.call("salvar_modelo_mensagem", nome="Lucros", corpo="Segue a distribuicao.")
+        self.assertEqual([m["nome"] for m in self.call("listar_modelos_mensagem")], ["Lucros"])
+        self.call("excluir_modelo_mensagem", modelo_id=modelo["id"], confirmar=True)
+        item = self.call("envios_a_fazer", data="2026-10-05", envio_id=cco["envio_id"])["itens"][0]
+        self.assertEqual((item["para"], item["cco"], item["competencia"]), ("contato@escritorio.com", ["fin@pao.com"], "09/2026"))
+        registro = self.call("registrar_envio", envio_id=cco["envio_id"], competencia="09/2026", status="enviado")
+        self.assertEqual(registro["empresas"], 1)
+        self.assertEqual(self.call("envios_a_fazer", data="2026-10-05", envio_id=cco["envio_id"])["total"], 0)
+        self.call("remover_da_mala_direta", envio_id=cco["envio_id"], codigos_empresas=[21])
+        self.assertIn("vazia", self.call_error("remover_da_mala_direta", envio_id=cco["envio_id"], codigos_empresas=[20]))
+        self.call("excluir_envio_programado", envio_id=cco["envio_id"], confirmar=True)
+
+        self.assertIn("confirmar=true", self.call_error("excluir_envio_programado", envio_id=envio["envio_id"]))
+        self.call("excluir_envio_programado", envio_id=envio["envio_id"], confirmar=True)
+        self.assertEqual([e["nome"] for e in self.call("listar_envios_programados")], ["Aviso"])
+
+    def test_free_sql_read_and_write(self) -> None:
+        self.call("cadastrar_empresa", codigo_empresa=30, nome_empresa="Antiga")
+        consulta = self.call("consultar_banco", sql="SELECT codigo_empresa, nome_empresa FROM empresas")
+        self.assertEqual(consulta["linhas"], [{"codigo_empresa": 30, "nome_empresa": "Antiga"}])
+        self.call_error("consultar_banco", sql="DELETE FROM empresas")  # transacao READ ONLY
+        self.assertEqual(len(self.call("listar_empresas", somente_ativas=False)), 1)
+
+        self.assertIn("confirmar=true", self.call_error("executar_sql", sql="DELETE FROM empresas"))
+        resultado = self.call("executar_sql", sql="DELETE FROM empresas WHERE codigo_empresa = 30", confirmar=True)
+        self.assertEqual(resultado["linhas_afetadas"], 1)
+        self.assertEqual(self.call("listar_empresas", somente_ativas=False), [])
+        self.assertEqual(self.services.log_service.list_logs(limit=1)[0]["acao"], "SQL_DIRETO")
+
     def test_full_flow_company_document_status(self) -> None:
         self.call("gerar_periodos_ano", ano=2026)
         empresa = self.call("cadastrar_empresa", codigo_empresa=10, nome_empresa="Empresa MCP")

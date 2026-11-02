@@ -34,6 +34,7 @@ from documentos_empresa_app.qt_ui.pages.configuracoes_page import ConfiguracoesP
 from documentos_empresa_app.qt_ui.pages.dashboard_page import DashboardPage
 from documentos_empresa_app.qt_ui.pages.documentos_page import DocumentosPage
 from documentos_empresa_app.qt_ui.pages.empresas_page import EmpresasPage
+from documentos_empresa_app.qt_ui.pages.envios_page import EnviosPage
 from documentos_empresa_app.qt_ui.pages.ficha_page import FichaEmpresaPage
 from documentos_empresa_app.qt_ui.pages.logs_page import LogsPage
 from documentos_empresa_app.qt_ui.pages.panorama_page import PanoramaPage
@@ -70,6 +71,7 @@ PAGE_TOPIC_IDS = {
     "Ficha da empresa": "ficha",
     "Documentos": "documentos",
     "Configurações": "configuracoes",
+    "Envios automáticos": "envios",
     "Usuários": "usuarios",
     "Histórico de ações": "logs",
 }
@@ -80,9 +82,12 @@ NAV_SECTION_ADMINISTRACAO = "ADMINISTRAÇÃO"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, services: ApplicationServices) -> None:
+    def __init__(self, services: ApplicationServices, on_progress=None) -> None:
+        """on_progress(texto, fracao 0-1): chamado enquanto as telas sao montadas, para a
+        tela de carregamento mostrar o andamento."""
         super().__init__()
         self.services = services
+        self._on_progress = on_progress
         self.logout_requested = False
         self.restart_requested = False
         self.nav_buttons: dict[int, QPushButton] = {}
@@ -203,40 +208,40 @@ class MainWindow(QMainWindow):
         self.stack = SinglePageStackedWidget()
         layout.addWidget(self.stack, 1)
 
-        self.panorama_page = PanoramaPage(
-            self.services,
-            self.refresh_all_tabs,
-            on_open_ficha=self.open_company_ficha,
-        )
-        self.ficha_page = FichaEmpresaPage(self.services, self.refresh_all_tabs)
-        self.atencao_page = AtencaoPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)
-        self.cobrancas_page = CobrancasPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)
-
-        page_defs: list[tuple[str, str, QWidget]] = [
-            (
-                NAV_SECTION_ACOMPANHAMENTO,
-                "Painel",
-                DashboardPage(self.services, self.refresh_all_tabs, on_navigate=self.navigate_to),
-            ),
-            (NAV_SECTION_ACOMPANHAMENTO, "Panorama", self.panorama_page),
-            (NAV_SECTION_ACOMPANHAMENTO, "Cobranças", self.cobrancas_page),
-            (NAV_SECTION_ACOMPANHAMENTO, "Precisa de atenção", self.atencao_page),
-            (
-                NAV_SECTION_CADASTROS,
-                "Empresas",
-                EmpresasPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha),
-            ),
-            (NAV_SECTION_CADASTROS, "Ficha da empresa", self.ficha_page),
-            (NAV_SECTION_CADASTROS, "Documentos", DocumentosPage(self.services, self.refresh_all_tabs)),
+        is_admin = self.services.session_service.is_admin()
+        specs = [
+            (NAV_SECTION_ACOMPANHAMENTO, "Painel", None,
+             lambda: DashboardPage(self.services, self.refresh_all_tabs, on_navigate=self.navigate_to)),
+            (NAV_SECTION_ACOMPANHAMENTO, "Panorama", "panorama_page",
+             lambda: PanoramaPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)),
+            (NAV_SECTION_ACOMPANHAMENTO, "Cobranças", "cobrancas_page",
+             lambda: CobrancasPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)),
+            (NAV_SECTION_ACOMPANHAMENTO, "Precisa de atenção", "atencao_page",
+             lambda: AtencaoPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)),
+            (NAV_SECTION_CADASTROS, "Empresas", None,
+             lambda: EmpresasPage(self.services, self.refresh_all_tabs, on_open_ficha=self.open_company_ficha)),
+            (NAV_SECTION_CADASTROS, "Ficha da empresa", "ficha_page",
+             lambda: FichaEmpresaPage(self.services, self.refresh_all_tabs)),
+            (NAV_SECTION_CADASTROS, "Documentos", None, lambda: DocumentosPage(self.services, self.refresh_all_tabs)),
         ]
-        if self.services.session_service.is_admin():
-            page_defs.append(
-                (NAV_SECTION_ADMINISTRACAO, "Configurações", ConfiguracoesPage(self.services, self.refresh_all_tabs))
-            )
-            page_defs.append((NAV_SECTION_ADMINISTRACAO, "Usuários", UsuariosPage(self.services, self.refresh_all_tabs)))
-            page_defs.append(
-                (NAV_SECTION_ADMINISTRACAO, "Histórico de ações", LogsPage(self.services, self.refresh_all_tabs))
-            )
+        if is_admin:
+            specs += [
+                (NAV_SECTION_ADMINISTRACAO, "Configurações", None,
+                 lambda: ConfiguracoesPage(self.services, self.refresh_all_tabs)),
+                (NAV_SECTION_ADMINISTRACAO, "Envios automáticos", None,
+                 lambda: EnviosPage(self.services, self.refresh_all_tabs)),
+                (NAV_SECTION_ADMINISTRACAO, "Usuários", None, lambda: UsuariosPage(self.services, self.refresh_all_tabs)),
+                (NAV_SECTION_ADMINISTRACAO, "Histórico de ações", None,
+                 lambda: LogsPage(self.services, self.refresh_all_tabs)),
+            ]
+        page_defs: list[tuple[str, str, QWidget]] = []
+        for numero, (section, title, attribute, factory) in enumerate(specs):
+            if self._on_progress:
+                self._on_progress(f"Preparando {title}...", numero / len(specs))
+            page = factory()
+            if attribute:
+                setattr(self, attribute, page)
+            page_defs.append((section, title, page))
 
         insert_at = 2
         current_section = None

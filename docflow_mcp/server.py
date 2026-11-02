@@ -15,6 +15,7 @@ Configuracao (variaveis de ambiente):
 
 from __future__ import annotations
 
+from datetime import date
 import functools
 import os
 import threading
@@ -31,6 +32,7 @@ from documentos_empresa_app.qt_ui.viewmodels import UI_SITUATION_LABELS, Panoram
 from documentos_empresa_app.utils.common import (
     STATUS_OPTIONS,
     ValidationError,
+    format_competencia,
     format_period_label,
     format_utc_timestamp,
     parse_period_label,
@@ -82,7 +84,42 @@ mcp = MCPServer(
         "contato, erro de ferramenta), registre com 'registrar_ocorrencia' (tipo falha ou aviso).\n"
         "6. 'finalizar_rodada' com um resumo curto no fim.\n"
         "'ficha_empresa' e 'registro_documento' mostram o historico completo, inclusive o caminho "
-        "de cada documento pelas situacoes."
+        "de cada documento pelas situacoes.\n\n"
+        "Envios automaticos - cobrancas e mala direta, por email ou WhatsApp (o DocFlow guarda as "
+        "regras; voce envia):\n"
+        "- Tudo e por competencia: a regra lista as competencias cobradas (ex: informe trimestral = "
+        "3, 6, 9, 12) e, por padrao, o envio sai no mes seguinte (competencia 12/2025 e cobrada em "
+        "janeiro/2026), porque o documento so fica pronto no fim do mes.\n"
+        "- 'envios_a_fazer' lista, empresa por empresa, as mensagens que ja deveriam ter saido, com "
+        "canal (email ou whatsapp), destinatarios/numero, assunto e corpo prontos e eventuais "
+        "'instrucoes'. So vai por WhatsApp a empresa que liberou o WhatsApp para envios no cadastro "
+        "('definir_whatsapp_empresa' com usar_nos_envios). Item de email: envie com a sua "
+        "ferramenta de email ou, se o usuario preferir que saia pelo email do escritorio "
+        "cadastrado no DocFlow, com 'enviar_emails_pelo_docflow' (ja registra). Item de WhatsApp: "
+        "o texto e 'mensagem_whatsapp' (nao 'corpo'); use 'enviar_whatsapp' (com a API configurada "
+        "envia direto; senao devolve o link wa.me). Registre cada um com 'registrar_envio' "
+        "(enviado, ou falhou com o motivo).\n"
+        "- WhatsApp sem a API: se voce tiver acesso ao navegador do usuario (WhatsApp Web aberto), "
+        "abra o whatsapp_link de cada item, confira a mensagem, clique em enviar e registre - um "
+        "por vez. Item com whatsapp_e_grupo=true e um grupo: o link abre o grupo, sem texto pronto - "
+        "cole a mensagem_whatsapp no grupo e envie. Sem navegador, entregue ao usuario a lista de "
+        "links (ele tambem pode usar 'WhatsApp em sequencia' na tela Envios automaticos).\n"
+        "- Antes de enviar para muita gente, mostre ao usuario o resultado de 'conferir_envio' "
+        "(quem recebe, quem fica de fora e por que).\n"
+        "- Mala direta em copia oculta (modo 'cco'): o item e UM email so - envie para 'para' (o "
+        "email do escritorio) com todos os enderecos de 'cco' em copia oculta (BCC), nunca em Para/Cc, "
+        "e registre com 'registrar_envio' sem codigo_empresa. Quem liberou o WhatsApp sai da copia "
+        "oculta e vem como item de WhatsApp separado. A lista de empresas e mantida com "
+        "'lista_mala_direta', 'incluir_na_mala_direta' e 'remover_da_mala_direta' (num envio por "
+        "tipo de documento, remover tira a empresa so daquele envio e incluir devolve).\n"
+        "- Textos prontos: 'listar_modelos_mensagem' e 'salvar_modelo_mensagem'.\n"
+        "- Nao invente destinatarios: item com sem_contato=true e registrado como falhou.\n"
+        "- As regras (ex: Informe de Rendimentos trimestral, mala direta de aviso geral) sao criadas "
+        "e alteradas com 'cadastrar_envio_programado' / 'atualizar_envio_programado' quando o "
+        "usuario pedir. O WhatsApp de cada empresa e cadastrado com 'definir_whatsapp_empresa'.\n\n"
+        "Acesso total: alem das tools especificas (preferidas, porque aplicam as regras e registram "
+        "no historico), 'consultar_banco' roda qualquer SELECT e 'executar_sql' qualquer comando de "
+        "escrita ou exclusao (confirmar=true). Use-os quando o usuario pedir algo que nenhuma tool cobre."
     ),
 )
 
@@ -223,6 +260,9 @@ def _public_company(empresa: dict) -> dict[str, Any]:
         "observacao": empresa.get("observacao"),
         "pasta_documentos": empresa.get("diretorio_documentos"),
         "nao_contatar_mala_direta": bool(empresa.get("nao_contatar_mala_direta")),
+        "whatsapp": empresa.get("whatsapp"),
+        "whatsapp_usar_nos_envios": bool(empresa.get("whatsapp_envios")),
+        "whatsapp_grupo": empresa.get("whatsapp_grupo"),
         "cobranca_inicio_dia": empresa.get("cobranca_inicio_dia"),
         "cobranca_fim_dia": empresa.get("cobranca_fim_dia"),
         "cobranca_alerta_dias": empresa.get("cobranca_alerta_dias"),
@@ -903,6 +943,29 @@ def definir_mala_direta_empresa(codigo_empresa: int, nao_contatar: bool) -> dict
 
 
 @docflow_tool(read_only=False, idempotent=True)
+def definir_whatsapp_empresa(
+    codigo_empresa: int,
+    whatsapp: str | None = None,
+    usar_nos_envios: bool | None = None,
+    link_grupo: str | None = None,
+) -> dict[str, Any]:
+    """WhatsApp de cobranca da empresa. whatsapp: numero (ex: "(27) 99999-8888"; sem DDI
+    assume +55), "" apaga, omitido mantem. usar_nos_envios: so com true os envios automaticos
+    vao por WhatsApp para ela. link_grupo: link de convite do grupo onde a empresa e atendida
+    (https://chat.whatsapp.com/...) - tem preferencia sobre o numero; "" apaga, omitido mantem."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    if whatsapp is not None:
+        services.empresa_service.set_whatsapp(empresa["id"], whatsapp)
+    if usar_nos_envios is not None or link_grupo is not None:
+        atual = services.empresa_service.get_empresa(empresa["id"])
+        usar = bool(atual.get("whatsapp_envios")) if usar_nos_envios is None else usar_nos_envios
+        grupo = atual.get("whatsapp_grupo") if link_grupo is None else link_grupo
+        services.empresa_service.set_whatsapp_envios(empresa["id"], usar, grupo)
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
+
+
+@docflow_tool(read_only=False, idempotent=True)
 def definir_cobranca_empresa(
     codigo_empresa: int,
     inicio_dia: int | None = None,
@@ -1024,7 +1087,7 @@ def marcar_status(documento_ids: list[int], competencia: str, status: StatusValu
 
 @docflow_tool(read_only=False)
 def cadastrar_tipo_documento(nome_tipo: str, regra_ocorrencia: OccurrenceRule = "mensal") -> dict[str, Any]:
-    """Cadastra um tipo de documento. regra_ocorrencia: mensal, trimestral (jan/abr/jul/out)
+    """Cadastra um tipo de documento. regra_ocorrencia: mensal, trimestral (mar/jun/set/dez)
     ou anual_janeiro."""
     services = get_services()
     tipo_id = services.tipo_service.create_tipo(nome_tipo, regra_ocorrencia)
@@ -1189,6 +1252,425 @@ def limpar_logs_antigos(dias_de_retencao: int, confirmar: bool = False) -> str:
     _require_confirmation(confirmar, f"Apagar os logs com mais de {dias_de_retencao} dias")
     removidos = services.log_service.purge_logs_older_than(dias_de_retencao)
     return f"{removidos} log(s) removido(s)."
+
+
+# Envios automaticos (email e WhatsApp) ---------------------------------------------------
+
+
+def _public_envio(envio: dict) -> dict[str, Any]:
+    return {
+        "envio_id": envio["id"],
+        "nome": envio["nome"],
+        "ativo": envio["ativo"],
+        "tipo_documento": envio.get("nome_tipo"),
+        "publico": envio["publico_label"],
+        "empresa_ids": envio["empresa_ids_lista"],
+        "empresa_ids_tiradas": envio["empresa_ids_excluidas_lista"],
+        "modo": envio["modo"],
+        "email_para": envio.get("email_para"),
+        "competencias": envio["meses_lista"],
+        "enviar_em": envio["enviar_em"],
+        "dia_envio": envio["dia_envio"],
+        "canal": envio["canal"],
+        "somente_pendentes": envio["somente_pendentes"],
+        "assunto": envio["assunto"],
+        "corpo": envio["corpo"],
+        "corpo_whatsapp": envio.get("corpo_whatsapp"),
+        "instrucoes": envio.get("instrucoes"),
+        "proximo_envio": envio.get("proximo_envio"),
+        "proxima_competencia": envio.get("proxima_competencia"),
+    }
+
+
+def _envio_dados(
+    services: ApplicationServices,
+    nome: str | None,
+    tipo_documento: str | None,
+    codigos_empresas: list[int] | None,
+    competencias: list[int] | str | None,
+    enviar_em: str | None,
+    dia_envio: int | None,
+    canal: str | None,
+    assunto: str | None,
+    corpo: str | None,
+    somente_pendentes: bool | None,
+    instrucoes: str | None,
+    ativo: bool | None,
+    modo: str | None = None,
+    email_para: str | None = None,
+    corpo_whatsapp: str | None = None,
+) -> dict[str, Any]:
+    dados: dict[str, Any] = {
+        "corpo_whatsapp": corpo_whatsapp,
+        "modo": modo,
+        "email_para": email_para,
+        "nome": nome,
+        "meses": competencias,
+        "enviar_em": enviar_em,
+        "dia_envio": dia_envio,
+        "canal": canal,
+        "assunto": assunto,
+        "corpo": corpo,
+        "somente_pendentes": somente_pendentes,
+        "instrucoes": instrucoes,
+        "ativo": ativo,
+    }
+    if tipo_documento is not None:
+        # "" (ou "todas") tira o tipo: a regra vira mala direta.
+        texto = tipo_documento.strip()
+        dados["tipo_documento_id"] = None if texto.casefold() in ("", "todas") else _tipo_by_name(services, texto)["id"]
+    if codigos_empresas is not None:
+        # [] volta a mala direta para todas as empresas ativas.
+        dados["empresa_ids"] = [_company(services, codigo)["id"] for codigo in codigos_empresas]
+    return dados
+
+
+@docflow_tool(read_only=True)
+def listar_envios_programados() -> list[dict[str, Any]]:
+    """Envios automaticos configurados no DocFlow (cobrancas como o Informe de Rendimentos
+    trimestral e malas diretas): publico, competencias cobradas, quando sai (enviar_em +
+    dia_envio), canal, texto e a data/competencia do proximo envio."""
+    return [_public_envio(envio) for envio in get_services().envio_programado_service.listar()]
+
+
+@docflow_tool(read_only=True)
+def envios_a_fazer(data: str | None = None, envio_id: int | None = None) -> dict[str, Any]:
+    """Mensagens que ja deveriam ter saido (por padrao, hoje): um item por empresa, com canal
+    (email ou whatsapp), destinatarios/whatsapp, assunto e corpo prontos e a competencia
+    cobrada. Envie cada um (email pela sua ferramenta de email, WhatsApp com 'enviar_whatsapp')
+    e registre com 'registrar_envio' - o item some da lista depois de registrado como enviado.
+    Itens com sem_contato=true nao tem para onde ir: registre como falhou com o motivo.
+    data: AAAA-MM-DD (opcional, para simular outro dia)."""
+    services = get_services()
+    hoje = _parse_date(data)
+    itens = services.envio_programado_service.a_enviar(hoje, envio_id)
+    return {"data": hoje.isoformat(), "total": len(itens), "itens": itens}
+
+
+@docflow_tool(read_only=True)
+def previa_envio(envio_id: int, competencia: str) -> list[dict[str, Any]]:
+    """Quem receberia e com que texto o envio da competencia informada (MM/AAAA - a
+    competencia cobrada, nao o mes em que sai). Mostra tambem quem ja recebeu
+    (ja_enviado=true). Nao registra nada."""
+    parsed = parse_period_label(competencia)
+    if parsed is None:
+        raise ToolError(f'Competencia invalida: "{competencia}". Use MM/AAAA.')
+    ano, mes = parsed
+    return get_services().envio_programado_service.previa(envio_id, ano, mes)
+
+
+@docflow_tool(read_only=True)
+def conferir_envio(envio_id: int, competencia: str | None = None) -> dict[str, Any]:
+    """A regra aplicada numa competencia (MM/AAAA; padrao: a que este mes cobra), empresa por
+    empresa: quem vai receber (canal e contato), quem ja recebeu, quem ja entregou o
+    documento, quem esta sem contato e quem esta fora da lista. Use para conferir antes de
+    enviar. Nao registra nada."""
+    services = get_services()
+    servico = services.envio_programado_service
+    if competencia:
+        parsed = parse_period_label(competencia)
+        if parsed is None:
+            raise ToolError(f'Competencia invalida: "{competencia}". Use MM/AAAA.')
+    else:
+        hoje = date.today()
+        parsed = servico.competencia_do_envio(servico.obter(envio_id), hoje.year, hoje.month)
+    dados = servico.conferencia(envio_id, *parsed)
+    for linha in dados["linhas"]:
+        linha.pop("item", None)
+        linha.pop("item_empresa", None)
+    return dados
+
+
+@docflow_tool(read_only=False)
+def registrar_envio(
+    envio_id: int,
+    competencia: str,
+    status: Literal["enviado", "falhou"],
+    codigo_empresa: int | None = None,
+    canal: Literal["email", "whatsapp"] = "email",
+    destinatarios: list[str] | None = None,
+    detalhe: str | None = None,
+) -> dict[str, Any]:
+    """Registra o resultado de um item de 'envios_a_fazer' (competencia e canal como vieram
+    no item). Na mala direta em copia oculta (modo 'cco') deixe codigo_empresa vazio: registra
+    todas as empresas que estavam no Cco. 'falhou' exige o motivo em detalhe e o item continua
+    na lista para nova tentativa. Um mesmo envio com sucesso nao e registrado duas vezes."""
+    services = get_services()
+    parsed = parse_period_label(competencia)
+    if parsed is None:
+        raise ToolError(f'Competencia invalida: "{competencia}". Use MM/AAAA.')
+    if codigo_empresa is None:
+        return services.envio_programado_service.registrar_mala_direta(
+            envio_id, parsed, status, detalhe, rodada_id=_rodada_atual
+        )
+    empresa = _company(services, codigo_empresa)
+    return services.envio_programado_service.registrar(
+        envio_id, empresa["id"], parsed, status, destinatarios, detalhe, rodada_id=_rodada_atual, canal=canal
+    )
+
+
+@docflow_tool(read_only=False)
+def enviar_whatsapp(whatsapp: str, mensagem: str, template: str | None = None, parametros: list[str] | None = None) -> dict[str, Any]:
+    """Envia uma mensagem de WhatsApp. Com a WhatsApp Cloud API configurada no DocFlow, envia
+    direto (fora da janela de 24h a Meta so aceita 'template' aprovado, com 'parametros' na
+    ordem do modelo). Sem a API devolve enviado=false e o 'link' wa.me com a mensagem pronta:
+    mostre o link ao usuario para ele clicar e enviar. Nao registra nada - use
+    'registrar_envio' depois de enviado."""
+    return get_services().whatsapp_service.enviar(whatsapp, mensagem, template, parametros)
+
+
+@docflow_tool(read_only=True)
+def historico_envios(envio_id: int | None = None, codigo_empresa: int | None = None, limite: int = 100) -> list[dict[str, Any]]:
+    """Mensagens registradas (enviadas e falhas, email e WhatsApp), da mais recente para a
+    mais antiga."""
+    services = get_services()
+    empresa_id = _company(services, codigo_empresa)["id"] if codigo_empresa is not None else None
+    registros = services.envio_programado_service.historico(envio_id, empresa_id, limite)
+    for registro in registros:
+        registro["registrado_em"] = _local(registro["registrado_em"])
+    return registros
+
+
+@docflow_tool(read_only=False)
+def cadastrar_envio_programado(
+    nome: str,
+    competencias: list[int] | str,
+    dia_envio: int,
+    assunto: str,
+    corpo: str,
+    tipo_documento: str | None = None,
+    codigos_empresas: list[int] | None = None,
+    enviar_em: Literal["mes_seguinte", "mesmo_mes"] = "mes_seguinte",
+    canal: Literal["automatico", "email", "whatsapp"] = "automatico",
+    somente_pendentes: bool = True,
+    instrucoes: str | None = None,
+    ativo: bool = True,
+    modo: Literal["individual", "cco"] = "individual",
+    email_para: str | None = None,
+    corpo_whatsapp: str | None = None,
+) -> dict[str, Any]:
+    """Cria um envio automatico. competencias: as competencias cobradas, lista (ex: [3, 6, 9,
+    12]) ou 'mensal'/'trimestral'. enviar_em: 'mes_seguinte' (padrao da contabilidade - a
+    competencia 03 e cobrada em abril, no dia_envio) ou 'mesmo_mes'.
+    Publico: com tipo_documento, as empresas que tem esse tipo (com somente_pendentes, so as
+    que ainda nao entregaram a competencia); sem tipo e mala direta - para codigos_empresas
+    ou, sem lista, todas as ativas (respeita quem pediu para ficar fora da mala direta).
+    canal: 'automatico' manda WhatsApp para quem liberou o WhatsApp para envios (numero ou
+    grupo) e email para os demais. Assunto e corpo aceitam {empresa}, {codigo}, {contato},
+    {competencia}, {mes}, {ano} e {documentos}; corpo_whatsapp e o texto do WhatsApp (vazio =
+    o mesmo corpo). instrucoes: orientacoes para quem envia.
+    modo='cco' (so mala direta): um email so para email_para (o email do escritorio) com as
+    empresas em copia oculta - no texto use so {competencia}, {mes} e {ano}; quem e de
+    WhatsApp recebe a mensagem um a um.
+    Somente administradores."""
+    services = get_services()
+    dados = _envio_dados(
+        services, nome, tipo_documento, codigos_empresas, competencias, enviar_em, dia_envio,
+        canal, assunto, corpo, somente_pendentes, instrucoes, ativo, modo, email_para, corpo_whatsapp,
+    )
+    return _public_envio(services.envio_programado_service.criar(dados))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def atualizar_envio_programado(
+    envio_id: int,
+    nome: str | None = None,
+    competencias: list[int] | str | None = None,
+    dia_envio: int | None = None,
+    assunto: str | None = None,
+    corpo: str | None = None,
+    tipo_documento: str | None = None,
+    codigos_empresas: list[int] | None = None,
+    enviar_em: Literal["mes_seguinte", "mesmo_mes"] | None = None,
+    canal: Literal["automatico", "email", "whatsapp"] | None = None,
+    somente_pendentes: bool | None = None,
+    instrucoes: str | None = None,
+    ativo: bool | None = None,
+    modo: Literal["individual", "cco"] | None = None,
+    email_para: str | None = None,
+    corpo_whatsapp: str | None = None,
+) -> dict[str, Any]:
+    """Altera so os campos informados de um envio automatico. tipo_documento="todas"
+    transforma em mala direta; codigos_empresas=[] volta a mala direta para todas as
+    empresas (para incluir ou tirar algumas, prefira 'incluir_na_mala_direta' /
+    'remover_da_mala_direta'); corpo_whatsapp="" volta a usar o corpo no WhatsApp.
+    Somente administradores."""
+    services = get_services()
+    dados = _envio_dados(
+        services, nome, tipo_documento, codigos_empresas, competencias, enviar_em, dia_envio,
+        canal, assunto, corpo, somente_pendentes, instrucoes, ativo, modo, email_para, corpo_whatsapp,
+    )
+    return _public_envio(services.envio_programado_service.atualizar(envio_id, dados))
+
+
+@docflow_tool(read_only=True)
+def lista_mala_direta(envio_id: int) -> list[dict[str, Any]]:
+    """Empresas da lista de uma mala direta, por qual canal recebem (email ou whatsapp) e se
+    recebem (recebe, sem_email = sem email nem WhatsApp liberado, nao_contatar ou inativa).
+    Para envios por tipo de documento use 'conferir_envio'."""
+    return get_services().envio_programado_service.situacao_lista(envio_id)
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def incluir_na_mala_direta(envio_id: int, codigos_empresas: list[int]) -> dict[str, Any]:
+    """Coloca empresas num envio: na mala direta entram na lista (ex: cliente novo); num envio
+    por tipo de documento, volta a empresa que tinha sido tirada dele."""
+    services = get_services()
+    ids = [_company(services, codigo)["id"] for codigo in codigos_empresas]
+    return _public_envio(services.envio_programado_service.incluir_empresas(envio_id, ids))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def remover_da_mala_direta(envio_id: int, codigos_empresas: list[int]) -> dict[str, Any]:
+    """Tira empresas de um envio. Na mala direta saem da lista (ex: cliente que saiu; a lista
+    nao pode ficar vazia - para parar, desative o envio). Num envio por tipo de documento a
+    empresa continua com o documento, mas deixa de receber este envio."""
+    services = get_services()
+    ids = [_company(services, codigo)["id"] for codigo in codigos_empresas]
+    return _public_envio(services.envio_programado_service.remover_empresas(envio_id, ids))
+
+
+@docflow_tool(read_only=False)
+def enviar_emails_pelo_docflow(
+    envio_id: int,
+    competencia: str | None = None,
+    codigos_empresas: list[int] | None = None,
+    confirmar: bool = False,
+) -> dict[str, Any]:
+    """Envia agora, pelo email do escritorio cadastrado no DocFlow (tela Envios automaticos >
+    Email de envio), os emails ainda nao enviados de um envio na competencia (MM/AAAA; padrao:
+    a que este mes cobra) e registra cada empresa. codigos_empresas limita a algumas. Itens de
+    WhatsApp nao sao enviados aqui. Sem confirmar=true so mostra quantos emails sairiam."""
+    services = get_services()
+    servico = services.envio_programado_service
+    if competencia:
+        parsed = parse_period_label(competencia)
+        if parsed is None:
+            raise ToolError(f'Competencia invalida: "{competencia}". Use MM/AAAA.')
+    else:
+        hoje = date.today()
+        parsed = servico.competencia_do_envio(servico.obter(envio_id), hoje.year, hoje.month)
+    ids = [_company(services, codigo)["id"] for codigo in codigos_empresas] if codigos_empresas else None
+    if not confirmar:
+        itens = [
+            i for i in servico.previa(envio_id, *parsed)
+            if i["canal"] == "email" and not i["ja_enviado"] and not i["sem_contato"]
+            and (ids is None or i["empresa_id"] in ids or i["modo"] == "cco")
+        ]
+        return {
+            "competencia": format_competencia(*parsed),
+            "emails_a_enviar": len(itens),
+            "remetente": services.email_sender_service.remetente() or None,
+            "configurado": services.email_sender_service.configurado(),
+            "aviso": "Nada foi enviado. Chame de novo com confirmar=true para enviar.",
+        }
+    resultado = servico.enviar_emails(envio_id, *parsed, services.email_sender_service, empresa_ids=ids)
+    return {"competencia": format_competencia(*parsed), **resultado}
+
+
+@docflow_tool(read_only=True)
+def listar_modelos_mensagem() -> list[dict[str, Any]]:
+    """Textos prontos guardados no DocFlow (assunto, texto do email e do WhatsApp), para
+    reaproveitar em envios."""
+    return get_services().envio_programado_service.listar_modelos()
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def salvar_modelo_mensagem(nome: str, corpo: str, assunto: str | None = None, corpo_whatsapp: str | None = None) -> dict[str, Any]:
+    """Guarda um texto pronto (mesmo nome substitui). Aceita os mesmos campos dos envios:
+    {empresa}, {codigo}, {contato}, {competencia}, {mes}, {ano}, {documentos}."""
+    return get_services().envio_programado_service.salvar_modelo(nome, assunto, corpo, corpo_whatsapp)
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_modelo_mensagem(modelo_id: int, confirmar: bool = False) -> str:
+    """Exclui um texto pronto. Exige confirmar=true."""
+    _require_confirmation(confirmar, "Excluir o modelo de mensagem")
+    get_services().envio_programado_service.excluir_modelo(modelo_id)
+    return "Modelo excluido."
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_envio_programado(envio_id: int, confirmar: bool = False) -> str:
+    """Exclui um envio automatico e o historico dele. Exige confirmar=true."""
+    services = get_services()
+    envio = services.envio_programado_service.obter(envio_id)
+    _require_confirmation(confirmar, f'Excluir o envio "{envio["nome"]}" e o historico dele')
+    services.envio_programado_service.excluir(envio_id)
+    return f'Envio "{envio["nome"]}" excluido.'
+
+
+def _parse_date(raw: str | None) -> date:
+    if not raw:
+        return date.today()
+    try:
+        return date.fromisoformat(raw.strip())
+    except ValueError as exc:
+        raise ToolError(f'Data invalida: "{raw}". Use AAAA-MM-DD.') from exc
+
+
+# Acesso livre ao banco -------------------------------------------------------------------
+
+SQL_ROW_LIMIT = 1000
+
+
+def _require_admin(services: ApplicationServices) -> None:
+    if not services.session_service.is_admin():
+        raise ToolError("Apenas usuarios admin podem usar SQL direto no banco.")
+
+
+def _json_value(value: Any) -> Any:
+    return value if value is None or isinstance(value, (bool, int, float, str)) else str(value)
+
+
+@docflow_tool(read_only=True)
+def consultar_banco(sql: str, limite: int = 200) -> dict[str, Any]:
+    """Roda uma consulta SQL (PostgreSQL) somente leitura no banco do DocFlow, para qualquer
+    pergunta que as outras tools nao respondam. A transacao e READ ONLY: comandos de escrita
+    falham aqui (use 'executar_sql'). Tabelas principais: empresas, documentos_empresa,
+    tipos_documento, periodos, status_documento_mensal, cobrancas, cobranca_itens,
+    verificacoes, verificacao_itens, situacoes_cobranca, situacao_eventos, rodadas,
+    envios_programados, envios_registrados, usuarios, logs. Devolve ate 'limite' linhas
+    (maximo 1000). Somente administradores."""
+    services = get_services()
+    _require_admin(services)
+    limite = max(1, min(int(limite), SQL_ROW_LIMIT))
+    db_manager = services.database_maintenance_service.db_manager
+    with db_manager.connect() as connection:
+        connection.raw.execute("SET TRANSACTION READ ONLY")
+        cursor = connection.raw.execute(sql)
+        if cursor.description is None:
+            return {"colunas": [], "linhas": [], "total_retornado": 0, "truncado": False}
+        colunas = [coluna.name for coluna in cursor.description]
+        linhas = cursor.fetchmany(limite + 1)
+    truncado = len(linhas) > limite
+    return {
+        "colunas": colunas,
+        "linhas": [{k: _json_value(v) for k, v in linha.items()} for linha in linhas[:limite]],
+        "total_retornado": min(len(linhas), limite),
+        "truncado": truncado,
+    }
+
+
+@docflow_tool(read_only=False, destructive=True)
+def executar_sql(sql: str, confirmar: bool = False) -> dict[str, Any]:
+    """Executa SQL de escrita (INSERT, UPDATE, DELETE, ALTER...) direto no banco do DocFlow,
+    numa transacao: se der erro, nada e aplicado. Use quando nenhuma tool especifica fizer o
+    que foi pedido - aqui as regras e validacoes do sistema NAO sao aplicadas. Fica
+    registrado no Historico de acoes. Exige confirmar=true. Somente administradores."""
+    services = get_services()
+    _require_admin(services)
+    _require_confirmation(confirmar, "SQL direto no banco")
+    db_manager = services.database_maintenance_service.db_manager
+    with db_manager.connect() as connection:
+        db_manager.mark_written()
+        cursor = connection.raw.execute(sql)
+        linhas_afetadas = cursor.rowcount
+        retorno = None
+        if cursor.description is not None:
+            retorno = [{k: _json_value(v) for k, v in linha.items()} for linha in cursor.fetchmany(SQL_ROW_LIMIT)]
+        services.audit_service.log("SQL_DIRETO", "banco", None, f"SQL executado pelo MCP: {sql.strip()[:900]}")
+    return {"linhas_afetadas": linhas_afetadas, "retorno": retorno}
 
 
 def main() -> None:

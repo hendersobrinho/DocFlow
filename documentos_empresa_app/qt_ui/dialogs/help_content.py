@@ -184,9 +184,22 @@ HELP_TOPICS: list[HelpTopic] = [
         <li><b>Escolha</b> o que marcar: clique num quadradinho. Para vários: Ctrl+clique
         (soma), Shift+clique (de um até outro), clique no <b>mês</b> (a coluna toda) ou no
         <b>nome do documento</b> (a linha toda). Esc desmarca.</li>
-        <li><b>Marque</b> com os botões acima do mapa ou pelo teclado: <b>Recebido</b> (R),
-        <b>Pendente</b> (P), <b>Encerrado</b> (E), <b>Não cobrar</b> (N) ou <b>Limpar</b>
-        (Del). O botão direito do mouse abre as mesmas opções.</li>
+        <li><b>Marque</b> com os botões acima do mapa ou digitando, como na planilha:
+        <b>Recebido</b> (O de "OK", ou R), <b>Pendente</b> (P), <b>Não cobrar</b> (X, ou N),
+        <b>Encerrado</b> (E) ou <b>Limpar</b> (Del). As <b>setas</b> andam para o quadradinho
+        ao lado (pulando os que não se aplicam), então dá para preencher a linha toda só pelo
+        teclado. O botão direito do mouse abre as mesmas opções.</li>
+        <li><b>Arrastar para preencher</b>, como no Excel: clique num quadradinho marcado,
+        pegue a alça no canto de baixo (o mouse vira um <b>+</b>) e arraste para o lado - os
+        próximos meses ficam com o mesmo status - ou para cima/baixo, para os outros
+        documentos do mesmo mês. Vale para Recebido, Pendente e Não cobrar.</li>
+        <li><b>Copiar e colar</b> (Ctrl+C / Ctrl+V), como numa planilha: selecione os
+        quadradinhos, Ctrl+C, clique onde quer colar e Ctrl+V - cola a partir dali, no mesmo
+        formato. Um status só colado em vários selecionados preenche todos. Também aceita o
+        que vem do Excel (Recebido/OK, Pendente, Não cobrar/X, Encerrado). Esc tira o
+        tracejado do que foi copiado.</li>
+        <li><b>Desfazer</b> (Ctrl+Z): volta a última marcação feita no mapa (marcar, arrastar ou
+        colar). Dá para apertar várias vezes, até as últimas 20.</li>
         <li>Para registrar mais do que o status (chegou errado, o cliente prometeu, precisa
         de uma pessoa, com observação e arquivo), use <b>Resolver...</b>.</li>
         </ol>
@@ -388,8 +401,10 @@ HELP_TOPICS: list[HelpTopic] = [
         <ul>
         <li><b>Código</b> e <b>Nome</b> - obrigatórios; o código não muda depois.</li>
         <li><b>CNPJ</b> - opcional; aceita o formato tradicional e o novo alfanumérico.</li>
-        <li><b>Contato para cobrança</b> - nome e email usados nas cobranças. A opção
-        de não incluir na mala direta tira a empresa da mala direta por email.</li>
+        <li><b>Contato para cobrança</b> - nome, email e WhatsApp usados nas cobranças
+        (o WhatsApp aceita "(27) 99999-8888"; sem DDI o sistema põe o +55). A opção de não
+        incluir na mala direta tira a empresa das malas diretas de
+        <a href="topic:envios">Envios automáticos</a>.</li>
         <li><b>Prazos de cobrança</b> - por padrão a empresa segue os prazos gerais de
         <a href="topic:configuracoes">Configurações</a>. Marque <i>Usar prazos próprios</i>
         só se ela precisar de datas diferentes.</li>
@@ -414,9 +429,10 @@ HELP_TOPICS: list[HelpTopic] = [
         <ol>
         <li>Escolha a empresa no topo - a lista mostra os documentos dela.</li>
         <li>Clique em <b>Novo documento</b>.</li>
-        <li><b>Tipo</b> - ex: Extratos CC, Contratos. <b>Tipos...</b> cadastra novos e
-        define a regra de cada tipo: <i>Mensal</i>, <i>Trimestral</i> (janeiro, abril,
-        julho, outubro) ou <i>Anual em janeiro</i> (nos outros meses fica "Não cobrar"
+        <li><b>Tipo</b> - ex: Extratos CC, Contratos. O sistema já vem com Extratos CC e
+        Extratos aplicacao (mensais), Informe de Rendimentos (trimestral), CRM e CRO (anuais). <b>Tipos...</b> cadastra novos e
+        define a regra de cada tipo: <i>Mensal</i>, <i>Trimestral</i> (março, junho,
+        setembro, dezembro) ou <i>Anual em janeiro</i> (nos outros meses fica "Não cobrar"
         sozinho).</li>
         <li><b>Nome</b> - curto e sem repetir o tipo: o tipo já diz o que é, o nome diz
         de onde (ex: tipo Extratos CC, nome Banco do Brasil). Digite ou escolha um dos nomes
@@ -470,10 +486,9 @@ HELP_TOPICS: list[HelpTopic] = [
         documento errado é cobrado de novo como se não tivesse chegado.</li>
         </ul>
 
-        <h3>Mala direta por email</h3>
-        <p>Monta um rascunho de email com as empresas escolhidas em cópia oculta (BCC -
-        ninguém vê o email dos outros). Nada é enviado pelo DocFlow: você revisa e envia
-        pelo seu programa de email.</p>
+        <h3>Mala direta</h3>
+        <p>Agora fica em <a href="topic:envios">Envios automáticos</a>, com as mesmas regras
+        de competência, email e WhatsApp das cobranças.</p>
         """,
     ),
     HelpTopic(
@@ -504,6 +519,100 @@ HELP_TOPICS: list[HelpTopic] = [
         <li>Trocar a senha ou inativar um usuário encerra os acessos lembrados dele.</li>
         </ul>
         """,
+    ),
+    HelpTopic(
+        id="envios",
+        title="Envios automáticos",
+        html="""
+        <h2>Para que serve</h2>
+        <p>Cobranças e malas diretas que saem sempre nas mesmas épocas - por exemplo, cobrar
+        o <b>Informe de Rendimentos</b> de cada trimestre ou mandar a <b>distribuição de
+        lucros</b> todo mês. Cada envio sabe para quem vai, de quais competências, quando e
+        com que texto; os emails saem pelo email do escritório (com um clique) ou pelo
+        Claude, e as conversas de WhatsApp abrem prontas, uma a uma. Tudo fica registrado
+        (só administradores).</p>
+
+        <h3>A tela</h3>
+        <p>À esquerda ficam <b>todos os envios</b>, com um aviso de quantas empresas estão
+        <b>para enviar</b> agora (ou <i>Em dia ✓</i>). Clique num envio e, à direita,
+        aparecem três abas:</p>
+        <ul>
+        <li><b>Quem recebe</b>: escolha a competência e veja, separado, quem recebe por
+        <b>Email</b>, quem recebe por <b>WhatsApp</b> e quem <b>Fica de fora</b> (e por quê:
+        já entregou o documento, sem contato, tirada do envio...). Clique numa empresa para
+        ver a mensagem exata que ela recebe.</li>
+        <li><b>Mensagem</b>: o assunto, o texto do email e um texto próprio para o WhatsApp
+        (vazio = o mesmo do email). Os botões <b>{empresa}</b>, <b>{contato}</b>,
+        <b>{documentos}</b>... inserem o campo onde está o cursor.</li>
+        <li><b>Histórico</b>: tudo o que já foi enviado neste envio.</li>
+        </ul>
+
+        <h3>Tudo por competência</h3>
+        <p>Como na contabilidade, o envio diz <b>quais competências</b> cobrar, não em que mês
+        enviar. O informe do trimestre que fecha em dezembro só fica pronto no fim de
+        dezembro, então a competência 12 é cobrada em <b>janeiro</b>. Por isso o padrão é
+        <i>No mês seguinte à competência</i>: competências 3, 6, 9 e 12 saem em abril,
+        julho, outubro e janeiro, a partir do dia escolhido. Use <i>No próprio mês</i> só
+        para avisos que precisam sair dentro da competência.</p>
+
+        <h3>Criar um envio</h3>
+        <p><b>Novo envio</b> oferece três modelos: <i>Cobrança de documento</i> (vai para as
+        empresas que têm aquele tipo de documento e ainda não entregaram), <i>Mala direta em
+        cópia oculta</i> e <i>Aviso para empresas escolhidas</i>. <b>Editar...</b> muda
+        público, competências, dia, canal e textos.</p>
+        <ul>
+        <li><b>Canal Automático</b>: vai por WhatsApp para as empresas que liberaram o
+        WhatsApp para envios (veja abaixo) e por email para as demais. Dá para forçar só
+        email ou só WhatsApp.</li>
+        <li>A mensagem entra na lista a partir do dia escolhido e fica lá até ser enviada.</li>
+        </ul>
+
+        <h3>Incluir e tirar empresas</h3>
+        <p>Em <b>Quem recebe</b>, selecione empresas e clique em <b>Tirar deste envio</b> -
+        vale para qualquer envio, inclusive a cobrança do informe: a empresa continua com o
+        documento, só deixa de receber aquele envio. Ela vai para <i>Fica de fora</i> com o
+        motivo <i>Tirada deste envio</i>, e <b>Incluir de volta</b> desfaz. Na mala direta,
+        <b>Incluir empresas...</b> põe clientes novos na lista.</p>
+
+        <h3>WhatsApp: quem pode receber</h3>
+        <p>Na tela <b>Empresas</b>, em <i>Contato para cobrança</i>, marque <b>Pode usar o
+        WhatsApp nos envios</b> - sem essa marcação nada vai por WhatsApp para a empresa.
+        Empresas atendidas num <b>grupo</b> guardam o link do grupo (no WhatsApp: abra o
+        grupo &gt; Convidar via link &gt; Copiar link); com ele, os envios abrem o grupo em
+        vez da conversa com o número.</p>
+
+        <h3>Enviar</h3>
+        <ul>
+        <li><b>Email - Enviar emails agora</b>: o DocFlow envia sozinho pelo email do
+        escritório e registra cada empresa. Configure uma vez em <b>Email de envio...</b>
+        (no alto da tela): escolha o provedor, informe email e senha e clique em <i>Enviar
+        email de teste</i>. No Gmail e no Microsoft 365 use uma <b>senha de app</b>.</li>
+        <li><b>Abrir no meu email</b> monta o rascunho no seu programa de email, se preferir
+        enviar você mesmo.</li>
+        <li><b>WhatsApp - Enviar em sequência</b>: abre uma conversa por vez, já com a
+        mensagem escrita; você confere, aperta enviar no WhatsApp, volta e clica em
+        <b>Enviei</b> - o envio fica registrado e a próxima abre sozinha. Nos grupos o
+        WhatsApp não aceita texto pronto: a mensagem vai <b>copiada</b>, é só colar
+        (Ctrl+V) no grupo e enviar.</li>
+        <li><b>Marcar como enviado</b> registra o que foi enviado por fora.</li>
+        </ul>
+
+        <h3>Mala direta em cópia oculta</h3>
+        <p>Como o escritório já faz: <b>um email só</b>, para o email do escritório (campo
+        <i>Para</i>, na aba Mensagem), com os clientes em <b>cópia oculta</b> - ninguém vê o
+        email dos outros. Todo mês sai com a competência do mês anterior. Quem liberou o
+        WhatsApp sai da cópia oculta e recebe a mensagem no WhatsApp. Listas grandes são
+        divididas em vários emails iguais automaticamente.</p>
+
+        <h3>Modelos de texto</h3>
+        <p>Na aba Mensagem, <b>Modelos de texto</b> guarda o texto atual com um nome e
+        carrega qualquer modelo guardado em outro envio - bom para textos que se repetem
+        (informe, distribuição de lucros, avisos).</p>
+
+        <p><b>Histórico</b> (aba no alto) mostra tudo o que foi enviado, por qual canal, e o
+        que falhou (com o motivo), com filtro por envio. Uma mesma mensagem nunca vai duas
+        vezes para a mesma empresa na mesma competência.</p>
+        """ + _note("empresa sem email ou WhatsApp cadastrado aparece em vermelho e não recebe nada até o contato ser cadastrado."),
     ),
     HelpTopic(
         id="logs",
@@ -593,8 +702,8 @@ HELP_TOPICS: list[HelpTopic] = [
         Configurações</a>).</p>
 
         <h2>Regra de ocorrência de um tipo de documento</h2>
-        <p><b>Mensal</b> - cobrado todo mês. <b>Trimestral</b> - só em janeiro,
-        abril, julho e outubro. <b>Anual em janeiro</b> - só em janeiro; nos demais
+        <p><b>Mensal</b> - cobrado todo mês. <b>Trimestral</b> - só em março,
+        junho, setembro e dezembro (ex: Informe de Rendimentos). <b>Anual em janeiro</b> - só em janeiro; nos demais
         meses o status vira "Não cobrar" sozinho, sem precisar marcar nada.</p>
 
         <h2>CNPJ alfanumérico</h2>

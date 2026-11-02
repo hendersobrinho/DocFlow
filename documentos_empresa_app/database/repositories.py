@@ -60,7 +60,8 @@ class EmpresaRepository(BaseRepository):
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                    cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
-                   canais_recebimento, emails_origem_documentos, instrucoes_busca
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
+                   whatsapp_envios, whatsapp_grupo
             FROM empresas
         """
         params: tuple = ()
@@ -75,7 +76,8 @@ class EmpresaRepository(BaseRepository):
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                    cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
-                   canais_recebimento, emails_origem_documentos, instrucoes_busca
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
+                   whatsapp_envios, whatsapp_grupo
             FROM empresas
             WHERE id = ?
             """,
@@ -87,7 +89,8 @@ class EmpresaRepository(BaseRepository):
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                    cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
-                   canais_recebimento, emails_origem_documentos, instrucoes_busca
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
+                   whatsapp_envios, whatsapp_grupo
             FROM empresas
             WHERE codigo_empresa = ?
         """
@@ -109,7 +112,8 @@ class EmpresaRepository(BaseRepository):
                     SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,
                            observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                            cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
-                   canais_recebimento, emails_origem_documentos, instrucoes_busca
+                   canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
+                   whatsapp_envios, whatsapp_grupo
                     FROM empresas
                     WHERE id IN ({placeholders})
                     """,
@@ -240,6 +244,15 @@ class EmpresaRepository(BaseRepository):
     def update_active(self, empresa_id: int, ativa: int) -> None:
         self._execute("UPDATE empresas SET ativa = ? WHERE id = ?", (ativa, empresa_id))
 
+    def update_whatsapp(self, empresa_id: int, whatsapp: str | None) -> None:
+        self._execute("UPDATE empresas SET whatsapp = ? WHERE id = ?", (whatsapp, empresa_id))
+
+    def update_whatsapp_envios(self, empresa_id: int, usar: bool, grupo: str | None) -> None:
+        self._execute(
+            "UPDATE empresas SET whatsapp_envios = ?, whatsapp_grupo = ? WHERE id = ?",
+            (1 if usar else 0, grupo, empresa_id),
+        )
+
     def update_nao_contatar_mala_direta(self, empresa_id: int, nao_contatar: bool) -> None:
         self._execute(
             "UPDATE empresas SET nao_contatar_mala_direta = ? WHERE id = ?",
@@ -248,7 +261,8 @@ class EmpresaRepository(BaseRepository):
 
     def clear_contact_info(self, empresa_id: int) -> None:
         self._execute(
-            "UPDATE empresas SET email_contato = NULL, nome_contato = NULL WHERE id = ?",
+            "UPDATE empresas SET email_contato = NULL, nome_contato = NULL, whatsapp = NULL, "
+            "whatsapp_envios = 0, whatsapp_grupo = NULL WHERE id = ?",
             (empresa_id,),
         )
 
@@ -393,8 +407,11 @@ class TipoRepository(BaseRepository):
 
     def is_in_use(self, tipo_id: int) -> bool:
         row = self._fetchone(
-            "SELECT COUNT(*) AS total FROM documentos_empresa WHERE tipo_documento_id = ?",
-            (tipo_id,),
+            """
+            SELECT (SELECT COUNT(*) FROM documentos_empresa WHERE tipo_documento_id = ?)
+                 + (SELECT COUNT(*) FROM envios_programados WHERE tipo_documento_id = ?) AS total
+            """,
+            (tipo_id, tipo_id),
         )
         return bool(row and row["total"])
 
@@ -1666,3 +1683,199 @@ class RodadaRepository(BaseRepository):
             """,
             tuple(unique_ids),
         )
+
+
+class ModeloMensagemRepository(BaseRepository):
+    def list_all(self) -> list[dict]:
+        return self._fetchall("SELECT * FROM modelos_mensagem ORDER BY nome")
+
+    def get(self, modelo_id: int) -> dict | None:
+        return self._fetchone("SELECT * FROM modelos_mensagem WHERE id = ?", (modelo_id,))
+
+    def get_by_nome(self, nome: str) -> dict | None:
+        return self._fetchone("SELECT * FROM modelos_mensagem WHERE nome = ?", (nome,))
+
+    def save(self, nome: str, assunto: str | None, corpo: str, corpo_whatsapp: str | None) -> int:
+        """Cria o modelo ou, se o nome ja existe, substitui o texto dele."""
+        existente = self.get_by_nome(nome)
+        if existente:
+            self._execute(
+                f"""
+                UPDATE modelos_mensagem SET assunto = ?, corpo = ?, corpo_whatsapp = ?,
+                       atualizado_em = {UTC_NOW_FUNCTION}
+                WHERE id = ?
+                """,
+                (assunto, corpo, corpo_whatsapp, existente["id"]),
+            )
+            return existente["id"]
+        return self._insert(
+            "INSERT INTO modelos_mensagem (nome, assunto, corpo, corpo_whatsapp) VALUES (?, ?, ?, ?)",
+            (nome, assunto, corpo, corpo_whatsapp),
+        )
+
+    def delete(self, modelo_id: int) -> int:
+        return self._execute("DELETE FROM modelos_mensagem WHERE id = ?", (modelo_id,))
+
+
+class EnvioProgramadoRepository(BaseRepository):
+    _CAMPOS = (
+        "nome",
+        "ativo",
+        "tipo_documento_id",
+        "meses",
+        "dia_envio",
+        "enviar_em",
+        "canal",
+        "empresa_ids",
+        "modo",
+        "email_para",
+        "empresa_ids_excluidas",
+        "corpo_whatsapp",
+        "somente_pendentes",
+        "assunto",
+        "corpo",
+        "instrucoes",
+    )
+
+    def list_all(self) -> list[dict]:
+        return self._fetchall(
+            """
+            SELECT ep.*, t.nome_tipo
+            FROM envios_programados ep
+            LEFT JOIN tipos_documento t ON t.id = ep.tipo_documento_id
+            ORDER BY ep.nome
+            """
+        )
+
+    def get(self, envio_id: int) -> dict | None:
+        return self._fetchone(
+            """
+            SELECT ep.*, t.nome_tipo
+            FROM envios_programados ep
+            LEFT JOIN tipos_documento t ON t.id = ep.tipo_documento_id
+            WHERE ep.id = ?
+            """,
+            (envio_id,),
+        )
+
+    def create(self, dados: dict) -> int:
+        colunas = ", ".join(self._CAMPOS)
+        placeholders = ", ".join("?" for _ in self._CAMPOS)
+        return self._insert(
+            f"INSERT INTO envios_programados ({colunas}) VALUES ({placeholders})",
+            tuple(dados[campo] for campo in self._CAMPOS),
+        )
+
+    def update(self, envio_id: int, dados: dict) -> None:
+        atribuicoes = ", ".join(f"{campo} = ?" for campo in self._CAMPOS)
+        self._execute(
+            f"UPDATE envios_programados SET {atribuicoes}, atualizado_em = {UTC_NOW_FUNCTION} WHERE id = ?",
+            (*(dados[campo] for campo in self._CAMPOS), envio_id),
+        )
+
+    def delete(self, envio_id: int) -> int:
+        return self._execute("DELETE FROM envios_programados WHERE id = ?", (envio_id,))
+
+    def list_destinatarios(
+        self,
+        tipo_documento_id: int | None,
+        empresa_ids: list[int] | None,
+        ano: int,
+        mes: int,
+        somente_pendentes: bool,
+    ) -> list[dict]:
+        """Uma linha por empresa ativa (e documento, quando a regra e de um tipo) que deve
+        receber a mensagem na competencia. Sem tipo: as empresas escolhidas ou, sem escolha,
+        todas as ativas - nos dois casos sem quem pediu para ficar fora da mala direta."""
+        colunas_empresa = """
+            e.id AS empresa_id, e.codigo_empresa, e.nome_empresa, e.email_contato, e.nome_contato,
+            e.whatsapp, e.canais_recebimento, e.whatsapp_envios, e.whatsapp_grupo
+        """
+        if tipo_documento_id is None:
+            query = f"""
+                SELECT {colunas_empresa}, NULL::integer AS documento_id, NULL::text AS nome_documento,
+                       NULL::text AS status, NULL::text AS meios_recebimento
+                FROM empresas e
+                WHERE e.ativa = 1 AND e.nao_contatar_mala_direta = 0
+            """
+            params: tuple = ()
+            if empresa_ids:
+                placeholders = ", ".join("?" for _ in empresa_ids)
+                query += f" AND e.id IN ({placeholders})"
+                params = tuple(empresa_ids)
+            return self._fetchall(query + " ORDER BY e.codigo_empresa", params)
+        query = f"""
+            SELECT {colunas_empresa}, d.id AS documento_id, d.nome_documento::text AS nome_documento,
+                   s.status, d.meios_recebimento
+            FROM documentos_empresa d
+            INNER JOIN empresas e ON e.id = d.empresa_id
+            LEFT JOIN periodos p ON p.ano = ? AND p.mes = ?
+            LEFT JOIN status_documento_mensal s ON s.documento_empresa_id = d.id AND s.periodo_id = p.id
+            WHERE e.ativa = 1 AND d.tipo_documento_id = ?
+        """
+        if somente_pendentes:
+            # Vazio ou Pendente: Recebido, Encerrado e Nao cobrar ficam de fora.
+            query += " AND (s.status IS NULL OR s.status = 'Pendente')"
+        query += " ORDER BY e.codigo_empresa, d.nome_documento"
+        return self._fetchall(query, (ano, mes, tipo_documento_id))
+
+    def list_enviados(self, envio_id: int, ano: int, mes: int) -> set[int]:
+        rows = self._fetchall(
+            """
+            SELECT empresa_id FROM envios_registrados
+            WHERE envio_programado_id = ? AND ano = ? AND mes = ? AND status = 'enviado'
+            """,
+            (envio_id, ano, mes),
+        )
+        return {row["empresa_id"] for row in rows}
+
+    def registrar(
+        self,
+        envio_id: int,
+        empresa_id: int,
+        ano: int,
+        mes: int,
+        status: str,
+        destinatarios: str | None,
+        detalhe: str | None,
+        usuario_id: int | None,
+        rodada_id: int | None,
+        canal: str | None = None,
+    ) -> int | None:
+        """Devolve o id do registro, ou None se ja havia um envio com sucesso igual."""
+        with self.db_manager.connect() as connection:
+            row = connection.execute(
+                """
+                INSERT INTO envios_registrados (
+                    envio_programado_id, empresa_id, ano, mes, status, destinatarios, detalhe, usuario_id,
+                    rodada_id, canal
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (envio_programado_id, empresa_id, ano, mes) WHERE status = 'enviado' DO NOTHING
+                RETURNING id
+                """,
+                (envio_id, empresa_id, ano, mes, status, destinatarios, detalhe, usuario_id, rodada_id, canal),
+            ).fetchone()
+        return int(row["id"]) if row else None
+
+    def list_historico(self, envio_id: int | None = None, empresa_id: int | None = None, limit: int = 200) -> list[dict]:
+        query = """
+            SELECT r.id, r.envio_programado_id, ep.nome AS envio_nome, r.ano, r.mes, r.status, r.canal,
+                   r.destinatarios, r.detalhe, r.registrado_em, r.rodada_id,
+                   e.codigo_empresa, e.nome_empresa, COALESCE(u.username, 'Sistema') AS username
+            FROM envios_registrados r
+            INNER JOIN envios_programados ep ON ep.id = r.envio_programado_id
+            INNER JOIN empresas e ON e.id = r.empresa_id
+            LEFT JOIN usuarios u ON u.id = r.usuario_id
+            WHERE 1 = 1
+        """
+        params: list = []
+        if envio_id is not None:
+            query += " AND r.envio_programado_id = ?"
+            params.append(envio_id)
+        if empresa_id is not None:
+            query += " AND r.empresa_id = ?"
+            params.append(empresa_id)
+        query += " ORDER BY r.registrado_em DESC, r.id DESC LIMIT ?"
+        params.append(limit)
+        return self._fetchall(query, tuple(params))
