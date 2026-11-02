@@ -554,7 +554,8 @@ def _format_historico(evento: dict) -> dict[str, Any]:
 
 @docflow_tool(read_only=True)
 def ficha_empresa(codigo_empresa: int, limite_historico: int = 30) -> dict[str, Any]:
-    """Ficha completa da empresa: dados, como envia os documentos, cada documento com o
+    """Ficha completa da empresa: dados, como envia os documentos ('recebimento' junta os
+    canais marcados na empresa com o meio de cada documento), cada documento com o
     status do mes atual e quantas vezes foi cobrado/recobrado, o que esta em aberto e o
     historico de cobrancas e verificacoes (mais recente primeiro)."""
     services = get_services()
@@ -570,6 +571,7 @@ def ficha_empresa(codigo_empresa: int, limite_historico: int = 30) -> dict[str, 
         "competencia_atual": ficha["competencia_atual"],
         "totais": totais,
         "documentos": ficha["documentos"],
+        "recebimento": ficha["recebimento"],
         "em_aberto": ficha["em_aberto"],
         "proximas_acoes": [
             {k: v for k, v in doc.items() if k != "periodo_id"}

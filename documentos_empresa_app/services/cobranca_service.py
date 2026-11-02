@@ -105,6 +105,24 @@ def motivo_label(motivo: str | None) -> str:
     return MOTIVOS_PESSOA.get(motivo) or MOTIVOS_PROBLEMA.get(motivo) or motivo
 
 
+def recebimento_combinado(empresa: dict, documentos: list[dict]) -> dict:
+    """Como a empresa manda os documentos, juntando o que foi marcado na ficha (Como receber)
+    com o meio de cada documento no cadastro: sao independentes, mas um completa o outro."""
+    da_empresa = parse_delivery_methods(empresa.get("canais_recebimento"))
+    da_empresa += [c for c in parse_delivery_methods(empresa.get("meios_recebimento")) if c not in da_empresa]
+    por_documento: dict[str, list[str]] = {}
+    for documento in documentos:
+        for canal in parse_delivery_methods(documento.get("meios_recebimento")):
+            por_documento.setdefault(canal, []).append(documento["nome_documento"])
+    return {
+        "canais": da_empresa + [c for c in por_documento if c not in da_empresa],
+        "canais_da_empresa": da_empresa,
+        "canais_dos_documentos": por_documento,
+        "emails_origem_documentos": empresa.get("emails_origem_documentos"),
+        "email_contato": empresa.get("email_contato"),
+    }
+
+
 def _date_of(raw) -> date | None:
     if not raw:
         return None
@@ -831,6 +849,7 @@ class CobrancaService:
                 format_competencia(periodo_atual["ano"], periodo_atual["mes"]) if periodo_atual else None
             ),
             "documentos": documentos_ficha,
+            "recebimento": recebimento_combinado(empresa, documentos),
             "em_aberto": self._em_aberto_da_empresa(empresa_id),
             "proximas_acoes": next(iter(self.proximas_acoes(empresa_id, somente_ativas=False)["empresas"]), None),
             "totais": {

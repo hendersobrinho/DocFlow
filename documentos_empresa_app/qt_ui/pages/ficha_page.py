@@ -51,7 +51,7 @@ from documentos_empresa_app.services.cobranca_service import (
     motivo_label,
     tipo_da_sequencia,
 )
-from documentos_empresa_app.utils.common import ValidationError, format_utc_timestamp, parse_delivery_methods
+from documentos_empresa_app.utils.common import ValidationError, format_utc_timestamp
 
 NO_STATUS_LABEL = "Sem marcacao"
 
@@ -428,6 +428,13 @@ class FichaEmpresaPage(QWidget):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
+        # O que ja se sabe pelo cadastro (meio de cada documento e contato para cobranca).
+        self.cadastro_info = QLabel()
+        self.cadastro_info.setObjectName("CadastroInfo")
+        self.cadastro_info.setWordWrap(True)
+        self.cadastro_info.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.cadastro_info)
+
         form = QFormLayout()
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -510,8 +517,8 @@ class FichaEmpresaPage(QWidget):
             details.append(f'CNPJ {empresa["cnpj"]}')
         contato = " ".join(filter(None, [empresa.get("nome_contato"), empresa.get("email_contato")]))
         details.append(f"Contato: {contato}" if contato else "Sem contato cadastrado")
-        canais = empresa.get("canais_recebimento")
-        details.append(f"Envia por: {canais}" if canais else "Canais de envio não informados")
+        canais = self.ficha["recebimento"]["canais"]
+        details.append(f'Envia por: {", ".join(canais)}' if canais else "Canais de envio não informados")
         self.identity_details.setText("  |  ".join(details))
 
         totais = self.ficha["totais"]
@@ -573,16 +580,52 @@ class FichaEmpresaPage(QWidget):
             if widget is not None:
                 widget.deleteLater()
         self.canal_checks = {}
-        selecionados = parse_delivery_methods(empresa.get("canais_recebimento"))
+        recebimento = self.ficha["recebimento"]
+        selecionados = recebimento["canais"]
+        dos_documentos = recebimento["canais_dos_documentos"]
         disponiveis = [m["nome_meio"] for m in self.services.delivery_method_service.list_methods()]
         for canal in disponiveis + [c for c in selecionados if c not in disponiveis]:
             check = QCheckBox(canal)
             check.setChecked(canal in selecionados)
+            if canal in dos_documentos:
+                check.setToolTip(f'Os documentos chegam por aqui no cadastro: {", ".join(dos_documentos[canal])}')
             self.canal_checks[canal] = check
             self.canais_row.addWidget(check)
         self.canais_row.addStretch(1)
-        self.emails_edit.setText(empresa.get("emails_origem_documentos") or "")
+        self.cadastro_info.setText(self._cadastro_info_html(empresa, dos_documentos))
+        # Sem email de origem informado, o email do contato e o ponto de partida.
+        self.emails_edit.setText(empresa.get("emails_origem_documentos") or empresa.get("email_contato") or "")
         self.instrucoes_edit.setPlainText(empresa.get("instrucoes_busca") or "")
+
+    @staticmethod
+    def _cadastro_info_html(empresa: dict, dos_documentos: dict[str, list[str]]) -> str:
+        t = tokens()
+        linhas = []
+        if dos_documentos:
+            for canal, nomes in dos_documentos.items():
+                contagem: dict[str, int] = {}
+                for nome in nomes:
+                    contagem[nome] = contagem.get(nome, 0) + 1
+                itens = [escape(n) + (f" ({q})" if q > 1 else "") for n, q in contagem.items()]
+                lista = ", ".join(itens[:6]) + (f" e mais {len(itens) - 6}" if len(itens) > 6 else "")
+                linhas.append(f"<b>{escape(canal)}</b>: {lista}")
+        else:
+            linhas.append(f'<span style="color:{t["muted"]};">Nenhum documento com meio de recebimento marcado.</span>')
+        contato = []
+        if empresa.get("email_contato"):
+            contato.append(f'email {escape(empresa["email_contato"])}')
+        if empresa.get("whatsapp") or empresa.get("whatsapp_grupo"):
+            onde = "grupo do WhatsApp" if empresa.get("whatsapp_grupo") else f'WhatsApp {escape(empresa["whatsapp"])}'
+            liberado = "liberado nos envios" if empresa.get("whatsapp_envios") else "não usado nos envios"
+            contato.append(f"{onde} ({liberado})")
+        contato_txt = ", ".join(contato) if contato else f'<span style="color:{t["muted"]};">sem contato cadastrado</span>'
+        return (
+            '<div style="font-weight:600;">Já vem do cadastro</div>'
+            f'<div style="margin-top:4px;">Meio de cada documento: {"; ".join(linhas)}</div>'
+            f"<div style='margin-top:4px;'>Contato para cobrança: {contato_txt}</div>"
+            f'<div style="color:{t["muted"]}; margin-top:4px;">Os canais dos documentos já vêm marcados abaixo; '
+            "complete com o que faltar e salve.</div>"
+        )
 
     def _render_historico(self) -> None:
         rows = []
@@ -686,8 +729,8 @@ class FichaEmpresaPage(QWidget):
             0,
         )
         if registro["competencias"]:
-            self.registro_table.selectRow(com_historia)
-            self.registro_table.scrollToItem(self.registro_table.item(com_historia, 0))
+            # A grade pode estar ordenada por outra coluna: procura a linha pela competencia.
+            self._reabrir_documento(None, registro["competencias"][com_historia]["competencia"])
 
     @staticmethod
     def _cobrado_texto(competencia: dict) -> str:

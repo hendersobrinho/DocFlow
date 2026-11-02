@@ -86,6 +86,18 @@ class CobrancaServiceTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.cobranca.registrar_cobranca(outra_id, "Email", [(self.doc_itau, self.periodos[1]["id"])])
 
+    def test_ficha_joins_company_channels_with_each_document_channel(self) -> None:
+        recebimento = self.cobranca.ficha_empresa(self.empresa_id)["recebimento"]
+        # Nada marcado na empresa: os canais vem dos documentos do cadastro.
+        self.assertEqual(sorted(recebimento["canais"]), ["Email", "Onvio"])
+        self.assertEqual(recebimento["canais_dos_documentos"], {"Email": ["Itau CC"], "Onvio": ["BB CC"]})
+        self.assertEqual(recebimento["email_contato"], "fin@pao.com")
+
+        self.services.empresa_service.set_recebimento(self.empresa_id, ["WhatsApp", "Email"], None, None)
+        recebimento = self.cobranca.ficha_empresa(self.empresa_id)["recebimento"]
+        self.assertEqual(recebimento["canais"][:2], ["WhatsApp", "Email"])  # os da empresa primeiro
+        self.assertIn("Onvio", recebimento["canais"])
+
     def test_company_reception_settings_are_normalized(self) -> None:
         self.services.empresa_service.set_recebimento(
             self.empresa_id,
