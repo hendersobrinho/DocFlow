@@ -96,11 +96,40 @@ jobs:
           if (-not (Test-Path "$pasta\ISCC.exe")) { choco install innosetup -y --no-progress }
           $pasta >> $env:GITHUB_PATH
 
-      - name: Empacotar (PyInstaller + instalador)
-        shell: cmd
-        env:
-          RUN_TESTS: "0"
-        run: scripts\build_release.bat
+      # As etapas do scripts\build_release.bat, separadas: quando uma falha, o fim do log dela
+      # vira uma anotacao (::error::), que aparece no resumo da execucao.
+      - name: Icones
+        run: python scripts/generate_icons.py
+
+      - name: PyInstaller
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean documentos_empresa_app.spec *> pyinstaller.log
+          $ok = $LASTEXITCODE -eq 0 -and (Test-Path dist\DocFLow\DocFLow.exe) -and (Test-Path dist\DocFLow\DocFLow-MCP.exe)
+          Get-Content pyinstaller.log -Tail 15
+          if (-not $ok) {
+            $fim = (Get-Content pyinstaller.log -Tail 40) -join "%0A"
+            Write-Output "::error title=PyInstaller falhou::$fim"
+            exit 1
+          }
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist_release | Out-Null
+          Compress-Archive -Path dist\DocFLow\* -DestinationPath "dist_release\DocFLow-win64-v${{ steps.versao.outputs.versao }}.zip" -Force
+
+      - name: Instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          iscc assets\installer\DocFLow.iss *> iscc.log
+          $codigo = $LASTEXITCODE
+          Get-Content iscc.log -Tail 15
+          if ($codigo -ne 0) {
+            $fim = (Get-Content iscc.log -Tail 40) -join "%0A"
+            Write-Output "::error title=Inno Setup falhou::$fim"
+            exit 1
+          }
 
       - name: Checksums
         id: arquivos
