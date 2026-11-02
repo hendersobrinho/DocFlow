@@ -89,6 +89,29 @@ def save_config(config: dict) -> None:
     _harden_config_file_permissions(CONFIG_FILE)
 
 
+UI_STATE_KEY = "estado_telas"
+
+
+def load_ui_state(key: str, default=None):
+    """Preferencia de tela guardada neste computador (ordenacao de uma grade, filtros...)."""
+    estado = load_config().get(UI_STATE_KEY)
+    if not isinstance(estado, dict):
+        return default
+    return estado.get(key, default)
+
+
+def save_ui_state(key: str, value) -> None:
+    config = load_config()
+    estado = config.get(UI_STATE_KEY)
+    if not isinstance(estado, dict):
+        estado = {}
+    if estado.get(key) == value:
+        return
+    estado[key] = value
+    config[UI_STATE_KEY] = estado
+    save_config(config)
+
+
 # Chaves que versoes anteriores gravavam para recursos que foram removidos: o agente de IA
 # (provedor, API keys, modelo, limiar de confianca, prompt customizado) e o agente
 # organizador de documentos (pasta de entrada, caixa de email IMAP com a senha e o registro
@@ -306,7 +329,7 @@ def open_email_draft(to_address: str, subject: str, body: str) -> str:
     raise ValidationError("Nao foi possivel localizar um cliente de email compativel neste computador.")
 
 
-def open_bcc_email_draft(bcc_addresses: list[str], subject: str, body: str) -> str:
+def open_bcc_email_draft(bcc_addresses: list[str], subject: str, body: str, to: str | None = None) -> str:
     """Abre um rascunho no cliente de email padrao com todos os enderecos em BCC -
     nenhum destinatario ve o email dos outros, e o envio em si fica por conta do
     usuario dentro do proprio cliente de email (nada e enviado por aqui)."""
@@ -316,7 +339,8 @@ def open_bcc_email_draft(bcc_addresses: list[str], subject: str, body: str) -> s
 
     handler_name = get_default_email_handler()
     bcc_value = ",".join(addresses)
-    mailto_url = f'mailto:?bcc={quote(bcc_value)}&subject={quote(subject)}&body={quote(body)}'
+    to_value = quote(str(to or "").strip(), safe="@,")
+    mailto_url = f'mailto:{to_value}?bcc={quote(bcc_value)}&subject={quote(subject)}&body={quote(body)}'
 
     try:
         if sys.platform.startswith("win") and hasattr(os, "startfile"):
@@ -328,7 +352,7 @@ def open_bcc_email_draft(bcc_addresses: list[str], subject: str, body: str) -> s
             return handler_name
 
         linux_attempts = [
-            ["xdg-email", "--utf8", "--bcc", bcc_value, "--subject", subject, "--body", body],
+            ["xdg-email", "--utf8", "--bcc", bcc_value, "--subject", subject, "--body", body, *([to] if to else [])],
             ["gio", "open", mailto_url],
             ["xdg-open", mailto_url],
         ]
