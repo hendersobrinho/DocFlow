@@ -46,6 +46,11 @@ class ReleaseFileTests(unittest.TestCase):
         self.assertIn('#define AppName "DocFLow"', installer_text)
         self.assertIn('#define AppExeName "DocFLow.exe"', installer_text)
 
+    def test_installer_does_not_require_admin(self) -> None:
+        installer_text = INSTALLER_PATH.read_text(encoding="utf-8")
+        self.assertIn("PrivilegesRequired=lowest", installer_text)
+        self.assertIn("DefaultDirName={autopf}", installer_text)
+
     def test_simple_svg_fallback_renders_master_icon(self) -> None:
         image = GENERATE_ICONS_MODULE.render_simple_svg(GENERATE_ICONS_MODULE.MASTER_ICON_PATH)
 

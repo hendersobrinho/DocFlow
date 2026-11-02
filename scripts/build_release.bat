@@ -26,11 +26,18 @@ exit /b 1
 :main
 set "BUILD_PYTHON="
 set "ICON_PYTHON="
-if exist ".venv\Scripts\python.exe" (
-    call :python_has_modules ".venv\Scripts\python.exe" "openpyxl,PyInstaller"
-    if not errorlevel 1 set "BUILD_PYTHON=.venv\Scripts\python.exe"
-    call :python_has_modules ".venv\Scripts\python.exe" "PIL"
-    if not errorlevel 1 set "ICON_PYTHON=.venv\Scripts\python.exe"
+rem .venv-win: ambiente do Windows quando a pasta .venv veio de outro sistema.
+for %%V in (.venv-win .venv) do (
+    if exist "%%V\Scripts\python.exe" (
+        if not defined BUILD_PYTHON (
+            call :python_has_modules "%%V\Scripts\python.exe" "openpyxl,PyInstaller"
+            if not errorlevel 1 set "BUILD_PYTHON=%%V\Scripts\python.exe"
+        )
+        if not defined ICON_PYTHON (
+            call :python_has_modules "%%V\Scripts\python.exe" "PIL"
+            if not errorlevel 1 set "ICON_PYTHON=%%V\Scripts\python.exe"
+        )
+    )
 )
 if not defined BUILD_PYTHON (
     call :resolve_python_for_modules BUILD_PYTHON "openpyxl,PyInstaller"

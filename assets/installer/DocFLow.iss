@@ -8,6 +8,10 @@ AppId={{9B741DAB-4A2E-438B-85E7-58C63D4A3527}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
+; Instala por usuario, sem pedir administrador: {autopf} vira %LOCALAPPDATA%\Programs e os
+; atalhos vao para o menu Iniciar do usuario. Os dados ja ficam em %APPDATA%\DocFLow.
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
