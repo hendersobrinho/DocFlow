@@ -8,7 +8,8 @@ os mesmos da interface.
 
 Configuracao (variaveis de ambiente):
 - DOCFLOW_MCP_USUARIO / DOCFLOW_MCP_SENHA: usuario do DocFlow em nome de quem o servidor
-  age (obrigatorio). Tudo que for alterado fica registrado nos logs com esse usuario.
+  age. Tudo que for alterado fica registrado nos logs com esse usuario. Sem elas, usa o
+  usuario salvo pelo app desktop em Configuracoes > Claude (MCP), com a senha protegida.
 - DOCFLOW_DATABASE_URL: conexao com o PostgreSQL. Sem ela, usa a conexao salva pelo app
   desktop no perfil do usuario do sistema operacional.
 """
@@ -38,6 +39,7 @@ from documentos_empresa_app.utils.common import (
     parse_period_label,
 )
 from documentos_empresa_app.utils.database_settings import resolve_database_conninfo
+from documentos_empresa_app.utils.mcp_setup import load_mcp_credentials
 
 USER_ENV_VAR = "DOCFLOW_MCP_USUARIO"
 PASSWORD_ENV_VAR = "DOCFLOW_MCP_SENHA"
@@ -146,10 +148,13 @@ def get_services() -> ApplicationServices:
         username = os.environ.get(USER_ENV_VAR, "").strip()
         password = os.environ.get(PASSWORD_ENV_VAR, "")
         if not username or not password:
-            raise ToolError(
-                f"Defina {USER_ENV_VAR} e {PASSWORD_ENV_VAR} na configuracao do servidor MCP com um "
-                "usuario do DocFlow."
-            )
+            salvo = load_mcp_credentials()
+            if salvo is None:
+                raise ToolError(
+                    "O Claude ainda nao tem um usuario do DocFlow. Abra o DocFlow, va em Configuracoes > "
+                    "Claude (MCP), informe o usuario e a senha e clique em Conectar ao Claude Desktop."
+                )
+            username, password = salvo
         conninfo = resolve_database_conninfo()
         if not conninfo:
             raise ToolError(

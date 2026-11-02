@@ -41,6 +41,41 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# DocFLow-MCP.exe: o servidor MCP para o Claude Desktop, na mesma pasta do DocFLow.exe
+# (console, porque conversa com o Claude por stdin/stdout).
+mcp_a = Analysis(
+    [str(ROOT_DIR / "docflow_mcp" / "__main__.py")],
+    pathex=[str(ROOT_DIR)],
+    binaries=[],
+    datas=[],
+    hiddenimports=["psycopg_binary", "docflow_mcp.server"],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+mcp_pyz = PYZ(mcp_a.pure)
+mcp_exe = EXE(
+    mcp_pyz,
+    mcp_a.scripts,
+    [],
+    exclude_binaries=True,
+    name=f"{APP_NAME}-MCP",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=str(icon_file) if icon_file else None,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -65,6 +100,10 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
+    mcp_exe,
+    mcp_a.binaries,
+    mcp_a.zipfiles,
+    mcp_a.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from documentos_empresa_app.qt_ui.widgets.common import PageHeader, make_button
+from documentos_empresa_app.qt_ui.widgets.mcp_panel import McpPanel
 from documentos_empresa_app.utils.common import ValidationError
 
 SECTION_TITLE_STYLE = "font-weight: 600; font-size: 10.5pt;"
@@ -34,8 +35,8 @@ class ConfiguracoesPage(QWidget):
         layout.addWidget(
             PageHeader(
                 "Configurações",
-                "Regras que valem para o escritório inteiro: prazos de cobrança e o que fazer depois de "
-                "cobrar. A mala direta fica em Envios automáticos.",
+                "Regras que valem para o escritório inteiro: prazos de cobrança, o que fazer depois de "
+                "cobrar e a conexão com o Claude. A mala direta fica em Envios automáticos.",
             )
         )
 
@@ -44,10 +45,13 @@ class ConfiguracoesPage(QWidget):
 
         self.tabs.addTab(self._build_collection_rule_tab(), "Prazos de cobrança")
         self.tabs.addTab(self._build_followup_tab(), "Depois de cobrar")
+        self.mcp_panel = McpPanel(services)
+        self.tabs.addTab(self._wrap_in_scroll_area(self.mcp_panel), "Claude (MCP)")
 
     def refresh_data(self) -> None:
         self._load_collection_rule()
         self._load_followup_rules()
+        self.mcp_panel.refresh()
 
     # Utilitarios de layout ------------------------------------------------
 

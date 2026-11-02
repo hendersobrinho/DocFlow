@@ -489,6 +489,23 @@ HELP_TOPICS: list[HelpTopic] = [
         <h3>Mala direta</h3>
         <p>Agora fica em <a href="topic:envios">Envios automáticos</a>, com as mesmas regras
         de competência, email e WhatsApp das cobranças.</p>
+
+        <h3>Claude (MCP)</h3>
+        <p>Liga o DocFlow ao Claude Desktop. Informe o usuário do DocFlow que o Claude vai
+        usar e a senha (fica guardada protegida neste computador) e clique em
+        <b>Conectar ao Claude Desktop</b>.</p>
+        <ul>
+        <li>A tela mostra <b>onde o Claude lê a configuração</b> neste computador. O Claude da
+        Microsoft Store e o do site usam arquivos diferentes; o Conectar grava nos dois e
+        guarda uma cópia do arquivo anterior.</li>
+        <li>Se aparecer <b>Aponta para outro lugar</b>, a configuração é de uma pasta antiga ou
+        de outra instalação (comum em computador reaproveitado): clique em Conectar para
+        corrigir.</li>
+        <li>Depois de conectar, feche o Claude de vez (ícone perto do relógio &gt; Sair) e
+        abra de novo.</li>
+        <li><b>Copiar configuração</b> serve para colar à mão no Claude, em Configurações &gt;
+        Desenvolvedor &gt; Editar configuração.</li>
+        </ul>
         """,
     ),
     HelpTopic(
