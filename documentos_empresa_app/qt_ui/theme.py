@@ -481,20 +481,45 @@ QToolTip {{
     padding: 6px;
     border-radius: 6px;
 }}
-QTabWidget::pane {{
+QLabel#CadastroInfo {{
+    background: {t["surface_alt"]};
     border: 1px solid {t["border"]};
     border-radius: 8px;
+    padding: 10px 12px;
+}}
+QTabWidget::pane {{
+    border: none;
+    border-top: 1px solid {t["border_strong"]};
+    top: -1px;
+}}
+QTabBar {{
+    qproperty-drawBase: 0;
 }}
 QTabBar::tab {{
     background: {t["surface_alt"]};
-    color: {t["muted"]};
-    padding: 8px 18px;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
+    color: {t["text"]};
+    padding: 7px 16px 6px 16px;
+    margin-right: 4px;
+    border: 1px solid {t["border"]};
+    border-bottom: 3px solid {t["border_strong"]};
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    font-weight: 500;
+}}
+QTabBar::tab:hover:!selected {{
+    background: {t["surface"]};
+    border-color: {t["border_strong"]};
+    border-bottom: 3px solid {t["accent_hover"]};
 }}
 QTabBar::tab:selected {{
-    background: {t["surface"]};
-    color: {t["text"]};
+    background: {t["accent_soft"]};
+    color: {t["accent"]};
+    border-color: {t["accent"]};
+    border-bottom: 3px solid {t["accent"]};
+    font-weight: 700;
+}}
+QTabBar::tab:disabled {{
+    color: {t["muted"]};
 }}
 QStatusBar {{
     background: {t["surface"]};
