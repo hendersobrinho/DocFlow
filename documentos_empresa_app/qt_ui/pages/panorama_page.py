@@ -4,8 +4,8 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -51,13 +51,17 @@ from documentos_empresa_app.qt_ui.widgets.visual import (
     status_icon,
 )
 from documentos_empresa_app.services.cobranca_service import SITUACAO_LABELS
+from documentos_empresa_app.services.whatsapp_service import build_link
 from documentos_empresa_app.qt_ui.report_printing import print_html, save_html_as_pdf
 from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner
 from documentos_empresa_app.utils.common import ValidationError, format_utc_timestamp
+from documentos_empresa_app.qt_ui.widgets.tables import natural_key, remember_sort
 from documentos_empresa_app.utils.helpers import (
     get_documents_directory,
+    load_ui_state,
     open_email_draft,
     open_file_in_default_app,
+    save_ui_state,
 )
 
 COLUMN_KEYS = ("codigo", "empresa", "situacao", "progresso", "historico", "ultima_marcacao")
@@ -88,16 +92,17 @@ class _SortableItem(QTableWidgetItem):
         theirs = other.data(SORT_ROLE)
         if mine is not None and theirs is not None:
             return mine < theirs
-        return self.text().casefold() < other.text().casefold()
+        return natural_key(self.text()) < natural_key(other.text())
 
 
-# Botoes de marcacao do mapa: (texto, status gravado, atalho, dica).
+# Botoes de marcacao do mapa: (texto, status gravado, teclas de atalho, dica). O e X sao as
+# letras da planilha de controle ("OK" chegou, "X" nao cobrar) - digitar "OK" marca no O.
 MARK_ACTIONS = (
-    ("Recebido", "Recebido", "R", "Chegou: marca como Recebido"),
-    ("Pendente", "Pendente", "P", "Ainda falta: marca como Pendente"),
-    ("Encerrado", "Encerrado", "E", "Para de cobrar este documento a partir deste mês"),
-    ("Não cobrar", "Nao cobrar", "N", "Não cobrar neste mês"),
-    ("Limpar", "", "Del", "Tira a marcação"),
+    ("Recebido", "Recebido", ("O", "R"), "Chegou: marca como Recebido"),
+    ("Pendente", "Pendente", ("P",), "Ainda falta: marca como Pendente"),
+    ("Encerrado", "Encerrado", ("E",), "Para de cobrar este documento a partir deste mês"),
+    ("Não cobrar", "Nao cobrar", ("X", "N"), "Não cobrar neste mês"),
+    ("Limpar", "", ("Del",), "Tira a marcação"),
 )
 
 
@@ -306,7 +311,10 @@ class PanoramaPage(QWidget):
         self.viewmodel = PanoramaViewModel(services)
         self.periods: list[dict] = []
         self.filtered_rows: list[dict] = []
-        self.column_filters: dict[str, str] = {key: "" for key in COLUMN_KEYS}
+        salvos = load_ui_state("panorama:filtros", {})
+        self.column_filters: dict[str, str] = {
+            key: str(salvos.get(key) or "") if isinstance(salvos, dict) else "" for key in COLUMN_KEYS
+        }
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -331,8 +339,8 @@ class PanoramaPage(QWidget):
         self.search_edit.textChanged.connect(lambda _t: self._apply_filters())
         toolbar.add(self.search_edit)
         self.active_only_check = QCheckBox("Somente ativas")
-        self.active_only_check.setChecked(True)
-        self.active_only_check.toggled.connect(lambda _c: self.reload())
+        self.active_only_check.setChecked(bool(load_ui_state("panorama:somente_ativas", True)))
+        self.active_only_check.toggled.connect(lambda c: (save_ui_state("panorama:somente_ativas", bool(c)), self.reload()))
         toolbar.add(self.active_only_check)
         clear_button = make_button("Limpar filtros", "quiet")
         clear_button.clicked.connect(self.clear_filters)
@@ -345,7 +353,7 @@ class PanoramaPage(QWidget):
         tools_menu.addAction("Excluir os meses de um ano...", self.delete_year_periods)
         tools_menu.addSeparator()
         tools_menu.addAction("Preparar email de cobrança", self.prepare_email)
-        tools_menu.addAction("Copiar mensagem de WhatsApp", self.copy_whatsapp)
+        tools_menu.addAction("Mensagem de WhatsApp (abre a conversa, se tiver o número)", self.copy_whatsapp)
         tools_button.setMenu(tools_menu)
         toolbar.add(tools_button)
         toolbar.add_stretch()
@@ -372,7 +380,9 @@ class PanoramaPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setWordWrap(False)
-        self.table.setSortingEnabled(True)
+        # Abre na ordem que a pessoa deixou (padrao: codigo crescente) - antes o Qt abria
+        # do maior para o menor.
+        remember_sort(self.table, "panorama")
         header = self.table.horizontalHeader()
         header.setSectionsClickable(True)
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -418,16 +428,21 @@ class PanoramaPage(QWidget):
         self.selection_label.setObjectName("Muted")
         marcar.addWidget(self.selection_label, 1)
         self.mark_buttons: list = []
-        for texto, status, atalho, dica in MARK_ACTIONS:
+        for texto, status, atalhos, dica in MARK_ACTIONS:
             button = make_button(texto)
             button.setIcon(status_icon(status))
-            button.setToolTip(f"{dica} (atalho: {atalho})")
+            button.setToolTip(f"{dica} (atalho: {' ou '.join(atalhos)})")
             button.clicked.connect(lambda _c=False, st=status: self.mark_selection(st))
             marcar.addWidget(button)
             self.mark_buttons.append((button, status))
-            shortcut = QShortcut(QKeySequence(atalho if atalho != "Del" else "Delete"), detail_card)
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(lambda st=status: self.mark_selection(st))
+            for atalho in atalhos:
+                shortcut = QShortcut(QKeySequence(atalho if atalho != "Del" else "Delete"), detail_card)
+                shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                shortcut.activated.connect(lambda st=status: self.mark_selection(st))
+        self._undo: list[dict] = []  # ultimas marcacoes no mapa, para o Ctrl+Z
+        desfazer = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), detail_card)
+        desfazer.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        desfazer.activated.connect(self.undo_last)
         self.resolver_button = make_button("Resolver...", "primary")
         self.resolver_button.setToolTip(
             "Registrar o que aconteceu com observação: chegou errado, cliente prometeu, precisa de uma pessoa..."
@@ -444,6 +459,8 @@ class PanoramaPage(QWidget):
         self.year_map = YearMap(multi_select=True)
         self.year_map.selection_changed.connect(self._on_map_selection_changed)
         self.year_map.context_menu_requested.connect(self._open_mark_menu)
+        self.year_map.fill_requested.connect(self.fill_cells)
+        self.year_map.paste_requested.connect(self.paste_cells)
         mapa_layout.addWidget(map_scroll_area(self.year_map), 1)
         detail_split.addWidget(mapa_box)
         self.detail_browser = DocLinkBrowser()
@@ -496,6 +513,7 @@ class PanoramaPage(QWidget):
     def clear_filters(self) -> None:
         self.search_edit.clear()
         self.column_filters = {key: "" for key in COLUMN_KEYS}
+        save_ui_state("panorama:filtros", self.column_filters)
         self._apply_filters()
 
     def _row_display_values(self, row: dict) -> dict[str, str]:
@@ -543,6 +561,7 @@ class PanoramaPage(QWidget):
 
         def set_filter(value: str) -> None:
             self.column_filters[key] = value
+            save_ui_state("panorama:filtros", self.column_filters)  # o filtro fica para a proxima vez
             self._apply_filters()
 
         action_all = menu.addAction("Todos")
@@ -784,14 +803,119 @@ class PanoramaPage(QWidget):
         elif status == "" and len(celulas) > 1:
             if QMessageBox.question(self, "Panorama", f"Limpar o status de {len(celulas)} quadradinhos?") != QMessageBox.StandardButton.Yes:
                 return
+        pares = [(c["documento_id"], c["periodo_id"]) for c in celulas]
+        antes = self._snapshot([(d, p, status) for d, p in pares])
         try:
-            self.services.status_service.update_status_many(
-                [(c["documento_id"], c["periodo_id"]) for c in celulas], status
-            )
+            self.services.status_service.update_status_many(pares, status)
         except ValidationError as exc:
             QMessageBox.critical(self, "Panorama", str(exc))
             return
-        self.selection_label.setText(f"{rotulo}: {len(celulas)} marcado(s).")
+        self._push_undo(f"{rotulo} em {len(celulas)} quadradinho(s)", antes)
+        self.selection_label.setText(f"{rotulo}: {len(celulas)} marcado(s). Ctrl+Z desfaz.")
+        self.on_data_changed()
+
+    def fill_cells(self, status: str, celulas: list) -> None:
+        """Alca de preencher do mapa: copia o status do quadradinho para os do caminho."""
+        if not celulas or not self._company_is_active():
+            return
+        antes = self._snapshot([(d, p, status) for d, p in celulas])
+        try:
+            self.services.status_service.update_status_many(celulas, status)
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Panorama", str(exc))
+            return
+        rotulo = {"Nao cobrar": "Não cobrar"}.get(status, status)
+        self._push_undo(f"preencher {len(celulas)} quadradinho(s)", antes)
+        self.selection_label.setText(f"{rotulo}: {len(celulas)} preenchido(s) arrastando. Ctrl+Z desfaz.")
+        self.on_data_changed()
+
+    def paste_cells(self, texto: str) -> None:
+        """Ctrl+V no mapa: cola os status copiados (do proprio mapa ou de uma planilha)."""
+        if not self._company_is_active():
+            return
+        try:
+            plano = self.year_map.paste_plan(texto)
+        except ValidationError as exc:
+            QMessageBox.warning(self, "Colar", str(exc))
+            return
+        if not plano:
+            QMessageBox.information(self, "Colar", "Nenhum quadradinho daqui recebe o que foi copiado.")
+            return
+        encerrar = sum(1 for _d, _p, status in plano if status == "Encerrado")
+        if encerrar and QMessageBox.question(
+            self,
+            "Colar",
+            f"Isso marca {encerrar} quadradinho(s) como Encerrado: o documento deixa de ser cobrado a partir "
+            "daquele mês. Continuar?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        antes = self._snapshot(plano)
+        por_status: dict[str, list] = {}
+        for documento_id, periodo_id, status in plano:
+            por_status.setdefault(status, []).append((documento_id, periodo_id))
+        try:
+            # Encerrado por ultimo: ele bloqueia os meses seguintes do documento.
+            for status in sorted(por_status, key=lambda s: s == "Encerrado"):
+                self.services.status_service.update_status_many(por_status[status], status)
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Colar", str(exc))
+            self._push_undo("colar (incompleto)", antes)
+            self.on_data_changed()
+            return
+        self._push_undo(f"colar em {len(plano)} quadradinho(s)", antes)
+        self.year_map.selection = {(d, p) for d, p, _s in plano}
+        self.selection_label.setText(f"Colado em {len(plano)} quadradinho(s). Ctrl+Z desfaz.")
+        self.on_data_changed()
+
+    # Desfazer (Ctrl+Z)
+
+    UNDO_LIMIT = 20
+
+    def _snapshot(self, plano: list) -> list[tuple[int, int, str]]:
+        """Status de antes, do que o plano [(documento_id, periodo_id, novo_status)] vai mexer.
+        Encerrado apaga os meses seguintes do documento, entao eles entram tambem."""
+        alvos = {(int(d), int(p)) for d, p, _s in plano}
+        encerra = {int(d): int(p) for d, p, s in plano if s == "Encerrado"}
+        antes = []
+        for doc in self.year_map.documentos:
+            depois_de = None
+            for celula in doc["celulas"]:
+                chave = (doc["documento_id"], celula["periodo_id"])
+                if depois_de is None and encerra.get(doc["documento_id"]) == celula["periodo_id"]:
+                    depois_de = True
+                    antes.append((*chave, celula["status"] or ""))
+                    continue
+                if chave in alvos or (depois_de and celula["disponivel"] and celula["status"]):
+                    antes.append((*chave, celula["status"] or ""))
+        return antes
+
+    def _push_undo(self, rotulo: str, antes: list) -> None:
+        if not antes:
+            return
+        self._undo.append({"rotulo": rotulo, "celulas": antes})
+        del self._undo[: -self.UNDO_LIMIT]
+
+    def undo_last(self) -> None:
+        """Volta os quadradinhos da ultima marcacao feita no mapa para como estavam."""
+        if not self._undo:
+            self.selection_label.setText("Nada para desfazer.")
+            return
+        acao = self._undo.pop()
+        ordem = {p["id"]: (p["ano"], p["mes"]) for p in self.periods}
+        grupos: dict[tuple[int, str], list] = {}
+        for documento_id, periodo_id, status in acao["celulas"]:
+            grupos.setdefault((periodo_id, status), []).append((documento_id, periodo_id))
+        try:
+            # Mes a mes, do mais antigo: tirar um Encerrado libera os meses seguintes antes de
+            # eles receberem o status antigo de volta.
+            for periodo_id, status in sorted(grupos, key=lambda g: (ordem.get(g[0], (0, 0)), g[1] == "Encerrado")):
+                self.services.status_service.update_status_many(grupos[(periodo_id, status)], status)
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Desfazer", str(exc))
+            self.on_data_changed()
+            return
+        self.year_map.selection = {(d, p) for d, p, _s in acao["celulas"]}
+        self.selection_label.setText(f'Desfeito: {acao["rotulo"]}.')
         self.on_data_changed()
 
     def resolve_selection(self) -> None:
@@ -826,8 +950,13 @@ class PanoramaPage(QWidget):
 
     def _open_mark_menu(self, global_pos) -> None:
         menu = QMenu(self)
-        for texto, status, atalho, _dica in MARK_ACTIONS:
-            menu.addAction(status_icon(status), f"{texto}\t{atalho}", lambda st=status: self.mark_selection(st))
+        for texto, status, atalhos, _dica in MARK_ACTIONS:
+            menu.addAction(status_icon(status), f"{texto}\t{atalhos[0]}", lambda st=status: self.mark_selection(st))
+        menu.addSeparator()
+        menu.addAction("Copiar\tCtrl+C", self.year_map.copy_selection)
+        menu.addAction("Colar\tCtrl+V", lambda: self.paste_cells(QGuiApplication.clipboard().text()))
+        if self._undo:
+            menu.addAction(f'Desfazer {self._undo[-1]["rotulo"]}\tCtrl+Z', self.undo_last)
         menu.addSeparator()
         menu.addAction("Resolver (com observação)...", self.resolve_selection)
         celulas = self.year_map.selected_cells()
@@ -927,4 +1056,13 @@ class PanoramaPage(QWidget):
             return
         message = self.services.collection_service.build_whatsapp_message(queue_item)
         QGuiApplication.clipboard().setText(message)
-        QMessageBox.information(self, "Panorama", "Mensagem copiada para a area de transferencia.")
+        numero = self.services.empresa_service.get_empresa(queue_item["empresa_id"]).get("whatsapp")
+        if numero:
+            QDesktopServices.openUrl(QUrl.fromEncoded(build_link(numero, message).encode("ascii")))
+            return
+        QMessageBox.information(
+            self,
+            "Panorama",
+            "Mensagem copiada para a area de transferencia. Cadastre o WhatsApp da empresa (tela Empresas) "
+            "para a conversa abrir pronta.",
+        )

@@ -14,7 +14,18 @@ from functools import lru_cache
 from typing import Callable
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -30,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from documentos_empresa_app.qt_ui.theme import status_colors, tokens
-from documentos_empresa_app.utils.common import format_utc_timestamp
+from documentos_empresa_app.utils.common import ValidationError, format_utc_timestamp
 
 PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 7
 
@@ -324,18 +335,34 @@ class YearMap(QWidget):
     documento seleciona a linha. Celulas que nao se aplicam (fora da regra do documento ou
     depois de Encerrado) nao entram na selecao.
 
+    Alca de preencher (como no Excel): com um quadradinho marcado selecionado, aparece uma
+    alca no canto; arrastar para o lado (meses) ou para cima/baixo (documentos do mesmo mes)
+    copia o status para os quadradinhos do caminho.
+
     Sinais: cell_clicked(documento_id, periodo_id, competencia) num clique simples;
-    selection_changed(); context_menu_requested(posicao global) no botao direito."""
+    selection_changed(); context_menu_requested(posicao global) no botao direito;
+    fill_requested(status, [(documento_id, periodo_id), ...]) ao soltar a alca;
+    paste_requested(texto da area de transferencia) no Ctrl+V.
+
+    Copiar e colar (como numa planilha): Ctrl+C copia os status selecionados para a area de
+    transferencia (texto separado por tab, cola no Excel tambem); Ctrl+V cola a partir do
+    quadradinho selecionado mais acima e a esquerda, no mesmo formato. Um status so copiado
+    e colado em varios selecionados preenche todos."""
 
     cell_clicked = Signal(int, int, str)
     selection_changed = Signal()
     context_menu_requested = Signal(QPoint)
+    fill_requested = Signal(str, list)
+    paste_requested = Signal(str)
 
     LABEL_WIDTH = 220
     HEADER_HEIGHT = 30
     GROUP_HEIGHT = 24
     CELL_H = 30
     GAP = 4
+    HANDLE = 7
+    # Encerrado bloqueia os meses seguintes: nao faz sentido espalhar.
+    FILL_STATUSES = ("Recebido", "Pendente", "Nao cobrar")
 
     def __init__(self, parent: QWidget | None = None, multi_select: bool = False) -> None:
         super().__init__(parent)
@@ -348,6 +375,9 @@ class YearMap(QWidget):
         self.selection: set[tuple[int, int]] = set()
         self._anchor: tuple[int, int] | None = None  # (indice da linha de documento, coluna)
         self._hover: tuple[int, int] | None = None
+        self._fill_target: tuple[int, int] | None = None  # celula ate onde a alca foi arrastada
+        self._filling = False
+        self._copied: set[tuple[int, int]] = set()  # (documento_id, periodo_id) do ultimo Ctrl+C
         self._rows: list[tuple[str, object]] = []  # ("grupo", tipo) | ("doc", indice)
         self._row_top: list[float] = []
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -362,6 +392,7 @@ class YearMap(QWidget):
             (doc["documento_id"], c["periodo_id"]) for doc in self.documentos for c in doc["celulas"] if c["disponivel"]
         }
         self.selection = (self.selection & validas) if keep_selection else set()
+        self._copied &= validas
         if not keep_selection:
             self._anchor = None
         self._layout_rows()
@@ -388,6 +419,15 @@ class YearMap(QWidget):
 
     def set_selected(self, documento_id: int | None, periodo_id: int | None) -> None:
         self.selection = {(documento_id, periodo_id)} if documento_id is not None else set()
+        self._anchor = next(
+            (
+                (doc_index, col)
+                for doc_index, doc in enumerate(self.documentos)
+                for col, celula in enumerate(doc["celulas"])
+                if (doc["documento_id"], celula["periodo_id"]) == (documento_id, periodo_id)
+            ),
+            None,
+        )
         self.update()
         self.selection_changed.emit()
 
@@ -500,7 +540,73 @@ class YearMap(QWidget):
 
             for col, celula in enumerate(doc["celulas"]):
                 self._paint_cell(painter, t, bold, value, col, doc, celula)
+        self._paint_fill(painter, t)
         painter.end()
+
+    # Alca de preencher ---------------------------------------------------------------
+
+    def _fill_source(self) -> tuple[int, int] | None:
+        """O quadradinho de onde a alca sai: selecao de um so, marcado com um status que pode
+        ser copiado."""
+        if not self.multi_select or len(self.selection) != 1 or self._anchor is None:
+            return None
+        doc_index, col = self._anchor
+        if not (0 <= doc_index < len(self.documentos) and 0 <= col < len(self.periodos)):
+            return None
+        celula = self._celula(doc_index, col)
+        if (self.documentos[doc_index]["documento_id"], celula["periodo_id"]) not in self.selection:
+            return None
+        if not celula["disponivel"] or celula["status"] not in self.FILL_STATUSES:
+            return None
+        return doc_index, col
+
+    def _handle_rect(self) -> QRectF | None:
+        origem = self._fill_source()
+        if origem is None:
+            return None
+        rect = self._cell_rect(*origem)
+        h = self.HANDLE
+        return QRectF(rect.right() - h / 2 - 1, rect.bottom() - h / 2 - 1, h, h)
+
+    def _on_handle(self, pos) -> bool:
+        rect = self._handle_rect()
+        return rect is not None and rect.adjusted(-4, -4, 4, 4).contains(QPointF(pos))
+
+    def _fill_cells(self) -> list[tuple[int, int]]:
+        """Quadradinhos (indice do documento, coluna) do caminho da alca, sem a origem e sem
+        os que nao se aplicam."""
+        origem = self._fill_source()
+        if origem is None or self._fill_target is None:
+            return []
+        (d0, c0), (d1, c1) = origem, self._fill_target
+        if d1 == d0:
+            caminho = [(d0, c) for c in range(min(c0, c1), max(c0, c1) + 1)]
+        elif c1 == c0:
+            caminho = [(d, c0) for d in range(min(d0, d1), max(d0, d1) + 1)]
+        else:
+            return []
+        return [(d, c) for d, c in caminho if (d, c) != origem and self._celula(d, c)["disponivel"]]
+
+    def _paint_fill(self, painter: QPainter, t: dict) -> None:
+        if self._copied:
+            # Contorno tracejado no que foi copiado, como no Excel (some com Esc).
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(t["accent"]), 1.5, Qt.PenStyle.DashLine))
+            for doc_index, doc in enumerate(self.documentos):
+                for col, celula in enumerate(doc["celulas"]):
+                    if (doc["documento_id"], celula["periodo_id"]) in self._copied:
+                        painter.drawRoundedRect(self._cell_rect(doc_index, col).adjusted(-2, -2, 2, 2), 8, 8)
+        handle = self._handle_rect()
+        if handle is None:
+            return
+        if self._filling:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(t["accent"]), 1.5, Qt.PenStyle.DashLine))
+            for doc_index, col in self._fill_cells():
+                painter.drawRoundedRect(self._cell_rect(doc_index, col).adjusted(1, 1, -1, -1), 6, 6)
+        painter.setPen(QPen(QColor(t["surface"]), 1.5))
+        painter.setBrush(QColor(t["accent"]))
+        painter.drawRect(handle)
 
     def _paint_cell(self, painter: QPainter, t: dict, bold: QFont, doc_index: int, col: int, doc: dict, celula: dict) -> None:
         rect = self._cell_rect(doc_index, col)
@@ -542,7 +648,19 @@ class YearMap(QWidget):
         return self.documentos[doc_index]["celulas"][col]
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
-        hit = self._hit(event.position().toPoint())
+        pos = event.position().toPoint()
+        if self._filling:
+            self._drag_fill(pos, event.globalPosition().toPoint())
+            return
+        if self._on_handle(pos):
+            QToolTip.showText(
+                event.globalPosition().toPoint(),
+                "<b>Arraste para preencher</b><br>Para o lado: os próximos meses. Para cima/baixo: os outros documentos.",
+                self,
+            )
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            return
+        hit = self._hit(pos)
         if hit != self._hover:
             self._hover = hit
             self.update()
@@ -587,7 +705,44 @@ class YearMap(QWidget):
         self.update()
         super().leaveEvent(event)
 
+    def _drag_fill(self, pos, global_pos) -> None:
+        hit = self._hit(pos)
+        if hit and hit[0] == "celula":
+            self._fill_target = (hit[1], hit[2])
+        self.update()
+        quantos = len(self._fill_cells())
+        origem = self._fill_source()
+        if origem and quantos:
+            status = self._celula(*origem)["status"]
+            rotulo = {"Nao cobrar": "Não cobrar"}.get(status, status)
+            QToolTip.showText(global_pos, f"Preencher <b>{quantos}</b> com <b>{rotulo}</b>", self)
+        else:
+            QToolTip.hideText()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if not self._filling:
+            super().mouseReleaseEvent(event)
+            return
+        self._filling = False
+        QToolTip.hideText()
+        origem = self._fill_source()
+        caminho = self._fill_cells()
+        self._fill_target = None
+        self.update()
+        if origem is None or not caminho:
+            return
+        status = self._celula(*origem)["status"]
+        alvos = [(self.documentos[d]["documento_id"], self._celula(d, c)["periodo_id"]) for d, c in caminho]
+        # A selecao vira o trecho preenchido, como no Excel.
+        self.selection = set(alvos) | {(self.documentos[origem[0]]["documento_id"], self._celula(*origem)["periodo_id"])}
+        self.selection_changed.emit()
+        self.fill_requested.emit(status, alvos)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.button() == Qt.MouseButton.LeftButton and self._on_handle(event.position().toPoint()):
+            self._filling = True
+            self._fill_target = self._fill_source()
+            return
         hit = self._hit(event.position().toPoint())
         if hit is None:
             return
@@ -642,16 +797,138 @@ class YearMap(QWidget):
         }
         self.selection = (self.selection | area) if add else area
 
+    ARROW_STEPS = {
+        Qt.Key.Key_Left: (0, -1),
+        Qt.Key.Key_Right: (0, 1),
+        Qt.Key.Key_Up: (-1, 0),
+        Qt.Key.Key_Down: (1, 0),
+    }
+
+    # Copiar e colar ----------------------------------------------------------------
+
+    def _selected_positions(self) -> list[tuple[int, int]]:
+        return [
+            (doc_index, col)
+            for doc_index, doc in enumerate(self.documentos)
+            for col, celula in enumerate(doc["celulas"])
+            if (doc["documento_id"], celula["periodo_id"]) in self.selection
+        ]
+
+    def copy_selection(self) -> str:
+        """Status selecionados como texto (linhas = documentos, colunas = meses, separados por
+        tab). Quadradinho sem marcacao, ou fora da selecao, vai vazio. Tambem vai para a area
+        de transferencia."""
+        posicoes = self._selected_positions()
+        if not posicoes:
+            return ""
+        docs = sorted({d for d, _c in posicoes})
+        cols = range(min(c for _d, c in posicoes), max(c for _d, c in posicoes) + 1)
+        selecionadas = set(posicoes)
+        linhas = []
+        for doc_index in docs:
+            valores = []
+            for col in cols:
+                status = self._celula(doc_index, col)["status"] if (doc_index, col) in selecionadas else ""
+                valores.append(STATUS_TEXT.get(status, ""))
+            linhas.append("\t".join(valores))
+        texto = "\n".join(linhas)
+        QGuiApplication.clipboard().setText(texto)
+        self._copied = set(self.selection)
+        self.update()
+        return texto
+
+    def paste_plan(self, texto: str) -> list[tuple[int, int, str]]:
+        """O que um Ctrl+V com este texto faria: [(documento_id, periodo_id, status)]. Vazio no
+        texto nao mexe no quadradinho; os que nao se aplicam sao pulados."""
+        posicoes = self._selected_positions()
+        if not posicoes:
+            raise ValidationError("Selecione o quadradinho onde colar.")
+        linhas = str(texto or "").replace("\r\n", "\n").replace("\r", "\n").rstrip("\n").split("\n")
+        grade = [[parse_status_text(valor) for valor in linha.split("\t")] for linha in linhas]
+        if not any(status is not None for linha in grade for status in linha):
+            raise ValidationError("Nada para colar: copie quadradinhos marcados (Ctrl+C) primeiro.")
+        alvos: list[tuple[int, int, str]] = []
+        if len(grade) == 1 and len(grade[0]) == 1:
+            # Um status so: vai para todos os selecionados.
+            for doc_index, col in posicoes:
+                celula = self._celula(doc_index, col)
+                if celula["disponivel"]:
+                    alvos.append((self.documentos[doc_index]["documento_id"], celula["periodo_id"], grade[0][0]))
+            return alvos
+        d0 = min(d for d, _c in posicoes)
+        c0 = min(c for d, c in posicoes if d == d0)
+        for i, linha in enumerate(grade):
+            for j, status in enumerate(linha):
+                doc_index, col = d0 + i, c0 + j
+                if status is None or doc_index >= len(self.documentos) or col >= len(self.periodos):
+                    continue
+                celula = self._celula(doc_index, col)
+                if celula["disponivel"]:
+                    alvos.append((self.documentos[doc_index]["documento_id"], celula["periodo_id"], status))
+        return alvos
+
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self.multi_select and event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_selection()
+            return
+        if self.multi_select and event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit(QGuiApplication.clipboard().text())
+            return
+        if event.key() == Qt.Key.Key_Escape and self._copied:
+            self._copied = set()
+            self.update()
+            return
         if event.key() == Qt.Key.Key_Escape and self.selection:
             self.selection = set()
             self.update()
             self.selection_changed.emit()
             return
+        step = self.ARROW_STEPS.get(event.key())
+        if step and self.multi_select and self._anchor is not None:
+            self._move_selection(*step)
+            return
         super().keyPressEvent(event)
+
+    def _move_selection(self, d_doc: int, d_col: int) -> None:
+        """Setas andam como numa planilha: seleciona o proximo quadradinho que se aplica
+        naquela direcao (pula os que nao se aplicam), para marcar so pelo teclado."""
+        doc_index, col = self._anchor
+        while True:
+            doc_index, col = doc_index + d_doc, col + d_col
+            if not (0 <= doc_index < len(self.documentos) and 0 <= col < len(self.periodos)):
+                return
+            celula = self._celula(doc_index, col)
+            if celula["disponivel"]:
+                break
+        self.selection = {(self.documentos[doc_index]["documento_id"], celula["periodo_id"])}
+        self._anchor = (doc_index, col)
+        self.update()
+        self.selection_changed.emit()
 
 
 STATUS_SYMBOLS = {"Recebido": "✓", "Pendente": "!", "Encerrado": "–", "Nao cobrar": "·"}
+# Texto do Ctrl+C e o que o Ctrl+V entende (as mesmas letras de marcar pelo teclado).
+STATUS_TEXT = {"Recebido": "Recebido", "Pendente": "Pendente", "Encerrado": "Encerrado", "Nao cobrar": "Não cobrar"}
+_STATUS_ALIASES = {
+    "Recebido": ("recebido", "ok", "o", "r", "✓", "✔"),
+    "Pendente": ("pendente", "p", "!"),
+    "Encerrado": ("encerrado", "e", "–"),
+    "Nao cobrar": ("nao cobrar", "não cobrar", "x", "n", "·"),
+}
+_STATUS_BY_TEXT = {alias: status for status, aliases in _STATUS_ALIASES.items() for alias in aliases}
+
+
+def parse_status_text(valor: str) -> str | None:
+    """'OK', 'Recebido', 'x', 'Não cobrar'... -> status; vazio -> None (nao mexe)."""
+    texto = " ".join(str(valor or "").split()).casefold()
+    if not texto:
+        return None
+    status = _STATUS_BY_TEXT.get(texto)
+    if status is None:
+        raise ValidationError(
+            f'Não entendi "{valor.strip()}" para colar. Use Recebido (ou OK), Pendente, Não cobrar (ou X) ou Encerrado.'
+        )
+    return status
 
 
 def status_icon(status: str, size: int = 18) -> QIcon:
@@ -719,7 +996,10 @@ class MapLegend(QWidget):
 def map_scroll_area(year_map: YearMap) -> QWidget:
     """Envolve o YearMap numa area com rolagem, encostado no topo e sem fundo proprio."""
     holder = QWidget()
-    holder.setStyleSheet("background: transparent;")
+    # Regra presa ao proprio holder: sem seletor ela descia ate o balao de dica (tooltip) do
+    # mapa, que ficava transparente - preto no Windows, com o texto escuro ilegivel.
+    holder.setObjectName("MapHolder")
+    holder.setStyleSheet("#MapHolder { background: transparent; }")
     layout = QVBoxLayout(holder)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.addWidget(year_map)
