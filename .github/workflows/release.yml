@@ -1,0 +1,146 @@
+name: Release Windows
+
+# Testes em todo push/PR; instalador e release quando sai uma tag vX.Y.Z.
+# Rodando na mao (Actions > Release Windows > Run workflow) gera o instalador como
+# artefato, sem publicar.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  QT_QPA_PLATFORM: offscreen
+  PYTHONUTF8: "1"
+
+jobs:
+  testes:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+
+      # O Windows do GitHub ja traz o PostgreSQL (usuario postgres, senha root), parado.
+      - name: Iniciar PostgreSQL
+        shell: pwsh
+        run: |
+          $servico = Get-Service -Name "postgresql*" | Select-Object -First 1
+          Set-Service -InputObject $servico -Status Running -StartupType Automatic
+          "DOCFLOW_TEST_DATABASE_URL=postgresql://postgres:root@localhost:5432/docflow_test" >> $env:GITHUB_ENV
+
+      - name: Testes
+        run: python -m unittest discover -s tests -t . -v
+
+  instalador:
+    needs: testes
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+
+      - name: Conferir versao
+        id: versao
+        shell: pwsh
+        run: |
+          $versao = python -c "from documentos_empresa_app import __version__; print(__version__)"
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$versao") {
+            Write-Error "A tag ${{ github.ref_name }} nao bate com a versao do sistema ($versao). Suba a versao antes de criar a tag."
+            exit 1
+          }
+          "versao=$versao" >> $env:GITHUB_OUTPUT
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $pasta = "${env:ProgramFiles(x86)}\Inno Setup 6"
+          if (-not (Test-Path "$pasta\ISCC.exe")) { choco install innosetup -y --no-progress }
+          $pasta >> $env:GITHUB_PATH
+
+      - name: Empacotar (PyInstaller + instalador)
+        shell: cmd
+        env:
+          RUN_TESTS: "0"
+        run: scripts\build_release.bat
+
+      - name: Checksums
+        id: arquivos
+        shell: pwsh
+        run: |
+          $versao = "${{ steps.versao.outputs.versao }}"
+          $arquivos = @("dist_installer\DocFLow-Setup-$versao.exe", "dist_release\DocFLow-win64-v$versao.zip")
+          foreach ($arquivo in $arquivos) {
+            if (-not (Test-Path $arquivo)) { Write-Error "Nao gerou $arquivo"; exit 1 }
+            $hash = (Get-FileHash $arquivo -Algorithm SHA256).Hash.ToLower()
+            "$hash  $(Split-Path $arquivo -Leaf)" | Out-File -Encoding ascii -NoNewline "$arquivo.sha256"
+          }
+
+      - name: Notas da versao
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          # O checkout pode trocar a tag anotada por uma simples; busca de novo para ler a mensagem.
+          git fetch --force --tags origin
+          $anterior = git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>$null
+          # Tag anotada (git tag -a vX.Y.Z -m "...") vira as notas; sem mensagem, lista os commits.
+          $mensagem = (git tag -l --format='%(contents)' "${{ github.ref_name }}") -join "`n"
+          if ($mensagem.Trim()) {
+            $texto = $mensagem.Trim()
+          } else {
+            $faixa = if ($anterior) { "$anterior..${{ github.ref_name }}" } else { "-n 30" }
+            $linhas = git log $faixa.Split(" ") --no-merges --pretty=format:"- %s"
+            $texto = "## O que mudou`n`n" + ($linhas -join "`n")
+          }
+          if ($anterior) { $texto += "`n`nComparar: https://github.com/${{ github.repository }}/compare/$anterior...${{ github.ref_name }}" }
+          $texto | Out-File -Encoding utf8 notas.md
+
+      - name: Publicar release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DocFlow ${{ steps.versao.outputs.versao }}
+          body_path: notas.md
+          files: |
+            dist_installer/DocFLow-Setup-${{ steps.versao.outputs.versao }}.exe
+            dist_installer/DocFLow-Setup-${{ steps.versao.outputs.versao }}.exe.sha256
+            dist_release/DocFLow-win64-v${{ steps.versao.outputs.versao }}.zip
+            dist_release/DocFLow-win64-v${{ steps.versao.outputs.versao }}.zip.sha256
+
+      - name: Guardar instalador (rodada manual)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocFLow-${{ steps.versao.outputs.versao }}
+          path: |
+            dist_installer/*.exe
+            dist_installer/*.sha256
+            dist_release/*.zip

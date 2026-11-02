@@ -1,5 +1,5 @@
 #define AppName "DocFLow"
-#define AppVersion "1.0.0"
+#define AppVersion "2.0.0"
 #define AppPublisher "hndlab.dev.br"
 #define AppExeName "DocFLow.exe"
 
@@ -24,6 +24,10 @@ SetupIconFile=..\icons\icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 ArchitecturesInstallIn64BitMode=x64compatible
 VersionInfoVersion={#AppVersion}
+; Atualizacao automatica: o DocFlow baixa este instalador e roda com /VERYSILENT
+; /CLOSEAPPLICATIONS /RELAUNCH=1 - fecha o sistema aberto, instala por cima e abre de novo.
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -40,3 +44,10 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Abrir {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: ReabrirDepoisDeAtualizar
+
+[Code]
+function ReabrirDepoisDeAtualizar: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;

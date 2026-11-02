@@ -6,7 +6,7 @@
 
 Sistema desktop local para controle de recebimento de documentos empresariais.
 
-Versao atual: `1.0.0`
+Versao atual: `2.0.0`
 
 Este repositorio publico foi preparado para portfolio tecnico. O codigo-fonte, a interface e o fluxo principal estao aqui para estudo e demonstracao, mas materiais operacionais privados de licenciamento e distribuicao comercial nao acompanham esta edicao.
 
@@ -174,6 +174,19 @@ claude mcp add docflow \
 
 `DOCFLOW_DATABASE_URL` e opcional: sem ela, o servidor usa a conexao salva pelo app desktop no perfil do usuario do sistema.
 
+### Configuracao pelo proprio DocFlow (recomendado)
+
+Em `Configuracoes > Claude (MCP)`: informe o usuario do DocFlow que o Claude vai usar e
+clique em `Conectar ao Claude Desktop`. A tela lista os `claude_desktop_config.json` do
+computador - o Claude da Microsoft Store le
+`%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`, o do site le
+`%APPDATA%\Claude\` - mostra para onde cada um aponta (pasta antiga, outra instalacao) e
+grava em todos, mantendo os outros servidores e uma copia do arquivo anterior. Usuario e
+senha ficam no `config.json` do DocFlow (chave `mcp_conexao`, senha com DPAPI), entao o
+arquivo do Claude leva so o caminho do programa. Na versao instalada o programa e o
+`DocFLow-MCP.exe`, ao lado do `DocFLow.exe`; pelo codigo-fonte, o Python do ambiente com
+`docflow_mcp`.
+
 ### Configuracao em clientes com arquivo JSON (Claude Desktop e outros)
 
 ```json
@@ -276,6 +289,32 @@ py -m PyInstaller --noconfirm --clean documentos_empresa_app.spec
 ```
 
 e confira a ultima mensagem de erro do `PyInstaller`. Em Windows, as causas mais comuns sao antivirus/Defender removendo o executavel durante o build ou dependencias ausentes no ambiente Python usado pelo script.
+
+### Nova versao (pipeline do GitHub)
+
+O workflow `.github/workflows/release.yml` roda num Windows do GitHub: testes (com
+PostgreSQL), PyInstaller, Inno Setup e publicacao da release com o instalador, o `.zip`
+e o `.sha256` de cada um. Para lancar uma versao:
+
+1. Suba a versao em `documentos_empresa_app/__init__.py`, `assets/installer/DocFLow.iss`
+   (`AppVersion`) e na linha "Versao atual" deste README (o teste `test_release_files`
+   confere que as tres batem).
+2. Faca o commit na `main` e crie a tag: `git tag v2.1.0 && git push origin main v2.1.0`.
+3. O pipeline publica a release `v2.1.0`. As notas (mostradas na tela de atualizacao) vem
+   da mensagem da tag, se ela for anotada (`git tag -a v2.1.0 -m "## O que mudou ..."`);
+   senao, da lista de commits desde a tag anterior.
+
+O workflow tambem pode ser rodado na mao (aba Actions > Release Windows > Run workflow):
+sem tag, ele so gera o instalador como artefato, sem publicar.
+
+### Atualizacao automatica
+
+O DocFlow instalado consulta a ultima release do GitHub alguns segundos depois de abrir.
+Se houver versao nova, aparece o botao "Atualizar para X" na barra lateral (ou em
+Ajuda > Verificar atualizacoes...). "Atualizar agora" baixa o instalador, confere o
+SHA-256, fecha o sistema, instala por cima em modo silencioso e abre a versao nova. Os
+dados (PostgreSQL e `%APPDATA%\DocFLow`) nao sao tocados. Rodando pelo codigo-fonte a
+atualizacao automatica fica desligada.
 
 ### Pular testes no build
 
