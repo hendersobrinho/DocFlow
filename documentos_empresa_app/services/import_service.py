@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from io import BytesIO
 import re
 import unicodedata
 
@@ -465,7 +466,11 @@ class ImportService:
         if load_workbook is None:
             raise ValidationError("A biblioteca openpyxl nao esta instalada no ambiente.")
         try:
-            return load_workbook(file_path, read_only=True, data_only=True)
+            # Le o arquivo inteiro para a memoria: em modo read_only o openpyxl deixaria a
+            # planilha aberta (travada no Windows) enquanto o workbook existisse.
+            with open(file_path, "rb") as arquivo:
+                conteudo = BytesIO(arquivo.read())
+            return load_workbook(conteudo, read_only=True, data_only=True)
         except Exception as exc:
             get_diagnostics_logger().exception(
                 "IMPORT_ABERTURA_ARQUIVO_FALHOU | arquivo=%s | erro=%s", file_path, exc
