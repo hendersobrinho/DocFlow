@@ -192,6 +192,17 @@ QFrame#Sidebar QPushButton[variant="sidebar"]:hover {{
     background: {t["sidebar_hover"]};
     color: #FFFFFF;
 }}
+QFrame#Sidebar QPushButton[variant="update"] {{
+    background: #4BBDCD;
+    color: #203461;
+    border: none;
+    font-weight: 700;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+}}
+QFrame#Sidebar QPushButton[variant="update"]:hover {{
+    background: #66C9D7;
+}}
 QFrame#Sidebar QPushButton[variant="danger"] {{
     background: transparent;
     color: #F4A3A3;
@@ -481,7 +492,7 @@ QToolTip {{
     padding: 6px;
     border-radius: 6px;
 }}
-QLabel#CadastroInfo {{
+QLabel#CadastroInfo, QFrame#CadastroInfo {{
     background: {t["surface_alt"]};
     border: 1px solid {t["border"]};
     border-radius: 8px;

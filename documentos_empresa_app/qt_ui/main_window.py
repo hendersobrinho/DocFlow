@@ -27,6 +27,7 @@ from documentos_empresa_app.qt_ui.brand import LOGO_HORIZONTAL_NEGATIVO, TAGLINE
 from documentos_empresa_app.qt_ui.dialogs.database_connection_dialog import prompt_database_connection_qt
 from documentos_empresa_app.qt_ui.dialogs.help_content import DEFAULT_HELP_TOPIC_ID
 from documentos_empresa_app.qt_ui.dialogs.help_dialog import HelpDialog
+from documentos_empresa_app.qt_ui.dialogs.update_dialog import UpdateDialog
 from documentos_empresa_app.qt_ui.icons import app_icon
 from documentos_empresa_app.qt_ui.pages.atencao_page import AtencaoPage
 from documentos_empresa_app.qt_ui.pages.cobrancas_page import CobrancasPage
@@ -49,6 +50,7 @@ from documentos_empresa_app.utils.auto_backup import (
     should_run_auto_backup,
 )
 from documentos_empresa_app.services.database_maintenance_service import BACKUP_EXTENSION
+from documentos_empresa_app.services.update_service import UpdateService, can_self_update
 from documentos_empresa_app.utils.backup_encryption import is_encrypted_backup
 from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE, ValidationError
 from documentos_empresa_app.utils.helpers import (
@@ -114,6 +116,8 @@ class MainWindow(QMainWindow):
         self._build_main_area(root_layout)
 
         QTimer.singleShot(800, self.run_auto_backup_if_due)
+        if can_self_update():
+            QTimer.singleShot(5000, self.check_updates_in_background)
 
         # A janela aparece primeiro e os dados entram logo em seguida: a primeira carga (fila
         # de cobranca, Painel) leva quase um segundo e nao precisa segurar a tela.
@@ -148,6 +152,13 @@ class MainWindow(QMainWindow):
 
         self.nav_layout = layout
         layout.addStretch(1)
+
+        # Aparece quando a verificacao em segundo plano acha uma versao nova no GitHub.
+        self.update_info = None
+        self.update_button = make_button("Nova versão disponível", "update")
+        self.update_button.setVisible(False)
+        self.update_button.clicked.connect(self.open_update_dialog)
+        layout.addWidget(self.update_button)
 
         tools_row = QHBoxLayout()
         tools_row.setSpacing(6)
@@ -194,6 +205,7 @@ class MainWindow(QMainWindow):
         help_button = make_button("Ajuda", "sidebar")
         help_menu = QMenu(help_button)
         help_menu.addAction("Manual desta tela (F1)", self.open_help)
+        help_menu.addAction("Verificar atualizações...", self.check_updates_now)
         help_menu.addAction("Sobre o DocFlow...", lambda: AboutDialog(self).exec())
         help_button.setMenu(help_menu)
         return help_button
@@ -458,6 +470,56 @@ class MainWindow(QMainWindow):
         self._auto_backup_thread.finished.connect(self._auto_backup_worker.deleteLater)
         self._auto_backup_thread.start()
 
+    # Atualizacao automatica
+
+    def check_updates_in_background(self) -> None:
+        """Consulta o GitHub sem travar a tela; falha de internet fica so no log."""
+        self.update_service = UpdateService()
+        self._update_thread = QThread(self)
+        self._update_worker = CallableWorker(self.update_service.check)
+        self._update_worker.moveToThread(self._update_thread)
+        self._update_thread.started.connect(self._update_worker.run)
+        self._update_worker.finished.connect(self._on_update_checked)
+        self._update_worker.finished.connect(self._update_thread.quit)
+        self._update_worker.failed.connect(self._update_thread.quit)
+        self._update_thread.finished.connect(self._update_worker.deleteLater)
+        self._update_thread.start()
+
+    def _on_update_checked(self, info) -> None:
+        self.update_info = info
+        if info is not None:
+            self.update_button.setText(f"Atualizar para {info.versao}")
+            self.update_button.setToolTip("Tem versão nova do DocFlow. Clique para ver o que mudou e atualizar.")
+            self.update_button.setVisible(True)
+
+    def check_updates_now(self) -> None:
+        self.update_service = UpdateService()
+
+        def ok(info) -> None:
+            self._on_update_checked(info)
+            if info is None:
+                QMessageBox.information(
+                    self, APP_NAME, f"Você já está na versão mais recente ({self.update_service.current_version})."
+                )
+            else:
+                self.open_update_dialog()
+
+        BlockingTaskRunner(self).run(
+            "Procurando versão nova...",
+            self.update_service.check,
+            on_success=ok,
+            on_error=lambda message: QMessageBox.warning(self, APP_NAME, message),
+        )
+
+    def open_update_dialog(self) -> None:
+        if self.update_info is None:
+            return
+        dialog = UpdateDialog(self.update_service, self.update_info, self)
+        dialog.exec()
+        if dialog.installing:
+            # O instalador espera o DocFlow fechar, instala e abre a versao nova.
+            self.close()
+
     def _on_auto_backup_finished(self, result: dict) -> None:
         mark_auto_backup_created(result)
 
@@ -546,6 +608,9 @@ class MainWindow(QMainWindow):
             if callable(shutdown):
                 shutdown()
         self._wait_for_auto_backup_thread()
+        update_thread = getattr(self, "_update_thread", None)
+        if update_thread is not None and update_thread.isRunning():
+            update_thread.wait(3000)
         super().closeEvent(event)
 
     def _wait_for_auto_backup_thread(self) -> None:
