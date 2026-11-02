@@ -52,7 +52,7 @@ class DocumentTypeManagerDialog(QDialog):
         layout.setSpacing(10)
 
         help_label = QLabel(
-            "Mensal: cobrado todo mês. Trimestral: cobrado em janeiro, abril, julho e outubro. "
+            "Mensal: cobrado todo mês. Trimestral: cobrado em março, junho, setembro e dezembro. "
             "Anual em janeiro: cobrado somente em janeiro. Nos demais meses o status vira 'Não cobrar' automaticamente."
         )
         help_label.setWordWrap(True)

@@ -12,6 +12,7 @@ from documentos_empresa_app.database.repositories import (
 )
 from documentos_empresa_app.utils.cache import ResultCache
 from documentos_empresa_app.utils.common import (
+    AUTO_STATUS_NAO_COBRAR,
     ValidationError,
     build_chargeable_closure_key_map,
     format_period_label,
@@ -231,7 +232,9 @@ class CollectionService:
 
                     status_row = statuses.get((document["id"], periodo["id"]))
                     status = (status_row["status"] or "") if status_row else ""
-                    if status in {"Recebido", "Encerrado"}:
+                    # "Nao cobrar" marcado no mes (ex: X da planilha, conta sem movimento)
+                    # tambem sai da fila, nao so o que a regra do tipo ja exclui.
+                    if status in {"Recebido", "Encerrado", AUTO_STATUS_NAO_COBRAR}:
                         continue
 
                     pending_documents.append(

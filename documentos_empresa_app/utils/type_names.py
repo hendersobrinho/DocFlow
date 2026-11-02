@@ -19,6 +19,12 @@ CANONICAL_TYPE_NAME_BY_KEY = {
     "comprovante": "Comprovantes",
     "outros": "Outros",
     "outro": "Outros",
+    "informe de rendimentos": "Informe de Rendimentos",
+    "informe de rendimento": "Informe de Rendimentos",
+    "informes de rendimentos": "Informe de Rendimentos",
+    "informe rendimentos": "Informe de Rendimentos",
+    "crm": "CRM",
+    "cro": "CRO",
 }
 
 

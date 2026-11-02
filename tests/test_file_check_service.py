@@ -612,12 +612,7 @@ class TestBuildExpectedPeriods(unittest.TestCase):
 
     def test_trimestral_only_quarterly_months(self):
         result = build_expected_periods("trimestral", 7, 2026)
-        self.assertIn((1, 2026), result)
-        self.assertIn((4, 2026), result)
-        self.assertIn((7, 2026), result)
-        self.assertNotIn((2, 2026), result)
-        self.assertNotIn((5, 2026), result)
-        self.assertNotIn((10, 2026), result)  # future
+        self.assertEqual(result, [(3, 2026), (6, 2026)])  # fim de trimestre; 09 ainda e futuro
 
     def test_anual_janeiro_only_january(self):
         result = build_expected_periods("anual_janeiro", 5, 2026)
@@ -958,13 +953,11 @@ class TestTemporalSafety(unittest.TestCase):
             service = FileCheckService(empresa_service, documento_service, periodo_service, status_service)
             results = service.check_period(5, [1], tmp_path, mode=MODE_PENDING_HISTORY)
 
-            # Only Jan and Apr are quarterly months up to May
+            # Ate maio, so marco fecha um trimestre
             periods_checked = [r["periodo_analisado"] for r in results]
-            self.assertIn((1, 2026), periods_checked)
-            self.assertIn((4, 2026), periods_checked)
-            self.assertNotIn((2, 2026), periods_checked)
-            self.assertNotIn((3, 2026), periods_checked)
-            self.assertNotIn((5, 2026), periods_checked)
+            self.assertIn((3, 2026), periods_checked)
+            for mes in (1, 2, 4, 5):
+                self.assertNotIn((mes, 2026), periods_checked)
 
     def test_skip_received_true_omits_received_periods(self):
         import tempfile

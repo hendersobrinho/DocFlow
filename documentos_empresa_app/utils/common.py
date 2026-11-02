@@ -60,7 +60,9 @@ TYPE_OCCURRENCE_CHOICES = (
 )
 TYPE_OCCURRENCE_ALLOWED_MONTHS = {
     TYPE_OCCURRENCE_MENSAL: frozenset(range(1, 13)),
-    TYPE_OCCURRENCE_TRIMESTRAL: frozenset({1, 4, 7, 10}),
+    # Fim de cada trimestre: e quando o escritorio cobra os documentos trimestrais
+    # (ex: Informe de Rendimentos).
+    TYPE_OCCURRENCE_TRIMESTRAL: frozenset({3, 6, 9, 12}),
     TYPE_OCCURRENCE_ANUAL_JANEIRO: frozenset({1}),
 }
 AUTO_STATUS_NAO_COBRAR = "Nao cobrar"

@@ -48,9 +48,12 @@ T_ANUIDADE = "Anuidades"
 T_MOV = "Movimento contábil"
 T_OUTROS = "Outros"
 
-# Informe de Rendimentos fica mensal: o "trimestral" do sistema e jan/abr/jul/out e o
-# escritorio cobra os informes em mar/jun/set/dez - os outros meses ja vem com X.
-REGRA_DO_TIPO = {T_ANUIDADE: "anual"}  # os outros: mensal
+# Regras iguais as dos tipos padrao do sistema: Informe trimestral (mar/jun/set/dez), CRM e CRO
+# anuais (janeiro). Anuidades de outros conselhos (CREA, CRF) ficam no tipo Anuidades.
+T_CRM = "CRM"
+T_CRO = "CRO"
+REGRA_DO_TIPO = {T_ANUIDADE: "anual", T_CRM: "anual", T_CRO: "anual", T_INFORME: "trimestral"}  # os outros: mensal
+TIPOS_ANUAIS = (T_ANUIDADE, T_CRM, T_CRO)
 
 # Bancos e instituicoes: (padrao procurado no texto sem acento e minusculo, nome padronizado).
 # A ordem importa: os mais especificos primeiro.
@@ -242,6 +245,35 @@ def marca_encerrado(doc: Documento, mes: int) -> None:
     doc.acoes.append(f"{MESES[i][:3]} = Encerrado")
 
 
+def celula_escura(cell) -> bool:
+    """Celula pintada de preto ou cinza-escuro (cor de tema "Texto 1", com ou sem clareamento)."""
+    fill = cell.fill
+    cor = fill.fgColor if fill is not None else None
+    return bool(fill is not None and fill.fill_type == "solid" and cor is not None and cor.type == "theme" and cor.theme == 1)
+
+
+def aplica_celulas_escuras(doc: Documento, meses: list[str], escuras: list[bool]) -> None:
+    """Pintado de preto e vazio = o documento nao existia naquele mes ou ja tinha encerrado, e
+    nao entra na cobranca: depois do ultimo mes preenchido vira Encerrado; antes (ou na linha
+    toda) vira X. O que esta escrito numa celula pintada vale - alguns blocos de empresa sao
+    pintados de cinza-escuro so como destaque."""
+    vazias = [i for i in range(12) if escuras[i] and not limpa(meses[i])]
+    if not vazias:
+        return
+    preenchidos = [i for i in range(12) if limpa(meses[i])]
+    ultimo = preenchidos[-1] if preenchidos else -1
+    depois = [i for i in vazias if i > ultimo] if preenchidos else []
+    antes = [i for i in vazias if i not in depois]
+    for i in antes:
+        if not doc.meses[i]:
+            doc.meses[i] = "X"
+    if antes:
+        doc.acoes.append(f"pintado de preto em {', '.join(MESES[i][:3] for i in antes)}: Não cobrar")
+    if depois and "Encerrado" not in doc.meses:
+        doc.acoes.append(f"pintado de preto a partir de {MESES[depois[0]][:3]}: encerrado")
+        marca_encerrado(doc, depois[0] + 1)
+
+
 def classifica(doc: Documento, ano: int) -> str | None:
     motivo = _classifica(doc, ano)
     if doc.tipo and doc.tipo != T_CC:
@@ -274,7 +306,9 @@ def _classifica(doc: Documento, ano: int) -> str | None:
     # Anuidades de conselho (CRM, CRO, CREA, CRF): cobradas em janeiro.
     m = re.match(r"(crm|cro|crea|crf)\b", t)
     if m:
-        doc.tipo, doc.nome = T_ANUIDADE, m.group(1).upper()
+        conselho = m.group(1).upper()
+        doc.tipo = {"CRM": T_CRM, "CRO": T_CRO}.get(conselho, T_ANUIDADE)
+        doc.nome = conselho
         return None
     if re.search(r"inf[o]?r?me|rendiemnto", t) and "rendi" in t:
         doc.tipo = T_INFORME
@@ -553,6 +587,8 @@ def le_planilha(caminho: Path, aba: str, ano: int):
                     doc.acoes.append(f'"{nota}" na coluna {MESES[i][:3]} virou Encerrado')
                 else:
                     doc.acoes.append(f'"{nota}" na coluna {MESES[i][:3]} foi para a observação')
+        if doc.original:
+            aplica_celulas_escuras(doc, meses, [celula_escura(ws.cell(r, c)) for c in range(5, 17)])
 
         emails, resto = separa_obs(obs)
         for e in emails:
@@ -606,14 +642,14 @@ def le_planilha(caminho: Path, aba: str, ano: int):
                 "Escreva o nome do banco/documento na planilha original e rode de novo."))
             continue
 
-        if doc.tipo == T_ANUIDADE:
+        if doc.tipo in TIPOS_ANUAIS:
             # Anuidade so existe em janeiro; o sistema ja deixa os outros meses como "Nao cobrar".
             marcados_fora = [MESES[i][:3] for i in range(1, 12) if doc.meses[i] in ("OK", "P")]
             doc.meses[1:] = [""] * 11
             if marcados_fora:
                 doc.acoes.append(f"anuidade: marcação em {', '.join(marcados_fora)} ignorada (só vale janeiro)")
         meios, nota_envio = normaliza_meios(doc.envio_original)
-        if doc.tipo == T_ANUIDADE:
+        if doc.tipo in TIPOS_ANUAIS:
             meios = meios if sem_acento(doc.envio_original) not in ("ok",) else []
         elif not meios and atual.docs and sem_acento(doc.envio_original) in ("", "ok", "?", "none"):
             meios = list(atual.docs[-1].meios)
@@ -628,7 +664,7 @@ def le_planilha(caminho: Path, aba: str, ano: int):
                 continue
             doc.obs.append(nota_envio)
         resto = resto.strip(" :;-")
-        if resto and not primeira_linha and doc.tipo != T_ANUIDADE:
+        if resto and not primeira_linha and doc.tipo not in TIPOS_ANUAIS:
             doc.obs.append(resto)
         elif resto:
             if not atual.contato and parece_nome_de_pessoa(resto):
@@ -898,17 +934,18 @@ Como a planilha foi tratada
 - Demonstrativo de Evolução é o extrato da aplicação: se a empresa tem a aplicação e o demonstrativo do mesmo banco/conta, fica um documento só (a aplicação, com os meses dos dois). Demonstrativo sem aplicação vira a aplicação daquele banco.
 - "Aberta em mm/aaaa": vira observação e os meses antes da abertura (no ano) ficam X (não cobrar).
 - "Encerrada em mm/aaaa", "Fechou", "Finalizou": vira observação e o mês do fechamento fica "Encerrado" (os meses depois ficam em branco, porque o sistema bloqueia depois de Encerrado).
+- Célula pintada de preto (ou cinza-escuro) e vazia: o documento não existia ou já tinha encerrado naquele mês, e não entra na cobrança. Depois do último mês preenchido vira "Encerrado"; antes dele (ou na linha toda) vira X. O que estava escrito numa célula pintada vale como está.
 - Forma de envio padronizada: Email, WhatsApp, Onvio, Físico, Acesso ao banco (quando a Métodos baixa direto). O que sobrava de texto (ex: "Ellen envia", "Grupo de WhatsApp") foi para a Observação do documento. Em branco: usa a da linha de cima (como a planilha fazia).
 - Linha "Documentação (Cliente só envia...)": vira observação da empresa. Quando diz que o cliente envia o movimento contábil físico, vira o documento "Movimento Contábil" (Físico), com os meses da linha.
 - Coluna OBSERVAÇÃO: emails vão para o Email da empresa (o primeiro) e os outros para a observação dela; nome de pessoa na primeira linha vira o Contato; o resto vai para a observação do documento (ou da empresa, se estava na primeira linha).
 - Nome da empresa: o que estava entre parênteses (Const. 18/02/2025, Outro Cont., Transf.) saiu do nome e foi para a observação da empresa.
-- Anuidades (CRM, CRO, CREA, CRF): tipo Anuidades; a forma de envio "OK" que estava nessas linhas foi ignorada.
+- Anuidades: CRM e CRO viram os tipos CRM e CRO, CREA e CRF ficam no tipo Anuidades (todos anuais); a forma de envio "OK" que estava nessas linhas foi ignorada.
 - Senha que estava no nome de um documento NÃO foi copiada para lugar nenhum.
 - Aba "Não importado": o que ficou de fora e por quê.
 
 Atenção
 - A coluna "Observação do documento" vai para a observação de cada documento (campo novo do sistema).
-- A coluna "Regra do tipo" define a regra quando o tipo ainda não existe: "Anuidades" anual (janeiro), o resto mensal. "Informe de Rendimentos" fica mensal com X nos meses sem cobrança, porque o trimestral do sistema é jan/abr/jul/out e o escritório cobra em mar/jun/set/dez. Tipo que já existe mantém a regra cadastrada.
+- A coluna "Regra do tipo" define a regra quando o tipo ainda não existe: "CRM", "CRO" e "Anuidades" anuais (janeiro), "Informe de Rendimentos" trimestral (mar/jun/set/dez), o resto mensal. Tipo que já existe mantém a regra cadastrada.
 - Documento que já existe na empresa (mesmo tipo e nome) é reaproveitado: a importação só completa os meses e a observação, sem duplicar.
 """
 

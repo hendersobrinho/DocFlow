@@ -793,17 +793,19 @@ class ApplicationServiceTests(unittest.TestCase):
 
         periodos = self.periodo_service.list_periodos()
         jan = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 1)
+        mar = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 3)
         apr = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 4)
         feb = next(item for item in periodos if item["ano"] == 2026 and item["mes"] == 2)
 
         self.status_repository.upsert(documento_id, feb["id"], "Encerrado", self.session_service.get_user_id())
-        self.status_service.update_status(documento_id, apr["id"], "Pendente")
+        self.status_service.update_status(documento_id, mar["id"], "Pendente")
 
         view = self.status_service.build_control_view(empresa_id, jan["id"], apr["id"])
         cells = view["groups"][0]["documentos"][0]["cells"]
 
-        self.assertEqual([cell["available"] for cell in cells], [True, False, False, True])
-        self.assertEqual([cell["status"] for cell in cells], ["", "Nao cobrar", "Nao cobrar", "Pendente"])
+        # Trimestral cobra so no fim do trimestre (mar/jun/set/dez).
+        self.assertEqual([cell["available"] for cell in cells], [False, False, True, False])
+        self.assertEqual([cell["status"] for cell in cells], ["Nao cobrar", "Nao cobrar", "Pendente", "Nao cobrar"])
 
     def test_quarterly_type_rejects_status_update_outside_chargeable_months(self) -> None:
         empresa_id = self.empresa_service.create_empresa(119, "Empresa Bloqueio Trimestral")
@@ -817,6 +819,15 @@ class ApplicationServiceTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             self.status_service.update_status(documento_id, fevereiro["id"], "Recebido")
+
+    def test_default_types_come_with_their_rules(self) -> None:
+        regras = {tipo["nome_tipo"]: tipo["regra_ocorrencia"] for tipo in self.tipo_service.list_tipos()}
+        self.assertEqual(regras["Extratos CC"], TYPE_OCCURRENCE_MENSAL)
+        self.assertEqual(regras["Extratos aplicacao"], TYPE_OCCURRENCE_MENSAL)
+        self.assertEqual(regras["Informe de Rendimentos"], TYPE_OCCURRENCE_TRIMESTRAL)
+        self.assertEqual(regras["CRM"], TYPE_OCCURRENCE_ANUAL_JANEIRO)
+        self.assertEqual(regras["CRO"], TYPE_OCCURRENCE_ANUAL_JANEIRO)
+        self.assertEqual(self.tipo_service.get_or_create_tipo("informes de rendimentos")["nome_tipo"], "Informe de Rendimentos")
 
     def test_annual_january_type_only_enables_january_cell(self) -> None:
         empresa_id = self.empresa_service.create_empresa(120, "Empresa Anual")
@@ -972,14 +983,14 @@ class ApplicationServiceTests(unittest.TestCase):
         self.documento_service.create_documento(empresa_anual_id, tipo_anual_id, "Certidao")
         self.periodo_service.generate_year(2026)
         fevereiro = self._periodo(2026, 2)
-        abril = self._periodo(2026, 4)
+        marco = self._periodo(2026, 3)
 
         row_trimestral_fevereiro = self._panorama_row(empresa_trimestral_id, fevereiro["id"])
-        row_trimestral_abril = self._panorama_row(empresa_trimestral_id, abril["id"])
+        row_trimestral_marco = self._panorama_row(empresa_trimestral_id, marco["id"])
         row_anual_fevereiro = self._panorama_row(empresa_anual_id, fevereiro["id"])
 
         self.assertEqual(row_trimestral_fevereiro["situacao"], "Sem cobranca")
-        self.assertEqual(row_trimestral_abril["situacao"], "Nao iniciada")
+        self.assertEqual(row_trimestral_marco["situacao"], "Nao iniciada")
         self.assertEqual(row_anual_fevereiro["situacao"], "Sem cobranca")
 
     def test_panorama_ignores_document_closed_in_previous_month(self) -> None:
@@ -1086,6 +1097,18 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertIn("Extrato Conta", draft["body"])
         self.assertIn("Fluxo de Caixa", draft["body"])
         self.assertIn("01/2026 - Janeiro", draft["body"])
+
+    def test_collection_queue_skips_months_marked_nao_cobrar(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(146, "Empresa Nao Cobrar", "contato@empresa.com")
+        tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        documento_id = self.documento_service.create_documento(empresa_id, tipo_id, "Conta sem movimento")
+        self.periodo_service.generate_year(2026)
+        janeiro = self._periodo(2026, 1)
+        hoje = datetime(2026, 2, 8).date()
+
+        self.assertEqual(len(self.collection_service.build_collection_queue(reference_date=hoje)["items"]), 1)
+        self.status_service.update_status(documento_id, janeiro["id"], "Nao cobrar")
+        self.assertEqual(self.collection_service.build_collection_queue(reference_date=hoje)["items"], [])
 
     def test_collection_queue_respects_company_override_for_collection_window(self) -> None:
         self.collection_service.update_global_settings("5", "10", "4")
