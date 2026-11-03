@@ -60,7 +60,18 @@ jobs:
         shell: python
         run: |
           import subprocess, sys
-          r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+          # O Qt as vezes quebra na desmontagem do processo, depois de todos os testes passarem
+          # ("Fatal Python error: Aborted" / access violation ao descarregar as DLLs): o
+          # resultado sai com TerminateProcess, que pula essa desmontagem.
+          # -u e faulthandler: se o processo cair durante os testes, o log mostra onde parou.
+          rodar = (
+              "import ctypes, sys, unittest\n"
+              "r = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover('tests'))\n"
+              "sys.stdout.flush(); sys.stderr.flush()\n"
+              # c_void_p(-1) = o proprio processo (handle de 64 bits; sem isso a chamada falha).
+              "ctypes.windll.kernel32.TerminateProcess(ctypes.c_void_p(-1), 0 if r.wasSuccessful() else 1)\n"
+          )
+          r = subprocess.run([sys.executable, "-u", "-X", "faulthandler", "-c", rodar],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
           print(r.stdout)
           if r.returncode:

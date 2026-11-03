@@ -8,6 +8,7 @@ from psycopg.conninfo import make_conninfo
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
+import shiboken6  # noqa: E402
 
 from documentos_empresa_app.app_context import build_application_services  # noqa: E402
 from documentos_empresa_app.qt_ui.pages.documentos_page import DocumentosPage  # noqa: E402
@@ -27,6 +28,9 @@ class DocumentosPageTests(unittest.TestCase):
         self.empresa_id = self.services.empresa_service.create_empresa(5, "Padaria")
         # Como na janela: salvar avisa as telas, e a de Documentos recarrega (inclusive o seletor).
         self.page = DocumentosPage(self.services, lambda: self.page.refresh_data())
+        # Destroi a tela antes de fechar o banco (cleanups rodam do ultimo para o primeiro):
+        # widget esquecido vivo ate o fim do processo pode derrubar o Python ao sair.
+        self.addCleanup(shiboken6.delete, self.page)
         self.page.refresh_data()
         self.page.company_selector.set_company(self.empresa_id)
 
