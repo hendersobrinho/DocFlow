@@ -54,6 +54,21 @@ T_CRM = "CRM"
 T_CRO = "CRO"
 REGRA_DO_TIPO = {T_ANUIDADE: "anual", T_CRM: "anual", T_CRO: "anual", T_INFORME: "trimestral"}  # os outros: mensal
 TIPOS_ANUAIS = (T_ANUIDADE, T_CRM, T_CRO)
+MESES_COBRADOS = {"trimestral": (3, 6, 9, 12), "anual": (1,)}
+
+
+def meses_fora_da_regra(doc) -> list[str]:
+    """OK/P em mes que a regra do tipo nao cobra (ex: informe trimestral marcado OK todo mes)
+    vira X: o DocFlow recusa a linha inteira se vier status nesses meses."""
+    cobrados = MESES_COBRADOS.get(REGRA_DO_TIPO.get(doc.tipo, "mensal"))
+    if not cobrados:
+        return []
+    trocados = []
+    for j, valor in enumerate(doc.meses):
+        if j + 1 not in cobrados and valor in ("OK", "P"):
+            doc.meses[j] = "X"
+            trocados.append(MESES[j][:3])
+    return trocados
 
 # Bancos e instituicoes: (padrao procurado no texto sem acento e minusculo, nome padronizado).
 # A ordem importa: os mais especificos primeiro.
@@ -878,6 +893,9 @@ def escreve(empresas: list[Empresa], fora: list[ForaDaImportacao], saida: Path, 
                 imp.append([*empresa_cols, "", "", "", obs_col, *([""] * 12), "", ""])
                 continue
             total_docs += 1
+            trocados = meses_fora_da_regra(doc)
+            if trocados:
+                doc.acoes.append(f"{', '.join(trocados)} = X (fora dos meses da regra {REGRA_DO_TIPO[doc.tipo]})")
             obs_doc = "; ".join(dict.fromkeys(o for o in doc.obs if o))
             imp.append([*empresa_cols, doc.nome, ", ".join(doc.meios), doc.tipo, obs_col, *doc.meses, obs_doc,
                         REGRA_DO_TIPO.get(doc.tipo, "mensal")])
