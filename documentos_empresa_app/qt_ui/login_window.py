@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLineEdit, QWidget
 
 from documentos_empresa_app import __version__
 from documentos_empresa_app.qt_ui.brand import TAGLINE
+from documentos_empresa_app.qt_ui.dialogs.database_connection_dialog import prompt_database_connection_qt
 from documentos_empresa_app.qt_ui.widgets.brand_dialog import BrandDialog, add_password_toggle
 from documentos_empresa_app.qt_ui.widgets.common import make_button
 from documentos_empresa_app.utils.common import APP_TITLE
@@ -16,6 +17,8 @@ class LoginWindow(BrandDialog):
         super().__init__("", TAGLINE, panel_width=360, parent=parent)
         self.services = services
         self.authenticated_user: dict | None = None
+        # Trocou a conexao pelo botao: quem abriu reconecta e mostra o login de novo.
+        self.change_database_requested = False
 
         self.setWindowTitle(f"{APP_TITLE} - Entrar")
         self.setFixedSize(820, 520)
@@ -45,6 +48,10 @@ class LoginWindow(BrandDialog):
 
         exit_row = QHBoxLayout()
         exit_row.addStretch(1)
+        database_button = make_button("Configurar banco de dados...", "quiet")
+        database_button.setToolTip("Apontar para outro servidor/banco PostgreSQL (ex: computador reaproveitado).")
+        database_button.clicked.connect(self.change_database)
+        exit_row.addWidget(database_button)
         exit_button = make_button("Sair do DocFlow", "quiet")
         exit_button.clicked.connect(self.reject)
         exit_row.addWidget(exit_button)
@@ -71,6 +78,12 @@ class LoginWindow(BrandDialog):
             self.login()
             return
         super().keyPressEvent(event)
+
+    def change_database(self) -> None:
+        if prompt_database_connection_qt(self) is None:
+            return
+        self.change_database_requested = True
+        self.reject()
 
     def login(self) -> None:
         previous_preferences = load_login_preferences()

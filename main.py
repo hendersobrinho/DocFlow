@@ -19,6 +19,7 @@ from documentos_empresa_app.qt_ui.main_window import MainWindow
 from documentos_empresa_app.qt_ui.splash_screen import SplashScreen
 from documentos_empresa_app.qt_ui.theme import ThemeManager
 from documentos_empresa_app.utils.common import APP_NAME, ValidationError
+from documentos_empresa_app.utils.database_settings import resolve_database_conninfo
 from documentos_empresa_app.utils.helpers import (
     load_login_preferences,
     purge_removed_feature_settings,
@@ -94,10 +95,16 @@ def main() -> None:
 
     while True:
         splash.show_message("Verificando banco de dados...", 0.08)
-        conninfo = ensure_database_connection_qt()
+        conninfo = resolve_database_conninfo()
         if conninfo is None:
-            splash.close()
-            return
+            # Primeira vez neste computador: a tela de carregamento fica sempre por cima e
+            # esconderia o aviso e a configuracao do banco - parecia travado em "Verificando".
+            splash.hide()
+            conninfo = ensure_database_connection_qt()
+            if conninfo is None:
+                splash.close()
+                return
+            splash.show_animated()
 
         try:
             splash.show_message("Conectando ao banco de dados...", 0.2)
@@ -129,6 +136,10 @@ def main() -> None:
                 login = LoginWindow(services)
                 login.exec()
                 if login.authenticated_user is None:
+                    if login.change_database_requested:
+                        services.database_maintenance_service.db_manager.close()
+                        splash.show_animated()
+                        break
                     return
 
             if services.session_service.must_change_password():
