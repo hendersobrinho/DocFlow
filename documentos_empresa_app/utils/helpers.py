@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -295,13 +296,26 @@ def get_default_email_handler() -> str:
     return "Cliente de email padrao do sistema"
 
 
+def split_contact_emails(value: str | None) -> list[str]:
+    """Emails do campo de contato da empresa (pode ter mais de um, separados por virgula,
+    ponto-e-virgula ou espaco), sem repetir."""
+    vistos: set[str] = set()
+    emails: list[str] = []
+    for email in re.split(r"[,;\s]+", str(value or "")):
+        if email and email.casefold() not in vistos:
+            vistos.add(email.casefold())
+            emails.append(email)
+    return emails
+
+
 def open_email_draft(to_address: str, subject: str, body: str) -> str:
-    to_value = str(to_address or "").strip()
+    # Empresa com mais de um email: todos vao no Para.
+    to_value = ",".join(split_contact_emails(to_address))
     if not to_value:
         raise ValidationError("Nao foi informado um destinatario de email.")
 
     handler_name = get_default_email_handler()
-    mailto_url = f'mailto:{quote(to_value)}?subject={quote(subject)}&body={quote(body)}'
+    mailto_url = f'mailto:{quote(to_value, safe="@,")}?subject={quote(subject)}&body={quote(body)}'
 
     try:
         if sys.platform.startswith("win") and hasattr(os, "startfile"):

@@ -57,7 +57,7 @@ class EmpresaService:
     ) -> int:
         codigo = self._parse_codigo(codigo_empresa)
         nome = self._normalize_name(nome_empresa, "O nome da empresa nao pode ficar vazio.")
-        email = self._normalize_optional_email(email_contato)
+        email = self._normalize_email_list(email_contato)  # a cobranca pode ir para mais de um email
         contato = self._normalize_optional_text(nome_contato)
         obs = self._normalize_observacao(observacao)
         cnpj_normalizado = self._normalize_optional_cnpj(cnpj)
@@ -111,7 +111,7 @@ class EmpresaService:
         cnpj: str | None = None,
     ) -> None:
         nome = self._normalize_name(nome_empresa, "O nome da empresa nao pode ficar vazio.")
-        email = self._normalize_optional_email(email_contato)
+        email = self._normalize_email_list(email_contato)  # a cobranca pode ir para mais de um email
         contato = self._normalize_optional_text(nome_contato)
         obs = self._normalize_observacao(observacao)
         cnpj_normalizado = self._normalize_optional_cnpj(cnpj)
@@ -374,12 +374,17 @@ class EmpresaService:
         return normalized
 
     def _normalize_email_list(self, value: str | None) -> str | None:
-        """Aceita virgula, ponto-e-virgula ou quebra de linha como separador, valida cada
-        email e remove duplicatas (sem diferenciar maiusculas)."""
+        """Aceita virgula, ponto-e-virgula, espaco ou quebra de linha como separador, valida
+        cada email e remove duplicatas (sem diferenciar maiusculas)."""
         normalized_items: list[str] = []
         seen: set[str] = set()
-        for raw_item in re.split(r"[,;\n]+", str(value or "")):
-            email = self._normalize_optional_email(raw_item)
+        for raw_item in re.split(r"[,;\s]+", str(value or "")):
+            try:
+                email = self._normalize_optional_email(raw_item)
+            except ValidationError:
+                raise ValidationError(
+                    f'"{raw_item}" nao e um email valido. Para mais de um email, separe por virgula.'
+                ) from None
             if not email or email.casefold() in seen:
                 continue
             seen.add(email.casefold())

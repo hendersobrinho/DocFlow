@@ -9,6 +9,7 @@ from documentos_empresa_app.utils.helpers import (
     load_mailing_campaign,
     open_bcc_email_draft,
     save_mailing_campaign,
+    split_contact_emails,
 )
 
 
@@ -64,15 +65,15 @@ class EmailCampaignService:
             if empresa.get("nao_contatar_mala_direta"):
                 opted_out.append(empresa["nome_empresa"])
                 continue
-            email = str(empresa.get("email_contato") or "").strip()
-            if not email:
+            # A empresa pode ter mais de um email: todos entram na copia oculta.
+            emails_empresa = split_contact_emails(empresa.get("email_contato"))
+            if not emails_empresa:
                 missing.append(empresa["nome_empresa"])
                 continue
-            normalized = email.casefold()
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            emails.append(email)
+            for email in emails_empresa:
+                if email.casefold() not in seen:
+                    seen.add(email.casefold())
+                    emails.append(email)
         return emails, missing, opted_out
 
     def open_draft(self, subject: str, body: str, empresa_ids: list[int]) -> dict:

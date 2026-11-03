@@ -880,10 +880,8 @@ def escreve(empresas: list[Empresa], fora: list[ForaDaImportacao], saida: Path, 
         selecionadas = selecionadas[:so_primeiras]
     total_docs = 0
     for emp in selecionadas:
-        email = emp.emails[0] if emp.emails else ""
+        email = ", ".join(emp.emails)  # o DocFlow aceita varios emails no contato
         obs_emp = list(dict.fromkeys(emp.obs))
-        if len(emp.emails) > 1:
-            obs_emp.append("Outros emails: " + ", ".join(emp.emails[1:]))
         dados_empresa = [emp.codigo, emp.nome, email, emp.contato]
         linhas = emp.docs or [None]
         for i, doc in enumerate(linhas):
@@ -955,7 +953,7 @@ Como a planilha foi tratada
 - Célula pintada de preto (ou cinza-escuro) e vazia: o documento não existia ou já tinha encerrado naquele mês, e não entra na cobrança. Depois do último mês preenchido vira "Encerrado"; antes dele (ou na linha toda) vira X. O que estava escrito numa célula pintada vale como está.
 - Forma de envio padronizada: Email, WhatsApp, Onvio, Físico, Acesso ao banco (quando a Métodos baixa direto). O que sobrava de texto (ex: "Ellen envia", "Grupo de WhatsApp") foi para a Observação do documento. Em branco: usa a da linha de cima (como a planilha fazia).
 - Linha "Documentação (Cliente só envia...)": vira observação da empresa. Quando diz que o cliente envia o movimento contábil físico, vira o documento "Movimento Contábil" (Físico), com os meses da linha.
-- Coluna OBSERVAÇÃO: emails vão para o Email da empresa (o primeiro) e os outros para a observação dela; nome de pessoa na primeira linha vira o Contato; o resto vai para a observação do documento (ou da empresa, se estava na primeira linha).
+- Coluna OBSERVAÇÃO: emails vão todos para o Email da empresa (separados por vírgula; a cobrança vai para todos); nome de pessoa na primeira linha vira o Contato; o resto vai para a observação do documento (ou da empresa, se estava na primeira linha).
 - Nome da empresa: o que estava entre parênteses (Const. 18/02/2025, Outro Cont., Transf.) saiu do nome e foi para a observação da empresa.
 - Anuidades: CRM e CRO viram os tipos CRM e CRO, CREA e CRF ficam no tipo Anuidades (todos anuais); a forma de envio "OK" que estava nessas linhas foi ignorada.
 - Senha que estava no nome de um documento NÃO foi copiada para lugar nenhum.

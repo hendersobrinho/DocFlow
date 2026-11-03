@@ -402,7 +402,7 @@ HELP_TOPICS: list[HelpTopic] = [
         <li><b>Código</b> e <b>Nome</b> - obrigatórios; o código não muda depois.</li>
         <li><b>CNPJ</b> - opcional; aceita o formato tradicional e o novo alfanumérico.</li>
         <li><b>Contato para cobrança</b> - nome, email e WhatsApp usados nas cobranças
-        (o WhatsApp aceita "(27) 99999-8888"; sem DDI o sistema põe o +55). A opção de não
+        (mais de um email: separe por vírgula, e a cobrança vai para todos; o WhatsApp aceita "(27) 99999-8888"; sem DDI o sistema põe o +55). A opção de não
         incluir na mala direta tira a empresa das malas diretas de
         <a href="topic:envios">Envios automáticos</a>.</li>
         <li><b>Prazos de cobrança</b> - por padrão a empresa segue os prazos gerais de

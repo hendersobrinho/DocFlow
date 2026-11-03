@@ -901,7 +901,8 @@ def cadastrar_empresa(
     observacao: str | None = None,
     cnpj: str | None = None,
 ) -> dict[str, Any]:
-    """Cadastra uma empresa-cliente. Observacao tem no maximo 255 caracteres."""
+    """Cadastra uma empresa-cliente. Observacao tem no maximo 255 caracteres.
+    email_contato aceita mais de um email separado por virgula (a cobranca vai para todos)."""
     services = get_services()
     empresa_id = services.empresa_service.create_empresa(
         codigo_empresa, nome_empresa, email_contato, nome_contato, observacao, cnpj
@@ -919,7 +920,8 @@ def atualizar_empresa(
     cnpj: str | None = None,
 ) -> dict[str, Any]:
     """Atualiza dados cadastrais. So os campos informados mudam; para apagar um campo
-    opcional, informe texto vazio ("")."""
+    opcional, informe texto vazio (""). email_contato aceita mais de um email separado por
+    virgula (a cobranca vai para todos)."""
     services = get_services()
     empresa = _company(services, codigo_empresa)
 
