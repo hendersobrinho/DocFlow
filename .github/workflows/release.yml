@@ -55,8 +55,21 @@ jobs:
                   conexao.execute("CREATE DATABASE docflow_test")
               print(conexao.execute("SELECT version()").fetchone()[0])
 
+      # O log so abre logado; o trecho dos testes que falharam vira anotacao (::error::).
       - name: Testes
-        run: python -m unittest discover -s tests -v
+        shell: python
+        run: |
+          import subprocess, sys
+          r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+          print(r.stdout)
+          if r.returncode:
+              saida = r.stdout
+              inicio = saida.find("=" * 70)
+              trecho = (saida[inicio:] if inicio >= 0 else saida[-6000:])[:6000]
+              trecho = trecho.replace("%", "%25").replace(chr(13), "").replace(chr(10), "%0A")
+              print(f"::error title=Testes falharam::{trecho}")
+          sys.exit(r.returncode)
 
   instalador:
     needs: testes
