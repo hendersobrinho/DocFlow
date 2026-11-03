@@ -6,7 +6,7 @@
 
 Sistema desktop local para controle de recebimento de documentos empresariais.
 
-Versao atual: `2.0.0`
+Versao atual: `2.0.1`
 
 Este repositorio publico foi preparado para portfolio tecnico. O codigo-fonte, a interface e o fluxo principal estao aqui para estudo e demonstracao, mas materiais operacionais privados de licenciamento e distribuicao comercial nao acompanham esta edicao.
 
@@ -160,14 +160,12 @@ Envio direto pelo WhatsApp: `whatsapp_service.py` ja traz o cliente da WhatsApp 
 .venv/bin/python -m pip install -r requirements-mcp.txt
 ```
 
-O servidor age em nome de um usuario do DocFlow (as alteracoes aparecem nos logs com esse usuario). Crie um usuario proprio para ele pela tela `Usuarios` e entre uma vez com ele no app para definir a senha definitiva.
+O servidor age como o usuario `claude` do DocFlow (criado sozinho na primeira vez; as alteracoes aparecem nos logs com esse nome). Nao precisa de usuario nem senha na configuracao; `DOCFLOW_MCP_USUARIO`/`DOCFLOW_MCP_SENHA` sao opcionais, para agir como outro usuario.
 
 ### Configuracao no Claude Code
 
 ```bash
 claude mcp add docflow \
-  -e DOCFLOW_MCP_USUARIO=mcp \
-  -e DOCFLOW_MCP_SENHA=sua-senha \
   -e DOCFLOW_DATABASE_URL=postgresql://docflow:senha@localhost:5432/docflow \
   -- /caminho/do/projeto/.venv/bin/python /caminho/do/projeto/docflow_mcp
 ```
@@ -176,14 +174,15 @@ claude mcp add docflow \
 
 ### Configuracao pelo proprio DocFlow (recomendado)
 
-Em `Configuracoes > Claude (MCP)`: informe o usuario do DocFlow que o Claude vai usar e
-clique em `Conectar ao Claude Desktop`. A tela lista os `claude_desktop_config.json` do
+Em `Configuracoes > Claude (MCP)`, clique em `Conectar ao Claude Desktop` (nao pede usuario
+nem senha). A tela lista os `claude_desktop_config.json` do
 computador - o Claude da Microsoft Store le
 `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`, o do site le
 `%APPDATA%\Claude\` - mostra para onde cada um aponta (pasta antiga, outra instalacao) e
-grava em todos, mantendo os outros servidores e uma copia do arquivo anterior. Usuario e
-senha ficam no `config.json` do DocFlow (chave `mcp_conexao`, senha com DPAPI), entao o
-arquivo do Claude leva so o caminho do programa. Na versao instalada o programa e o
+grava em todos, mantendo os outros servidores e uma copia do arquivo anterior. O arquivo do
+Claude leva so o caminho do programa: o servidor age como o usuario `claude` do DocFlow,
+criado sozinho na primeira vez (admin, senha aleatoria que ninguem precisa saber), e e com
+esse nome que as acoes do Claude aparecem no Historico de acoes. Na versao instalada o programa e o
 `DocFLow-MCP.exe`, ao lado do `DocFLow.exe`; pelo codigo-fonte, o Python do ambiente com
 `docflow_mcp`.
 
@@ -196,8 +195,6 @@ arquivo do Claude leva so o caminho do programa. Na versao instalada o programa 
       "command": "/caminho/do/projeto/.venv/bin/python",
       "args": ["/caminho/do/projeto/docflow_mcp"],
       "env": {
-        "DOCFLOW_MCP_USUARIO": "mcp",
-        "DOCFLOW_MCP_SENHA": "sua-senha",
         "DOCFLOW_DATABASE_URL": "postgresql://docflow:senha@localhost:5432/docflow"
       }
     }
