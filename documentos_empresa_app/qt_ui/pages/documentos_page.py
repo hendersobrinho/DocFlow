@@ -94,6 +94,7 @@ class DocumentosPage(QWidget):
         self.on_data_changed = on_data_changed
         self.documentos: list[dict] = []
         self.editing_document_id: int | None = None
+        self._company_id: int | None = None
         self.creating = False
         self.dirty = False
         self._loading = False
@@ -323,12 +324,19 @@ class DocumentosPage(QWidget):
 
     # Empresa e selecao -------------------------------------------------------------
 
-    def _on_company_selected(self, _company: dict) -> None:
+    def _on_company_selected(self, company: dict) -> None:
+        # O seletor avisa de novo a mesma empresa ao recarregar a lista (depois de salvar) e
+        # quando o campo do codigo perde o foco: isso nao pode largar o documento aberto.
+        if company["id"] == self._company_id:
+            self._reload_documents()
+            return
+        self._company_id = company["id"]
         self.editing_document_id = None
         self._reload_documents()
         self._show_empty()
 
     def _on_company_cleared(self) -> None:
+        self._company_id = None
         self.editing_document_id = None
         self._reload_documents()
         self._show_empty()
