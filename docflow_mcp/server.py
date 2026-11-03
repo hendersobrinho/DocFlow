@@ -1361,7 +1361,9 @@ def listar_envios_programados() -> list[dict[str, Any]]:
 def envios_a_fazer(data: str | None = None, envio_id: int | None = None) -> dict[str, Any]:
     """Mensagens que ja deveriam ter saido (por padrao, hoje): um item por empresa, com canal
     (email ou whatsapp), destinatarios/whatsapp, assunto e corpo prontos e a competencia
-    cobrada. Envie cada um (email pela sua ferramenta de email, WhatsApp com 'enviar_whatsapp')
+    cobrada. 'corpo' e o texto puro; 'corpo_formatado' tem as marcas <b>, <i> e <u> (negrito,
+    italico, sublinhado) - se a sua ferramenta enviar HTML, use-o (troque as quebras de linha
+    por <br>). Envie cada um (email pela sua ferramenta de email, WhatsApp com 'enviar_whatsapp')
     e registre com 'registrar_envio' - o item some da lista depois de registrado como enviado.
     Itens com sem_contato=true nao tem para onde ir: registre como falhou com o motivo.
     data: AAAA-MM-DD (opcional, para simular outro dia)."""
@@ -1481,8 +1483,10 @@ def cadastrar_envio_programado(
     ou, sem lista, todas as ativas (respeita quem pediu para ficar fora da mala direta).
     canal: 'automatico' manda WhatsApp para quem liberou o WhatsApp para envios (numero ou
     grupo) e email para os demais. Assunto e corpo aceitam {empresa}, {codigo}, {contato},
-    {competencia}, {mes}, {ano} e {documentos}; corpo_whatsapp e o texto do WhatsApp (vazio =
-    o mesmo corpo). instrucoes: orientacoes para quem envia.
+    {competencia}, {mes}, {ano} e {documentos}; o corpo aceita <b>negrito</b>, <i>italico</i> e
+    <u>sublinhado</u> (escreva < > & como &lt; &gt; &amp;). corpo_whatsapp e o texto do WhatsApp
+    (vazio = o mesmo corpo, com *negrito* e _italico_). A assinatura cadastrada no DocFlow vai
+    no fim dos emails enviados por ele. instrucoes: orientacoes para quem envia.
     modo='cco' (so mala direta): um email so para email_para (o email do escritorio) com as
     empresas em copia oculta - no texto use so {competencia}, {mes} e {ano}; quem e de
     WhatsApp recebe a mensagem um a um.

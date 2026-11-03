@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSelectDialog
 from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, ToolbarRow, make_button
+from documentos_empresa_app.qt_ui.widgets.email_editor import EmailPreviewDialog, formatted_editor
 from documentos_empresa_app.qt_ui.widgets.envios import CANAL_CURTO, EmailEnvioDialog, QuemRecebePanel
 from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table
 from documentos_empresa_app.services.envio_programado_service import (
@@ -44,7 +45,9 @@ from documentos_empresa_app.services.envio_programado_service import (
     data_de_envio,
     split_emails,
 )
+from documentos_empresa_app.services.email_sender_service import load_email_settings
 from documentos_empresa_app.utils.common import MONTH_NAMES, ValidationError, format_utc_timestamp
+from documentos_empresa_app.utils.email_format import para_texto, preencher
 
 PUBLICO_TODAS = "todas"
 PUBLICO_ESCOLHIDAS = "escolhidas"
@@ -61,6 +64,40 @@ TEXTO_INICIAL_CCO = (
 
 def _format_date(raw: str | None) -> str:
     return date.fromisoformat(raw).strftime("%d/%m/%Y") if raw else "-"
+
+
+def campos_de_exemplo(cco: bool = False) -> dict:
+    """Dados ficticios para a previa do texto (o email de cada empresa aparece em Quem recebe)."""
+    hoje = date.today()
+    ano, mes = (hoje.year - 1, 12) if hoje.month == 1 else (hoje.year, hoje.month - 1)
+    campos = {"competencia": f"{mes:02d}/{ano}", "mes": MONTH_NAMES[mes], "ano": str(ano)}
+    if not cco:
+        campos.update(
+            empresa="Empresa Exemplo Ltda",
+            codigo="123",
+            contato="Maria",
+            documentos="- Extrato bancário\n- Folha de pagamento",
+        )
+    return campos
+
+
+def abrir_previa_email(parent: QWidget, assunto: str, corpo_marcado: str, cco: bool = False, para: str = "") -> None:
+    campos = campos_de_exemplo(cco)
+    try:
+        corpo = preencher(corpo_marcado, campos)
+        assunto = para_texto(preencher(assunto, campos))
+    except (ValueError, IndexError):
+        QMessageBox.warning(parent, "Prévia do email", "O texto tem uma chave { ou } sem par. Confira os campos entre chaves.")
+        return
+    EmailPreviewDialog(
+        parent,
+        assunto,
+        corpo,
+        load_email_settings().get("assinatura"),
+        para=para,
+        aviso="Exemplo com dados fictícios - em Quem recebe você vê o email de cada empresa. "
+        "A assinatura é a cadastrada em Email de envio.",
+    ).exec()
 
 
 class EnvioDialog(QDialog):
@@ -187,11 +224,14 @@ class EnvioDialog(QDialog):
         self.assunto_edit.setPlaceholderText("Ex: Informe de Rendimentos - {competencia}")
         form.addRow("Assunto do email", self.assunto_edit)
 
-        self.corpo_edit = QTextEdit()
-        self.corpo_edit.setPlainText(envio.get("corpo", ""))
-        self.corpo_edit.setAcceptRichText(False)
+        corpo_bloco, self.corpo_edit = formatted_editor()
+        self.corpo_edit.set_marked(envio.get("corpo", ""))
         self.corpo_edit.setMinimumHeight(140)
-        form.addRow("Texto do email", self.corpo_edit)
+        previa = make_button("Prévia do email", "quiet")
+        previa.setToolTip("Mostra o email como ele chega: formatado e com a assinatura.")
+        previa.clicked.connect(self._previa)
+        corpo_bloco.format_bar.layout().addWidget(previa)
+        form.addRow("Texto do email", corpo_bloco)
 
         self.whatsapp_edit = QTextEdit()
         self.whatsapp_edit.setAcceptRichText(False)
@@ -227,6 +267,10 @@ class EnvioDialog(QDialog):
         layout.addLayout(buttons)
         self._sync_publico()
         self._update_exemplo()
+
+    def _previa(self) -> None:
+        valores = self.values()
+        abrir_previa_email(self, valores["assunto"], valores["corpo"], valores["modo"] == MODO_CCO, valores["email_para"])
 
     def _set_meses(self, meses: tuple[int, ...]) -> None:
         for mes, check in self.mes_checks.items():
@@ -291,7 +335,7 @@ class EnvioDialog(QDialog):
             "enviar_em": self.enviar_em_combo.currentData(),
             "dia_envio": self.dia_spin.value(),
             "assunto": self.assunto_edit.text(),
-            "corpo": self.corpo_edit.toPlainText(),
+            "corpo": self.corpo_edit.marked(),
             "corpo_whatsapp": self.whatsapp_edit.toPlainText(),
             "instrucoes": self.instrucoes_edit.toPlainText(),
             "ativo": self.ativo_check.isChecked(),
@@ -344,7 +388,12 @@ class MensagemTab(QWidget):
         textos = QSplitter(Qt.Orientation.Horizontal)
         for titulo, atributo, dica in (
             ("Texto do email", "corpo_edit", ""),
-            ("Texto do WhatsApp", "whatsapp_edit", "Vazio = o mesmo texto do email. Dica: no WhatsApp, *negrito* e _itálico_."),
+            (
+                "Texto do WhatsApp",
+                "whatsapp_edit",
+                "Vazio = o mesmo texto do email (o negrito e o itálico vão junto). "
+                "Dica: no WhatsApp, *negrito* e _itálico_.",
+            ),
         ):
             bloco = QWidget()
             bloco_layout = QVBoxLayout(bloco)
@@ -353,14 +402,18 @@ class MensagemTab(QWidget):
             rotulo = QLabel(titulo)
             rotulo.setStyleSheet("font-weight: 600;")
             bloco_layout.addWidget(rotulo)
-            editor = QTextEdit()
-            editor.setAcceptRichText(False)
+            if atributo == "corpo_edit":
+                editor_bloco, editor = formatted_editor()
+                bloco_layout.addWidget(editor_bloco, 1)
+            else:
+                editor = QTextEdit()
+                editor.setAcceptRichText(False)
+                bloco_layout.addWidget(editor, 1)
             editor.setMinimumHeight(180)
             if dica:
                 editor.setPlaceholderText(dica)
             editor.installEventFilter(self)
             setattr(self, atributo, editor)
-            bloco_layout.addWidget(editor, 1)
             textos.addWidget(bloco)
         layout.addWidget(textos, 1)
         self._editor_atual: QTextEdit | QLineEdit = self.corpo_edit
@@ -386,6 +439,10 @@ class MensagemTab(QWidget):
         self.dica_label.setObjectName("Muted")
         self.dica_label.setWordWrap(True)
         acoes.addWidget(self.dica_label, 1)
+        self.previa_button = make_button("Prévia do email")
+        self.previa_button.setToolTip("Mostra o email como ele chega: formatado e com a assinatura.")
+        self.previa_button.clicked.connect(self.preview)
+        acoes.addWidget(self.previa_button)
         self.descartar_button = make_button("Descartar alterações", "quiet")
         self.descartar_button.clicked.connect(lambda: self.load(self.envio, force=True))
         acoes.addWidget(self.descartar_button)
@@ -423,7 +480,7 @@ class MensagemTab(QWidget):
         envio = envio or {}
         self.para_edit.setText(envio.get("email_para") or "")
         self.assunto_edit.setText(envio.get("assunto") or "")
-        self.corpo_edit.setPlainText(envio.get("corpo") or "")
+        self.corpo_edit.set_marked(envio.get("corpo") or "")
         self.whatsapp_edit.setPlainText(envio.get("corpo_whatsapp") or "")
         cco = envio.get("modo") == MODO_CCO
         self.para_label.setVisible(cco)
@@ -465,9 +522,14 @@ class MensagemTab(QWidget):
         return {
             "email_para": self.para_edit.text(),
             "assunto": self.assunto_edit.text(),
-            "corpo": self.corpo_edit.toPlainText(),
+            "corpo": self.corpo_edit.marked(),
             "corpo_whatsapp": self.whatsapp_edit.toPlainText(),
         }
+
+    def preview(self) -> None:
+        valores = self.values()
+        cco = bool(self.envio) and self.envio["modo"] == MODO_CCO
+        abrir_previa_email(self, valores["assunto"], valores["corpo"], cco, valores["email_para"] if cco else "")
 
     def save(self) -> bool:
         if not self.envio:
@@ -508,7 +570,7 @@ class MensagemTab(QWidget):
     def carregar_modelo(self, modelo: dict) -> None:
         if modelo.get("assunto"):
             self.assunto_edit.setText(modelo["assunto"])
-        self.corpo_edit.setPlainText(modelo["corpo"])
+        self.corpo_edit.set_marked(modelo["corpo"])
         self.whatsapp_edit.setPlainText(modelo.get("corpo_whatsapp") or "")
         self._mark_dirty()
 

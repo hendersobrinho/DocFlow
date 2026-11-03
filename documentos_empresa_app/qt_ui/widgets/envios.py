@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSelectDialog
 from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.common import Card, KpiCard, ToolbarRow, make_button
+from documentos_empresa_app.qt_ui.widgets.email_editor import EmailPreviewDialog, formatted_editor, preview_html
 from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table, selected_key, selected_keys
 from documentos_empresa_app.services.email_sender_service import (
     PROVEDORES_SMTP,
@@ -229,6 +230,22 @@ class EmailEnvioDialog(QDialog):
         form.addRow("Usuário", self.usuario_edit)
         layout.addLayout(form)
 
+        assinatura_titulo = QLabel("Assinatura")
+        assinatura_titulo.setStyleSheet("font-weight: 600;")
+        layout.addWidget(assinatura_titulo)
+        assinatura_bloco, self.assinatura_edit = formatted_editor()
+        self.assinatura_edit.set_marked(atual.get("assinatura") or "")
+        self.assinatura_edit.setPlaceholderText(
+            "Vai no fim de todo email que o DocFlow envia. Ex:\nAtenciosamente,\nMaria - Métodos Contabilidade\n(11) 99999-9999"
+        )
+        self.assinatura_edit.setMinimumHeight(90)
+        self.assinatura_edit.setMaximumHeight(140)
+        previa = make_button("Prévia", "quiet")
+        previa.setToolTip("Mostra como a assinatura aparece no fim do email.")
+        previa.clicked.connect(self._previa)
+        assinatura_bloco.format_bar.layout().addWidget(previa)
+        layout.addWidget(assinatura_bloco)
+
         dica = QLabel(
             "Gmail e Microsoft 365 costumam bloquear a senha normal: crie uma <b>senha de app</b> na conta "
             "(Segurança > Senhas de app) e use ela aqui."
@@ -259,8 +276,18 @@ class EmailEnvioDialog(QDialog):
         self.porta_spin.setValue(porta)
         self.seguranca_combo.setCurrentIndex(self.seguranca_combo.findData(seguranca))
 
+    def _previa(self) -> None:
+        EmailPreviewDialog(
+            self,
+            "Cobrança de documentos",
+            "Olá, Maria!\n\n(aqui vai o texto do envio)",
+            self.assinatura_edit.marked(),
+            aviso="Assim a assinatura aparece no fim de cada email enviado pelo DocFlow.",
+        ).exec()
+
     def values(self) -> dict:
         return {
+            "assinatura": self.assinatura_edit.marked(),
             "host": self.host_edit.text(),
             "porta": self.porta_spin.value(),
             "seguranca": self.seguranca_combo.currentData(),
@@ -696,19 +723,32 @@ class QuemRecebePanel(QWidget):
             )
             return
         if item.get("modo") == MODO_CCO:
-            cabecalho = (
-                f'Email único em cópia oculta\nPara: {item["para"] or "(falta o email do escritório - aba Mensagem)"}\n'
-                f'Cco: {len(item["cco"])} endereço(s), entre eles {linha["contato"]}\nAssunto: {item["assunto"]}'
+            aba.preview.setHtml(
+                preview_html(
+                    item["assunto"],
+                    item.get("corpo_formatado") or item["corpo"],
+                    load_email_settings().get("assinatura"),
+                    para=f'{item["para"] or "(falta o email do escritório - aba Mensagem)"}  ·  Cco: '
+                    f'{len(item["cco"])} endereço(s), entre eles {linha["contato"]}',
+                )
             )
-            texto = item["corpo"]
+            return
         elif aba is self.whatsapp:
             cabecalho = f'WhatsApp: {item["whatsapp_destino"]}'
             if item.get("whatsapp_e_grupo"):
                 cabecalho += "  (grupo - a mensagem é copiada para você colar)"
             texto = item["mensagem_whatsapp"]
         else:
-            cabecalho = f'Para: {", ".join(item["destinatarios"]) or "-"}\nAssunto: {item["assunto"]}'
-            texto = item["corpo"]
+            # O email como chega: formatado e com a assinatura.
+            aba.preview.setHtml(
+                preview_html(
+                    item["assunto"],
+                    item.get("corpo_formatado") or item["corpo"],
+                    load_email_settings().get("assinatura"),
+                    para=", ".join(item["destinatarios"]) or "-",
+                )
+            )
+            return
         aba.preview.setPlainText(f"{cabecalho}\n\n{texto}")
 
     # Acoes -----------------------------------------------------------------------------

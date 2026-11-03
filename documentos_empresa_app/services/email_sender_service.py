@@ -7,6 +7,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 
 from documentos_empresa_app.utils.common import ValidationError
+from documentos_empresa_app.utils.email_format import para_html, texto_com_assinatura
 from documentos_empresa_app.utils.helpers import load_config, save_config
 from documentos_empresa_app.utils.secret_protection import protect_secret, unprotect_secret
 
@@ -27,6 +28,8 @@ DEFAULT_EMAIL_SETTINGS = {
     "senha": "",
     "remetente_nome": "",
     "remetente_email": "",
+    # Vai no fim de todo email enviado pelo DocFlow (texto marcado: utils/email_format).
+    "assinatura": "",
 }
 # Servidores mais comuns, para a pessoa so escolher e digitar email e senha.
 PROVEDORES_SMTP = {
@@ -60,6 +63,8 @@ def save_email_settings(settings: dict) -> dict:
     for chave in DEFAULT_EMAIL_SETTINGS:
         normalizado[chave] = str(settings.get(chave) or "").strip()
     normalizado["senha"] = str(settings.get("senha") or "") or atual["senha"]
+    if "assinatura" not in settings:
+        normalizado["assinatura"] = atual["assinatura"]
     if not normalizado["host"]:
         raise ValidationError("Informe o servidor de envio (SMTP).")
     try:
@@ -121,7 +126,8 @@ class EmailSenderService:
             "para": [settings["remetente_email"]],
             "cco": [],
             "assunto": "Teste de envio do DocFlow",
-            "corpo": "Se este email chegou, o DocFlow ja consegue enviar as mensagens por este endereço.",
+            "corpo": "Se este email chegou, o DocFlow já consegue enviar as mensagens por este endereço.\n\n"
+            "Abaixo, a assinatura que vai no fim de cada email.",
         }
         resultado = self.enviar_lote([mensagem], settings=settings)[0]
         if not resultado["ok"]:
@@ -129,7 +135,8 @@ class EmailSenderService:
         return settings["remetente_email"]
 
     def enviar_lote(self, mensagens: list[dict], on_progress=None, settings: dict | None = None) -> list[dict]:
-        """mensagens: [{"para": [...], "cco": [...], "assunto", "corpo"}]. Usa uma conexao so e
+        """mensagens: [{"para": [...], "cco": [...], "assunto", "corpo", "corpo_formatado"?}]. A
+        assinatura cadastrada vai no fim de cada uma. Usa uma conexao so e
         devolve, na mesma ordem, {"ok": True} ou {"ok": False, "erro": "..."}. Erro de login ou
         de conexao interrompe tudo (ValidationError); recusa de uma mensagem nao para as outras."""
         settings = settings or self.settings()
@@ -152,7 +159,8 @@ class EmailSenderService:
                     on_progress(numero, len(mensagens))
                 try:
                     for parte in self._partes(mensagem, settings["remetente_email"]):
-                        smtp.send_message(self._montar(parte, remetente), to_addrs=parte["para"] + parte["cco"])
+                        email = self._montar(parte, remetente, settings.get("assinatura"))
+                        smtp.send_message(email, to_addrs=parte["para"] + parte["cco"])
                     resultados.append({"ok": True})
                 except (smtplib.SMTPException, OSError) as exc:
                     resultados.append({"ok": False, "erro": f"Recusado pelo servidor: {exc}"})
@@ -178,12 +186,17 @@ class EmailSenderService:
         ]
 
     @staticmethod
-    def _montar(mensagem: dict, remetente: str) -> EmailMessage:
+    def _montar(mensagem: dict, remetente: str, assinatura: str | None = None) -> EmailMessage:
         email = EmailMessage()
         email["From"] = remetente
         email["To"] = ", ".join(mensagem["para"])
         email["Subject"] = mensagem["assunto"]
         email["Message-ID"] = make_msgid(domain=remetente.rsplit("@", 1)[-1].strip(">") or None)
         # Cco nao vai no cabecalho: so na lista de entrega (to_addrs), para ninguem ver os outros.
-        email.set_content(mensagem["corpo"])
+        # Texto puro para quem nao le HTML e o formatado (negrito, sublinhado, assinatura).
+        marcado = mensagem.get("corpo_formatado") or mensagem["corpo"]
+        email.set_content(texto_com_assinatura(marcado, assinatura))
+        email.add_alternative(
+            f'<!DOCTYPE html><html><body>{para_html(marcado, assinatura)}</body></html>', subtype="html"
+        )
         return email

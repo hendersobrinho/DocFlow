@@ -285,6 +285,37 @@ class EnvioProgramadoServiceTests(unittest.TestCase):
         self.assertEqual([len(p["cco"]) for p in partes], [MAX_DESTINATARIOS_POR_EMAIL, 5])
         self.assertEqual(partes[0]["para"], ["envios@escritorio.com"])
 
+    def test_formatted_body_reaches_email_and_whatsapp(self) -> None:
+        servico = self.services.envio_programado_service
+        servico.atualizar(self.envio["id"], {"corpo": "Olá <b>{contato}</b>, entregue <u>{documentos}</u> &amp; pronto"})
+        self.services.empresa_service.set_whatsapp(self.empresas[3][0], "27 98888-7777")
+        self.services.empresa_service.set_whatsapp_envios(self.empresas[3][0], True)
+        itens = {item["codigo_empresa"]: item for item in servico.a_enviar(date(2026, 7, 10))}
+        # Texto puro para rascunho e Claude; marcado para o email HTML; WhatsApp com *negrito*.
+        self.assertEqual(itens[1]["corpo"], "Olá Ana, entregue - Informe Bradesco & pronto")
+        self.assertEqual(itens[1]["corpo_formatado"], "Olá <b>Ana</b>, entregue <u>- Informe Bradesco</u> &amp; pronto")
+        self.assertEqual(itens[3]["mensagem_whatsapp"], "Olá *Ana*, entregue - Informe Bradesco & pronto")
+
+        enviados = []
+
+        class FakeSmtp:
+            def send_message(self, email, to_addrs):
+                enviados.append(email)
+
+            def quit(self):
+                pass
+
+        settings = {
+            "host": "smtp.x.com", "porta": 587, "seguranca": "starttls", "usuario": "u", "senha": "x",
+            "remetente_nome": "Escritorio", "remetente_email": "envios@escritorio.com", "assinatura": "<b>Equipe</b>",
+        }
+        sender = EmailSenderService(settings_loader=lambda: settings, connect=lambda s: FakeSmtp())
+        servico.enviar_emails(self.envio["id"], 2026, 6, sender, empresa_ids=[self.empresas[1][0]])
+        self.assertEqual(len(enviados), 1)
+        pagina = enviados[0].get_body(preferencelist=("html",)).get_content()
+        self.assertIn("<b>Ana</b>", pagina)
+        self.assertIn("<b>Equipe</b>", pagina)
+
     def test_conference_explains_who_receives_and_why(self) -> None:
         servico = self.services.envio_programado_service
         self._marcar(3, "Recebido")

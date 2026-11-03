@@ -18,6 +18,7 @@ from documentos_empresa_app.utils.common import (
     ValidationError,
     format_competencia,
 )
+from documentos_empresa_app.utils.email_format import para_texto, para_whatsapp, preencher
 
 # Na contabilidade se trabalha por competencia: o extrato/informe de marco so fica pronto no
 # fim de marco, entao a cobranca da competencia 03 sai em abril. Por isso o padrao e o mes
@@ -311,7 +312,12 @@ class EnvioProgramadoService:
         emails = split_emails(empresa.get("email_contato"))
         numero, grupo = whatsapp_liberado(empresa)
         canal = self._canal_da_empresa(envio["canal"], bool(numero or grupo))
-        mensagem_whatsapp = (envio.get("corpo_whatsapp") or envio["corpo"]).format_map(campos)
+        corpo_formatado = preencher(envio["corpo"], campos)
+        if envio.get("corpo_whatsapp"):
+            mensagem_whatsapp = envio["corpo_whatsapp"].format_map(campos)
+        else:
+            # Sem texto proprio: o do email, com o negrito/italico no jeito do WhatsApp.
+            mensagem_whatsapp = para_whatsapp(corpo_formatado)
         if grupo:
             # Grupo nao aceita texto pronto no link: a tela copia a mensagem e abre o grupo.
             link = grupo
@@ -339,7 +345,8 @@ class EnvioProgramadoService:
             "sem_email": not emails,
             "documentos": empresa["documentos"],
             "assunto": envio["assunto"].format_map(campos),
-            "corpo": envio["corpo"].format_map(campos),
+            "corpo": para_texto(corpo_formatado),
+            "corpo_formatado": corpo_formatado,
             "mensagem_whatsapp": mensagem_whatsapp,
             "instrucoes": envio.get("instrucoes"),
             "ja_enviado": ja_enviado,
@@ -393,7 +400,8 @@ class EnvioProgramadoService:
             "sem_email": not para,
             "documentos": [],
             "assunto": envio["assunto"].format_map(campos),
-            "corpo": envio["corpo"].format_map(campos),
+            "corpo": para_texto(preencher(envio["corpo"], campos)),
+            "corpo_formatado": preencher(envio["corpo"], campos),
             "mensagem_whatsapp": "",
             "instrucoes": envio.get("instrucoes"),
             "ja_enviado": all(empresa["ja_enviado"] for empresa in empresas),
@@ -683,6 +691,7 @@ class EnvioProgramadoService:
                         "cco": cco,
                         "assunto": item["assunto"],
                         "corpo": item["corpo"],
+                        "corpo_formatado": item["corpo_formatado"],
                         "empresas": empresas,
                         "nome": item["nome_empresa"],
                     }
@@ -694,6 +703,7 @@ class EnvioProgramadoService:
                         "cco": [],
                         "assunto": item["assunto"],
                         "corpo": item["corpo"],
+                        "corpo_formatado": item["corpo_formatado"],
                         "empresas": [
                             {
                                 "empresa_id": item["empresa_id"],

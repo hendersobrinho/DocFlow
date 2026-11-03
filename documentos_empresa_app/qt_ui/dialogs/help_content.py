@@ -561,6 +561,12 @@ HELP_TOPICS: list[HelpTopic] = [
         <li><b>Mensagem</b>: o assunto, o texto do email e um texto próprio para o WhatsApp
         (vazio = o mesmo do email). Os botões <b>{empresa}</b>, <b>{contato}</b>,
         <b>{documentos}</b>... inserem o campo onde está o cursor.</li>
+        <li><b>Formatar o email</b>: selecione o texto e use os botões <b>N</b> (negrito),
+        <i>I</i> (itálico) e <u>S</u> (sublinhado), ou Ctrl+B, Ctrl+I e Ctrl+U.
+        <b>Prévia do email</b> mostra como ele chega, já com a assinatura. No WhatsApp o
+        negrito vira *assim* e o itálico _assim_.</li>
+        <li><b>Assinatura</b>: em <b>Email de envio...</b> (no alto da tela). Vai no fim de
+        todo email que o DocFlow envia.</li>
         <li><b>Histórico</b>: tudo o que já foi enviado neste envio.</li>
         </ul>
 
