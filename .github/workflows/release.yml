@@ -35,7 +35,7 @@ jobs:
           cache: pip
 
       - name: Instalar dependencias
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt -r requirements-mcp.txt
 
       # O Windows do GitHub ja traz o PostgreSQL (usuario postgres, senha root), parado.
       - name: Iniciar PostgreSQL
@@ -76,7 +76,7 @@ jobs:
           cache: pip
 
       - name: Instalar dependencias
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt -r requirements-mcp.txt
 
       - name: Conferir versao
         id: versao

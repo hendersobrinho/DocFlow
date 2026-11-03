@@ -8,6 +8,11 @@ ICONS_DIR = ROOT_DIR / "assets" / "icons"
 BUILD_PLATFORM = sys.platform
 APP_NAME = "DocFLow"
 
+try:
+    import mcp  # noqa: F401  (sem ele o DocFLow-MCP.exe sai quebrado)
+except ImportError as exc:
+    raise SystemExit("Falta o pacote mcp: pip install -r requirements-mcp.txt") from exc
+
 
 def get_build_icon_path() -> Path | None:
     if BUILD_PLATFORM.startswith("win"):

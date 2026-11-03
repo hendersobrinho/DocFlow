@@ -43,7 +43,7 @@ if not defined BUILD_PYTHON (
     call :resolve_python_for_modules BUILD_PYTHON "openpyxl,PyInstaller"
     if errorlevel 1 (
         echo Dependencias ausentes para build. Instale com:
-        echo   py -m pip install -r requirements.txt
+        echo   py -m pip install -r requirements.txt -r requirements-mcp.txt
         exit /b 1
     )
 )
@@ -51,7 +51,7 @@ if not defined ICON_PYTHON (
     call :resolve_python_for_modules ICON_PYTHON "PIL"
     if errorlevel 1 (
         echo Dependencia ausente para gerar icones. Instale com:
-        echo   py -m pip install -r requirements.txt
+        echo   py -m pip install -r requirements.txt -r requirements-mcp.txt
         exit /b 1
     )
 )
