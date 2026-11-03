@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QVBoxLayout,
     QWidget,
@@ -18,7 +17,6 @@ from PySide6.QtWidgets import (
 
 from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.common import make_button
-from documentos_empresa_app.utils.common import ValidationError
 from documentos_empresa_app.utils.helpers import open_directory_in_file_manager
 from documentos_empresa_app.utils import mcp_setup
 
@@ -26,7 +24,8 @@ from documentos_empresa_app.utils import mcp_setup
 class McpPanel(QWidget):
     """Liga o DocFlow ao Claude Desktop: mostra em quais arquivos o Claude procura a
     configuracao, para onde cada um aponta (pasta antiga, outra instalacao...) e grava
-    em todos com um clique. Usuario e senha do DocFlow ficam aqui, protegidos."""
+    em todos com um clique. Nao pede usuario nem senha: o servidor age como o usuario
+    "claude" do DocFlow."""
 
     def __init__(self, services, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -37,7 +36,8 @@ class McpPanel(QWidget):
 
         intro = QLabel(
             "O Claude Desktop usa o DocFlow pelo servidor MCP. Aqui você vê onde o Claude procura a "
-            "configuração neste computador, para onde ela aponta, e conecta com um clique."
+            "configuração neste computador, para onde ela aponta, e conecta com um clique. Não precisa de "
+            'usuário nem senha: no Histórico de ações, o que o Claude fizer aparece como "claude".'
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
@@ -46,12 +46,6 @@ class McpPanel(QWidget):
         form = QFormLayout()
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.usuario_edit = QLineEdit()
-        self.usuario_edit.setPlaceholderText("usuário do DocFlow que o Claude vai usar (ex: claude)")
-        form.addRow("Usuário do DocFlow", self.usuario_edit)
-        self.senha_edit = QLineEdit()
-        self.senha_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Senha", self.senha_edit)
         self.programa_label = QLabel()
         self.programa_label.setWordWrap(True)
         self.programa_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -91,11 +85,6 @@ class McpPanel(QWidget):
     # Dados ---------------------------------------------------------------------------------
 
     def refresh(self) -> None:
-        if not self.usuario_edit.text():
-            self.usuario_edit.setText(mcp_setup.saved_mcp_user())
-        self.senha_edit.setPlaceholderText(
-            "salva (deixe em branco para manter)" if mcp_setup.load_mcp_credentials() else ""
-        )
         comando, args = mcp_setup.server_command()
         t = tokens()
         programa = escape(" ".join([comando, *args]))
@@ -130,8 +119,8 @@ class McpPanel(QWidget):
         aviso = ""
         if info["senha_no_arquivo"]:
             aviso = (
-                f'<br><span style="color:{t["warning"]};">Tem a senha em texto no arquivo; o Conectar tira e '
-                "guarda protegida no DocFlow.</span>"
+                f'<br><span style="color:{t["warning"]};">Tem usuário e senha em texto no arquivo; não são mais '
+                "necessários e o Conectar tira.</span>"
             )
 
         card = QFrame()
@@ -155,23 +144,6 @@ class McpPanel(QWidget):
     # Acoes ---------------------------------------------------------------------------------
 
     def connect_claude(self) -> None:
-        usuario = self.usuario_edit.text().strip()
-        senha = self.senha_edit.text()
-        salvo = mcp_setup.load_mcp_credentials()
-        if not usuario:
-            QMessageBox.warning(self, "Claude (MCP)", "Informe o usuário do DocFlow que o Claude vai usar.")
-            return
-        if not senha and not (salvo and salvo[0] == usuario):
-            QMessageBox.warning(self, "Claude (MCP)", "Informe a senha desse usuário.")
-            return
-        try:
-            self.services.auth_service.authenticate(usuario, senha or salvo[1])
-        except ValidationError as exc:
-            QMessageBox.warning(self, "Claude (MCP)", f"Não deu para entrar com esse usuário: {exc}")
-            return
-        mcp_setup.save_mcp_credentials(usuario, senha or None)
-        self.senha_edit.clear()
-
         gravados, erros = [], []
         for local in mcp_setup.claude_config_locations():
             try:
@@ -197,7 +169,7 @@ class McpPanel(QWidget):
         QGuiApplication.clipboard().setText(mcp_setup.config_snippet())
         self.resultado_label.setText(
             "Configuração copiada. No Claude: Configurações > Desenvolvedor > Editar configuração, cole dentro "
-            'de "mcpServers" e salve. O usuário e a senha ficam no DocFlow (salve-os aqui com Conectar).'
+            'de "mcpServers" e salve. Feche o Claude de vez e abra de novo.'
         )
 
     def _open_folder(self, caminho: Path) -> None:

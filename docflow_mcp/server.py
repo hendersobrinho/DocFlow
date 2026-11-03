@@ -7,9 +7,9 @@ regras de negocio, validacoes, permissoes de admin e o log de auditoria sao exat
 os mesmos da interface.
 
 Configuracao (variaveis de ambiente):
-- DOCFLOW_MCP_USUARIO / DOCFLOW_MCP_SENHA: usuario do DocFlow em nome de quem o servidor
-  age. Tudo que for alterado fica registrado nos logs com esse usuario. Sem elas, usa o
-  usuario salvo pelo app desktop em Configuracoes > Claude (MCP), com a senha protegida.
+- Usuario: o servidor age como o usuario "claude" do DocFlow (criado na primeira vez, sem
+  precisar de senha); tudo que for alterado fica nos logs com esse nome. Opcional:
+  DOCFLOW_MCP_USUARIO / DOCFLOW_MCP_SENHA para agir como outro usuario.
 - DOCFLOW_DATABASE_URL: conexao com o PostgreSQL. Sem ela, usa a conexao salva pelo app
   desktop no perfil do usuario do sistema operacional.
 """
@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import date
 import functools
 import os
+import secrets
 import threading
 from typing import Any, Callable, Literal
 
@@ -39,10 +40,11 @@ from documentos_empresa_app.utils.common import (
     parse_period_label,
 )
 from documentos_empresa_app.utils.database_settings import resolve_database_conninfo
-from documentos_empresa_app.utils.mcp_setup import load_mcp_credentials
+from documentos_empresa_app.utils.security import hash_password
 
 USER_ENV_VAR = "DOCFLOW_MCP_USUARIO"
 PASSWORD_ENV_VAR = "DOCFLOW_MCP_SENHA"
+MCP_USERNAME = "claude"
 
 StatusValue = Literal["Recebido", "Pendente", "Encerrado", "Nao cobrar", ""]
 OccurrenceRule = Literal["mensal", "trimestral", "anual_janeiro"]
@@ -136,6 +138,23 @@ _rodada_lock = threading.Lock()
 # Infraestrutura ---------------------------------------------------------------------
 
 
+def _usuario_do_claude(services: ApplicationServices) -> dict:
+    """Usuario em nome de quem o Claude age quando o arquivo do Claude nao traz usuario e
+    senha: o "claude" do DocFlow, criado na primeira vez (admin, com uma senha aleatoria que
+    ninguem precisa saber - o MCP nao usa senha). O que ele faz aparece nos logs como claude."""
+    repositorio = services.user_service.usuario_repository
+    with repositorio.db_manager.connect():
+        user = repositorio.get_by_username(MCP_USERNAME)
+        if user is None:
+            user_id = repositorio.create(MCP_USERNAME, hash_password(secrets.token_urlsafe(32)), "admin", 1)
+            user = repositorio.get_by_id(user_id)
+    if not user.get("ativa"):
+        raise ToolError(
+            f'O usuario "{MCP_USERNAME}" esta inativo no DocFlow. Reative-o em Usuarios para o Claude voltar a funcionar.'
+        )
+    return user
+
+
 def get_services() -> ApplicationServices:
     """Conecta e autentica na primeira chamada (e nao na subida do servidor), para que um
     banco fora do ar ou um usuario errado apareca como erro da tool, com a mensagem, em
@@ -147,14 +166,6 @@ def get_services() -> ApplicationServices:
 
         username = os.environ.get(USER_ENV_VAR, "").strip()
         password = os.environ.get(PASSWORD_ENV_VAR, "")
-        if not username or not password:
-            salvo = load_mcp_credentials()
-            if salvo is None:
-                raise ToolError(
-                    "O Claude ainda nao tem um usuario do DocFlow. Abra o DocFlow, va em Configuracoes > "
-                    "Claude (MCP), informe o usuario e a senha e clique em Conectar ao Claude Desktop."
-                )
-            username, password = salvo
         conninfo = resolve_database_conninfo()
         if not conninfo:
             raise ToolError(
@@ -164,12 +175,16 @@ def get_services() -> ApplicationServices:
 
         services = build_application_services(conninfo)
         services.periodo_service.ensure_operational_years()
-        user = services.auth_service.authenticate(username, password)
-        if user.get("deve_trocar_senha"):
-            raise ToolError(
-                f'O usuario "{username}" precisa trocar a senha antes de usar o DocFlow. Entre uma vez '
-                "pelo aplicativo desktop para definir a senha nova."
-            )
+        if username and password:
+            # Configuracao antiga, com usuario e senha no arquivo do Claude: continua valendo.
+            user = services.auth_service.authenticate(username, password)
+            if user.get("deve_trocar_senha"):
+                raise ToolError(
+                    f'O usuario "{username}" precisa trocar a senha antes de usar o DocFlow. Entre uma vez '
+                    "pelo aplicativo desktop para definir a senha nova."
+                )
+        else:
+            user = _usuario_do_claude(services)
         services.session_service.login(user)
         _services = services
         return _services

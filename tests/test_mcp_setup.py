@@ -21,12 +21,6 @@ class McpSetupTests(unittest.TestCase):
         ambiente = mock.patch.dict("os.environ", {"APPDATA": str(self.appdata), "LOCALAPPDATA": str(self.local)})
         ambiente.start()
         self.addCleanup(ambiente.stop)
-        self.config: dict = {}
-        for nome, fn in (("load_config", lambda: json.loads(json.dumps(self.config))),
-                         ("save_config", lambda c: self.config.update(c))):
-            patcher = mock.patch.object(mcp_setup, nome, fn)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
     def test_finds_store_and_regular_claude_configs(self) -> None:
         locais = mcp_setup.claude_config_locations()
@@ -71,14 +65,6 @@ class McpSetupTests(unittest.TestCase):
         self.assertFalse(mcp_setup.inspect_config(arquivo)["existe"])
         self.assertIsNone(mcp_setup.write_config(arquivo))
         self.assertIn("docflow", json.loads(arquivo.read_text(encoding="utf-8"))["mcpServers"])
-
-    def test_credentials_are_saved_protected_and_kept_when_password_blank(self) -> None:
-        with mock.patch.object(mcp_setup, "protect_secret", lambda s: f"protegido:{s}"), \
-                mock.patch.object(mcp_setup, "unprotect_secret", lambda s: s.split(":", 1)[1] if s else s):
-            mcp_setup.save_mcp_credentials(" claude ", "senha1")
-            self.assertEqual(self.config["mcp_conexao"]["senha"], "protegido:senha1")
-            mcp_setup.save_mcp_credentials("claude", "")
-            self.assertEqual(mcp_setup.load_mcp_credentials(), ("claude", "senha1"))
 
 
 if __name__ == "__main__":

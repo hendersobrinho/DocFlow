@@ -7,8 +7,8 @@ arquivo muda conforme a instalacao do Claude:
   (a versao da loja enxerga so este; gravar no outro nao tem efeito)
 
 Por isso a tela mostra todos os que existem, para onde cada um aponta e grava em todos.
-O usuario e a senha do DocFlow que o Claude usa ficam no config.json do DocFlow,
-com a senha protegida pelo DPAPI - o arquivo do Claude leva so o caminho do programa.
+O arquivo do Claude leva so o caminho do programa: o servidor age como o usuario "claude"
+do DocFlow, sem senha.
 """
 
 from __future__ import annotations
@@ -19,44 +19,11 @@ import os
 from pathlib import Path
 import sys
 
-from documentos_empresa_app.utils.helpers import load_config, save_config
-from documentos_empresa_app.utils.secret_protection import protect_secret, unprotect_secret
 
 SERVER_NAME = "docflow"
-MCP_CREDENTIALS_KEY = "mcp_conexao"
 MCP_EXE_NAME = "DocFLow-MCP.exe"
 CONFIG_FILE_NAME = "claude_desktop_config.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-# Credenciais ----------------------------------------------------------------------------
-
-
-def save_mcp_credentials(usuario: str, senha: str | None) -> None:
-    """Senha vazia mantem a que ja estava salva."""
-    config = load_config()
-    atual = config.get(MCP_CREDENTIALS_KEY) if isinstance(config.get(MCP_CREDENTIALS_KEY), dict) else {}
-    config[MCP_CREDENTIALS_KEY] = {
-        "usuario": usuario.strip(),
-        "senha": protect_secret(senha) if senha else atual.get("senha"),
-    }
-    save_config(config)
-
-
-def load_mcp_credentials() -> tuple[str, str] | None:
-    dados = load_config().get(MCP_CREDENTIALS_KEY)
-    if not isinstance(dados, dict):
-        return None
-    usuario = str(dados.get("usuario") or "").strip()
-    senha = unprotect_secret(dados.get("senha"))
-    if not usuario or not senha:
-        return None
-    return usuario, senha
-
-
-def saved_mcp_user() -> str:
-    dados = load_config().get(MCP_CREDENTIALS_KEY)
-    return str(dados.get("usuario") or "") if isinstance(dados, dict) else ""
 
 
 # Comando do servidor ----------------------------------------------------------------------
@@ -154,7 +121,7 @@ def write_config(caminho: Path) -> Path | None:
         servidores = {}
     entrada = dict(servidores.get(SERVER_NAME) or {})
     entrada.update(server_entry())
-    # Usuario e senha agora vem do DocFlow (protegidos); nada de senha em texto no arquivo.
+    # O servidor age como o usuario "claude": usuario e senha no arquivo nao sao mais necessarios.
     env = {k: v for k, v in (entrada.get("env") or {}).items() if k not in ("DOCFLOW_MCP_USUARIO", "DOCFLOW_MCP_SENHA")}
     if env:
         entrada["env"] = env

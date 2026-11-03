@@ -491,9 +491,9 @@ HELP_TOPICS: list[HelpTopic] = [
         de competência, email e WhatsApp das cobranças.</p>
 
         <h3>Claude (MCP)</h3>
-        <p>Liga o DocFlow ao Claude Desktop. Informe o usuário do DocFlow que o Claude vai
-        usar e a senha (fica guardada protegida neste computador) e clique em
-        <b>Conectar ao Claude Desktop</b>.</p>
+        <p>Liga o DocFlow ao Claude Desktop: clique em <b>Conectar ao Claude Desktop</b>. Não
+        precisa de usuário nem senha - o que o Claude fizer aparece no Histórico de ações como
+        <b>claude</b>.</p>
         <ul>
         <li>A tela mostra <b>onde o Claude lê a configuração</b> neste computador. O Claude da
         Microsoft Store e o do site usam arquivos diferentes; o Conectar grava nos dois e

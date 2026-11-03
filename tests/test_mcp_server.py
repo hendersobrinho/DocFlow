@@ -264,6 +264,18 @@ class DocflowMcpServerTests(unittest.TestCase):
         self.assertIn("Sem acesso", self.call("historico_rodadas")[0]["ocorrencias"][0]["mensagem"])
         self.assertIn("Nao ha rodada", self.call_error("finalizar_rodada"))
 
+    def test_server_acts_as_claude_without_username_or_password(self) -> None:
+        repositorio = self.services.user_service.usuario_repository
+        self.assertIsNone(repositorio.get_by_username("claude"))
+
+        user = docflow_server._usuario_do_claude(self.services)  # cria na primeira vez
+        self.assertEqual((user["username"], user["tipo_usuario"]), ("claude", "admin"))
+        self.assertEqual(docflow_server._usuario_do_claude(self.services)["id"], user["id"])  # depois reaproveita
+
+        repositorio.update(user["id"], "claude", "admin", 0)
+        with self.assertRaises(docflow_server.ToolError):
+            docflow_server._usuario_do_claude(self.services)
+
 
 if __name__ == "__main__":
     unittest.main()
