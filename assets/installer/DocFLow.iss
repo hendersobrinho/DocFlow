@@ -1,5 +1,5 @@
 #define AppName "DocFLow"
-#define AppVersion "2.0.3"
+#define AppVersion "2.0.4"
 #define AppPublisher "hndlab.dev.br"
 #define AppExeName "DocFLow.exe"
 
