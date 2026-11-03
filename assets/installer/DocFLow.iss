@@ -1,5 +1,5 @@
 #define AppName "DocFLow"
-#define AppVersion "2.0.5"
+#define AppVersion "2.0.6"
 #define AppPublisher "hndlab.dev.br"
 #define AppExeName "DocFLow.exe"
 
@@ -26,7 +26,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 VersionInfoVersion={#AppVersion}
 ; Atualizacao automatica: o DocFlow baixa este instalador e roda com /VERYSILENT
 ; /CLOSEAPPLICATIONS /RELAUNCH=1 - fecha o sistema aberto, instala por cima e abre de novo.
-CloseApplications=yes
+; force: programa que nao responde ao pedido de fechar e encerrado (senao o silencioso aborta).
+CloseApplications=force
 RestartApplications=no
 
 [Languages]
@@ -47,6 +48,19 @@ Filename: "{app}\{#AppExeName}"; Description: "Abrir {#AppName}"; Flags: nowait 
 Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: ReabrirDepoisDeAtualizar
 
 [Code]
+// O Claude Desktop deixa o DocFLow-MCP.exe (desta pasta) rodando. E um programa de console
+// sem janela: o Windows nao consegue pedir para ele fechar e, no modo silencioso da
+// atualizacao automatica, o instalador abortava e desfazia tudo (sem reabrir o DocFlow).
+// Encerra o MCP antes; o Claude Desktop abre de novo quando precisar.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM DocFLow-MCP.exe', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
+
 function ReabrirDepoisDeAtualizar: Boolean;
 begin
   Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
