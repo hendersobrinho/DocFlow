@@ -31,7 +31,7 @@ from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSel
 from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, ToolbarRow, make_button
 from documentos_empresa_app.qt_ui.widgets.email_editor import EmailPreviewDialog, formatted_editor
-from documentos_empresa_app.qt_ui.widgets.envios import CANAL_CURTO, EmailEnvioDialog, QuemRecebePanel
+from documentos_empresa_app.qt_ui.widgets.envios import CANAL_CURTO, AssinaturaDialog, EmailEnvioDialog, QuemRecebePanel
 from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table
 from documentos_empresa_app.services.envio_programado_service import (
     CAMPOS_MODELO,
@@ -45,7 +45,7 @@ from documentos_empresa_app.services.envio_programado_service import (
     data_de_envio,
     split_emails,
 )
-from documentos_empresa_app.services.email_sender_service import load_email_settings
+from documentos_empresa_app.services.email_sender_service import load_email_signature
 from documentos_empresa_app.utils.common import MONTH_NAMES, ValidationError, format_utc_timestamp
 from documentos_empresa_app.utils.email_format import para_texto, preencher
 
@@ -81,7 +81,10 @@ def campos_de_exemplo(cco: bool = False) -> dict:
     return campos
 
 
-def abrir_previa_email(parent: QWidget, assunto: str, corpo_marcado: str, cco: bool = False, para: str = "") -> None:
+def abrir_previa_email(
+    parent: QWidget, assunto: str, corpo_marcado: str, cco: bool = False, para: str = "", imagens=None
+) -> None:
+    """imagens: o EnvioProgramadoService (para mostrar as imagens do meio do texto)."""
     campos = campos_de_exemplo(cco)
     try:
         corpo = preencher(corpo_marcado, campos)
@@ -93,10 +96,11 @@ def abrir_previa_email(parent: QWidget, assunto: str, corpo_marcado: str, cco: b
         parent,
         assunto,
         corpo,
-        load_email_settings().get("assinatura"),
+        load_email_signature(),
         para=para,
         aviso="Exemplo com dados fictícios - em Quem recebe você vê o email de cada empresa. "
-        "A assinatura é a cadastrada em Email de envio.",
+        "A assinatura é a cadastrada em Assinatura do email.",
+        imagens=imagens.imagens_do_texto(corpo) if imagens else None,
     ).exec()
 
 
@@ -111,8 +115,10 @@ class EnvioDialog(QDialog):
         empresas: list[dict],
         envio: dict | None = None,
         publico=None,
+        imagens=None,
     ) -> None:
         super().__init__(parent)
+        self.imagens = imagens
         self.setWindowTitle("Editar envio automático" if envio else "Novo envio automático")
         self.setMinimumWidth(660)
         envio = envio or {}
@@ -224,7 +230,7 @@ class EnvioDialog(QDialog):
         self.assunto_edit.setPlaceholderText("Ex: Informe de Rendimentos - {competencia}")
         form.addRow("Assunto do email", self.assunto_edit)
 
-        corpo_bloco, self.corpo_edit = formatted_editor()
+        corpo_bloco, self.corpo_edit = formatted_editor(imagens=imagens)
         self.corpo_edit.set_marked(envio.get("corpo", ""))
         self.corpo_edit.setMinimumHeight(140)
         previa = make_button("Prévia do email", "quiet")
@@ -270,7 +276,9 @@ class EnvioDialog(QDialog):
 
     def _previa(self) -> None:
         valores = self.values()
-        abrir_previa_email(self, valores["assunto"], valores["corpo"], valores["modo"] == MODO_CCO, valores["email_para"])
+        abrir_previa_email(
+            self, valores["assunto"], valores["corpo"], valores["modo"] == MODO_CCO, valores["email_para"], self.imagens
+        )
 
     def _set_meses(self, meses: tuple[int, ...]) -> None:
         for mes, check in self.mes_checks.items():
@@ -403,7 +411,7 @@ class MensagemTab(QWidget):
             rotulo.setStyleSheet("font-weight: 600;")
             bloco_layout.addWidget(rotulo)
             if atributo == "corpo_edit":
-                editor_bloco, editor = formatted_editor()
+                editor_bloco, editor = formatted_editor(imagens=services.envio_programado_service)
                 bloco_layout.addWidget(editor_bloco, 1)
             else:
                 editor = QTextEdit()
@@ -529,7 +537,10 @@ class MensagemTab(QWidget):
     def preview(self) -> None:
         valores = self.values()
         cco = bool(self.envio) and self.envio["modo"] == MODO_CCO
-        abrir_previa_email(self, valores["assunto"], valores["corpo"], cco, valores["email_para"] if cco else "")
+        abrir_previa_email(
+            self, valores["assunto"], valores["corpo"], cco, valores["email_para"] if cco else "",
+            self.services.envio_programado_service,
+        )
 
     def save(self) -> bool:
         if not self.envio:
@@ -673,6 +684,10 @@ class EnviosPage(QWidget):
         self.email_status = QLabel("")
         self.email_status.setObjectName("Muted")
         barra.add(self.email_status)
+        assinatura_button = make_button("Assinatura do email...")
+        assinatura_button.setToolTip("Texto e/ou imagem no fim de todo email (do DocFlow e dos que o Claude monta).")
+        assinatura_button.clicked.connect(lambda: AssinaturaDialog(self).exec())
+        barra.add(assinatura_button)
         email_button = make_button("Email de envio...")
         email_button.setToolTip("O login do email do escritório que o DocFlow usa para enviar.")
         email_button.clicked.connect(self.configure_email)
@@ -931,6 +946,7 @@ class EnviosPage(QWidget):
             self.services.empresa_service.list_empresas(),
             envio,
             publico=publico,
+            imagens=self.services.envio_programado_service,
         )
         while dialog.exec():
             try:

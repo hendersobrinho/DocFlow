@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import calendar
 import re
 from datetime import date
+from pathlib import Path
 
 from documentos_empresa_app.database.repositories import (
     EmpresaRepository,
     EnvioProgramadoRepository,
+    ImagemEmailRepository,
     ModeloMensagemRepository,
     TipoRepository,
 )
@@ -14,11 +17,12 @@ from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.services.whatsapp_service import build_link, format_whatsapp
 from documentos_empresa_app.utils.common import (
+    CONFIG_DIR,
     MONTH_NAMES,
     ValidationError,
     format_competencia,
 )
-from documentos_empresa_app.utils.email_format import para_texto, para_whatsapp, preencher
+from documentos_empresa_app.utils.email_format import imagens_usadas, para_texto, para_whatsapp, preencher
 
 # Na contabilidade se trabalha por competencia: o extrato/informe de marco so fica pronto no
 # fim de marco, entao a cobranca da competencia 03 sai em abril. Por isso o padrao e o mes
@@ -82,6 +86,8 @@ CAMPOS_MODELO = {
     "ano": "ano da competencia",
     "documentos": "lista dos documentos que faltam, um por linha",
 }
+IMAGEM_TIPOS = ("png", "jpeg", "gif")
+IMAGEM_MAX_BYTES = 3_000_000
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
@@ -169,11 +175,14 @@ class EnvioProgramadoService:
         audit_service: AuditService | None = None,
         session_service: SessionService | None = None,
         modelo_repository: ModeloMensagemRepository | None = None,
+        imagem_repository: ImagemEmailRepository | None = None,
     ) -> None:
         self.envio_repository = envio_repository
         self.empresa_repository = empresa_repository
         self.tipo_repository = tipo_repository
         self.modelo_repository = modelo_repository
+        self.imagem_repository = imagem_repository
+        self._cache_imagens: dict[int, dict] = {}
         self.audit_service = audit_service
         self.session_service = session_service
 
@@ -692,6 +701,7 @@ class EnvioProgramadoService:
                         "assunto": item["assunto"],
                         "corpo": item["corpo"],
                         "corpo_formatado": item["corpo_formatado"],
+                        "imagens": self.imagens_do_texto(item["corpo_formatado"]),
                         "empresas": empresas,
                         "nome": item["nome_empresa"],
                     }
@@ -704,6 +714,7 @@ class EnvioProgramadoService:
                         "assunto": item["assunto"],
                         "corpo": item["corpo"],
                         "corpo_formatado": item["corpo_formatado"],
+                        "imagens": self.imagens_do_texto(item["corpo_formatado"]),
                         "empresas": [
                             {
                                 "empresa_id": item["empresa_id"],
@@ -738,6 +749,60 @@ class EnvioProgramadoService:
 
     def listar_modelos(self) -> list[dict]:
         return self.modelo_repository.list_all() if self.modelo_repository else []
+
+    # Imagens do meio do texto -------------------------------------------------------------
+
+    def salvar_imagem(self, dados: bytes, tipo: str, nome: str | None = None) -> int:
+        """Guarda uma imagem para usar no texto do email (<img id="...">). Devolve o id."""
+        if self.imagem_repository is None:
+            raise ValidationError("Imagens no texto nao estao disponiveis.")
+        tipo = str(tipo or "").lower().replace("image/", "").replace("jpg", "jpeg")
+        if tipo not in IMAGEM_TIPOS:
+            raise ValidationError("A imagem precisa ser PNG, JPG ou GIF.")
+        if not dados:
+            raise ValidationError("Imagem vazia.")
+        if len(dados) > IMAGEM_MAX_BYTES:
+            raise ValidationError("A imagem passa de 3 MB - use uma versao menor (ela vai dentro do email).")
+        imagem_id = self.imagem_repository.insert(
+            (str(nome).strip()[:200] or None) if nome else None, tipo, base64.b64encode(dados).decode("ascii")
+        )
+        self._cache_imagens[imagem_id] = {"id": imagem_id, "tipo": tipo, "dados": dados}
+        return imagem_id
+
+    def imagem(self, imagem_id: int) -> dict | None:
+        """{"id", "tipo" (png/jpeg/gif), "dados": bytes} ou None se nao existe."""
+        imagem_id = int(imagem_id)
+        if imagem_id in self._cache_imagens:
+            return self._cache_imagens[imagem_id]
+        if self.imagem_repository is None:
+            return None
+        linha = self.imagem_repository.get(imagem_id)
+        if not linha:
+            return None
+        imagem = {"id": imagem_id, "tipo": linha["tipo"], "dados": base64.b64decode(linha["dados"])}
+        self._cache_imagens[imagem_id] = imagem
+        return imagem
+
+    def imagens_do_texto(self, texto: str | None) -> dict[int, dict]:
+        """As imagens que o texto usa (as que sumiram do banco ficam de fora)."""
+        encontradas = {}
+        for imagem_id in imagens_usadas(texto):
+            imagem = self.imagem(imagem_id)
+            if imagem:
+                encontradas[imagem_id] = imagem
+        return encontradas
+
+    def arquivo_imagem(self, imagem_id: int, pasta: Path | None = None) -> Path | None:
+        """Grava a imagem num arquivo (para o Claude anexar no email que ele monta)."""
+        imagem = self.imagem(imagem_id)
+        if not imagem:
+            return None
+        pasta = Path(pasta or CONFIG_DIR / "imagens_email")
+        pasta.mkdir(parents=True, exist_ok=True)
+        arquivo = pasta / f"imagem_{imagem['id']}.{'jpg' if imagem['tipo'] == 'jpeg' else imagem['tipo']}"
+        if not arquivo.is_file() or arquivo.stat().st_size != len(imagem["dados"]):
+            arquivo.write_bytes(imagem["dados"])
+        return arquivo
 
     def salvar_modelo(self, nome: str, assunto: str | None, corpo: str, corpo_whatsapp: str | None = None) -> dict:
         """Guarda um texto pronto para reaproveitar (mesmo nome substitui o texto)."""

@@ -5,9 +5,11 @@ import socket
 import ssl
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
+from pathlib import Path
+import shutil
 
-from documentos_empresa_app.utils.common import ValidationError
-from documentos_empresa_app.utils.email_format import para_html, texto_com_assinatura
+from documentos_empresa_app.utils.common import CONFIG_DIR, ValidationError
+from documentos_empresa_app.utils.email_format import cid_imagem, imagens_usadas, para_html, texto_com_assinatura
 from documentos_empresa_app.utils.helpers import load_config, save_config
 from documentos_empresa_app.utils.secret_protection import protect_secret, unprotect_secret
 
@@ -28,9 +30,17 @@ DEFAULT_EMAIL_SETTINGS = {
     "senha": "",
     "remetente_nome": "",
     "remetente_email": "",
-    # Vai no fim de todo email enviado pelo DocFlow (texto marcado: utils/email_format).
-    "assinatura": "",
 }
+# Assinatura: fica a parte do login (da para cadastrar antes de ter o email de envio) e serve
+# tambem ao Claude, que envia pela ferramenta de email dele. A imagem e copiada para a pasta
+# de configuracao do DocFlow.
+SIGNATURE_CONFIG_KEY = "assinatura_email"
+SIGNATURE_IMAGE_NAME = "assinatura_email"
+SIGNATURE_CID = "assinatura_docflow"
+SIGNATURE_IMAGE_TYPES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".gif": "gif"}
+SIGNATURE_MAX_BYTES = 1_000_000
+# Largura maxima da imagem no email (px): imagem maior e mostrada reduzida.
+SIGNATURE_MAX_WIDTH = 600
 # Servidores mais comuns, para a pessoa so escolher e digitar email e senha.
 PROVEDORES_SMTP = {
     "Gmail / Google Workspace": ("smtp.gmail.com", 587, SEGURANCA_STARTTLS),
@@ -63,8 +73,6 @@ def save_email_settings(settings: dict) -> dict:
     for chave in DEFAULT_EMAIL_SETTINGS:
         normalizado[chave] = str(settings.get(chave) or "").strip()
     normalizado["senha"] = str(settings.get("senha") or "") or atual["senha"]
-    if "assinatura" not in settings:
-        normalizado["assinatura"] = atual["assinatura"]
     if not normalizado["host"]:
         raise ValidationError("Informe o servidor de envio (SMTP).")
     try:
@@ -87,6 +95,62 @@ def save_email_settings(settings: dict) -> dict:
     return normalizado
 
 
+def load_email_signature() -> dict:
+    """{"texto": texto marcado, "imagem": caminho do arquivo ou "", "largura": px ou None}."""
+    config = load_config()
+    stored = config.get(SIGNATURE_CONFIG_KEY)
+    if not isinstance(stored, dict):
+        # A 2.0.7 guardava so o texto junto do login.
+        antigo = config.get(EMAIL_CONFIG_KEY)
+        stored = {"texto": antigo.get("assinatura") if isinstance(antigo, dict) else ""}
+    imagem = ""
+    nome = str(stored.get("imagem") or "")
+    if nome and Path(nome).name == nome and (CONFIG_DIR / nome).is_file():
+        imagem = str(CONFIG_DIR / nome)
+    try:
+        largura = int(stored.get("largura") or 0) or None
+    except (TypeError, ValueError):
+        largura = None
+    return {"texto": str(stored.get("texto") or ""), "imagem": imagem, "largura": largura if imagem else None}
+
+
+def save_email_signature(texto: str | None, imagem: str | None = None, largura: int | None = None) -> dict:
+    """Guarda a assinatura. imagem: caminho de uma imagem nova (e copiada), "" tira a imagem,
+    None mantem a atual. largura: como a imagem aparece no email (px; limitada a 600)."""
+    atual = load_email_signature()
+    nome_imagem = Path(atual["imagem"]).name if atual["imagem"] else ""
+    if imagem == "":
+        nome_imagem = ""
+    elif imagem and Path(imagem) != Path(atual["imagem"] or "."):
+        origem = Path(imagem)
+        extensao = origem.suffix.lower()
+        if extensao not in SIGNATURE_IMAGE_TYPES:
+            raise ValidationError("A imagem da assinatura precisa ser PNG, JPG ou GIF.")
+        if not origem.is_file():
+            raise ValidationError(f"Arquivo nao encontrado: {origem}")
+        if origem.stat().st_size > SIGNATURE_MAX_BYTES:
+            raise ValidationError("A imagem da assinatura passa de 1 MB - use uma versao menor (ela vai em todo email).")
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        for antiga in CONFIG_DIR.glob(f"{SIGNATURE_IMAGE_NAME}.*"):
+            antiga.unlink(missing_ok=True)
+        nome_imagem = f"{SIGNATURE_IMAGE_NAME}{extensao}"
+        shutil.copyfile(origem, CONFIG_DIR / nome_imagem)
+    if not nome_imagem:
+        for antiga in CONFIG_DIR.glob(f"{SIGNATURE_IMAGE_NAME}.*"):
+            antiga.unlink(missing_ok=True)
+    largura = min(int(largura), SIGNATURE_MAX_WIDTH) if largura and nome_imagem else None
+    config = load_config()
+    config[SIGNATURE_CONFIG_KEY] = {"texto": str(texto or "").strip(), "imagem": nome_imagem, "largura": largura}
+    save_config(config)
+    return load_email_signature()
+
+
+def signature_html(assinatura: dict, imagem_src: str | None = None) -> str:
+    """So a assinatura em HTML (para o Claude colar no fim do email que ele monta)."""
+    src = imagem_src if imagem_src is not None else (f"cid:{SIGNATURE_CID}" if assinatura.get("imagem") else None)
+    return para_html("", assinatura.get("texto"), src, assinatura.get("largura")).replace("<br>\n<br>\n", "", 1)
+
+
 def _conectar(settings: dict, timeout: float = 30):
     contexto = ssl.create_default_context()
     if settings["seguranca"] == SEGURANCA_SSL:
@@ -104,9 +168,10 @@ class EmailSenderService:
     """Envia emails pelo login cadastrado no DocFlow (SMTP) - para a equipe enviar apertando um
     botao, sem depender do Claude nem do programa de email."""
 
-    def __init__(self, settings_loader=load_email_settings, connect=_conectar) -> None:
+    def __init__(self, settings_loader=load_email_settings, connect=_conectar, signature_loader=load_email_signature) -> None:
         self._settings_loader = settings_loader
         self._connect = connect
+        self._signature_loader = signature_loader
 
     def settings(self) -> dict:
         return self._settings_loader()
@@ -152,6 +217,7 @@ class EmailSenderService:
         except (smtplib.SMTPException, OSError, socket.timeout) as exc:
             raise ValidationError(f"Nao foi possivel conectar ao servidor de email: {exc}") from exc
         remetente = formataddr((settings["remetente_nome"], settings["remetente_email"]))
+        assinatura = self._signature_loader()
         resultados: list[dict] = []
         try:
             for numero, mensagem in enumerate(mensagens):
@@ -159,7 +225,7 @@ class EmailSenderService:
                     on_progress(numero, len(mensagens))
                 try:
                     for parte in self._partes(mensagem, settings["remetente_email"]):
-                        email = self._montar(parte, remetente, settings.get("assinatura"))
+                        email = self._montar(parte, remetente, assinatura)
                         smtp.send_message(email, to_addrs=parte["para"] + parte["cco"])
                     resultados.append({"ok": True})
                 except (smtplib.SMTPException, OSError) as exc:
@@ -186,7 +252,7 @@ class EmailSenderService:
         ]
 
     @staticmethod
-    def _montar(mensagem: dict, remetente: str, assinatura: str | None = None) -> EmailMessage:
+    def _montar(mensagem: dict, remetente: str, assinatura: dict | None = None) -> EmailMessage:
         email = EmailMessage()
         email["From"] = remetente
         email["To"] = ", ".join(mensagem["para"])
@@ -195,8 +261,32 @@ class EmailSenderService:
         # Cco nao vai no cabecalho: so na lista de entrega (to_addrs), para ninguem ver os outros.
         # Texto puro para quem nao le HTML e o formatado (negrito, sublinhado, assinatura).
         marcado = mensagem.get("corpo_formatado") or mensagem["corpo"]
-        email.set_content(texto_com_assinatura(marcado, assinatura))
+        assinatura = assinatura or {}
+        texto = assinatura.get("texto")
+        imagem = Path(assinatura["imagem"]) if assinatura.get("imagem") else None
+        if imagem and not imagem.is_file():
+            imagem = None
+        email.set_content(texto_com_assinatura(marcado, texto))
+        src = f"cid:{SIGNATURE_CID}" if imagem else None
         email.add_alternative(
-            f'<!DOCTYPE html><html><body>{para_html(marcado, assinatura)}</body></html>', subtype="html"
+            f'<!DOCTYPE html><html><body>{para_html(marcado, texto, src, assinatura.get("largura"))}</body></html>',
+            subtype="html",
         )
+        # Imagens embutidas (nao vao como anexo): o HTML aponta para elas pelo Content-ID. As do
+        # meio do texto vem em mensagem["imagens"] ({id: {"tipo", "dados"}}).
+        embutidas = [
+            (dados["dados"], dados["tipo"], cid_imagem(imagem_id), f"imagem_{imagem_id}.{dados['tipo']}")
+            for imagem_id, dados in (mensagem.get("imagens") or {}).items()
+            if imagem_id in imagens_usadas(marcado)
+        ]
+        if imagem:
+            embutidas.append(
+                (imagem.read_bytes(), SIGNATURE_IMAGE_TYPES.get(imagem.suffix.lower(), "png"), SIGNATURE_CID, imagem.name)
+            )
+        if embutidas:
+            parte_html = email.get_payload()[1]
+            for dados, subtipo, cid, nome in embutidas:
+                parte_html.add_related(
+                    dados, maintype="image", subtype=subtipo, cid=f"<{cid}>", disposition="inline", filename=nome
+                )
         return email

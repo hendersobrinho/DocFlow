@@ -16,9 +16,11 @@ Configuracao (variaveis de ambiente):
 
 from __future__ import annotations
 
+import base64
 from datetime import date
 import functools
 import os
+from pathlib import Path
 import secrets
 import threading
 from typing import Any, Callable, Literal
@@ -39,7 +41,13 @@ from documentos_empresa_app.utils.common import (
     format_utc_timestamp,
     parse_period_label,
 )
+from documentos_empresa_app.services.email_sender_service import (
+    SIGNATURE_CID,
+    load_email_signature,
+    signature_html,
+)
 from documentos_empresa_app.utils.database_settings import resolve_database_conninfo
+from documentos_empresa_app.utils.email_format import cid_imagem, imagens_usadas, para_html, texto_com_assinatura
 from documentos_empresa_app.utils.security import hash_password
 
 USER_ENV_VAR = "DOCFLOW_MCP_USUARIO"
@@ -453,7 +461,8 @@ def fila_cobranca(somente_ativas: bool = True) -> list[dict[str, Any]]:
 @docflow_tool(read_only=True)
 def mensagem_cobranca(codigo_empresa: int, canal: Literal["email", "whatsapp"] = "email") -> dict[str, Any]:
     """Texto pronto de cobranca dos documentos em aberto de uma empresa (email com assunto
-    e corpo, ou mensagem de WhatsApp). So gera o texto - nada e enviado."""
+    e corpo, ou mensagem de WhatsApp). So gera o texto - nada e enviado. No email vem tambem
+    'assinatura' (a do escritorio, para ir no fim; veja 'assinatura_email')."""
     services = get_services()
     queue = services.collection_service.build_collection_queue(active_only=False)
     item = next((i for i in queue["items"] if i["codigo_empresa"] == codigo_empresa), None)
@@ -461,7 +470,7 @@ def mensagem_cobranca(codigo_empresa: int, canal: Literal["email", "whatsapp"] =
         raise ToolError(f"A empresa {codigo_empresa} nao tem documentos em aberto para cobrar.")
     if canal == "whatsapp":
         return {"mensagem": services.collection_service.build_whatsapp_message(item)}
-    return services.collection_service.build_email_draft(item)
+    return {**services.collection_service.build_email_draft(item), "assinatura": _assinatura_para_claude()}
 
 
 @docflow_tool(read_only=True)
@@ -1362,15 +1371,83 @@ def envios_a_fazer(data: str | None = None, envio_id: int | None = None) -> dict
     """Mensagens que ja deveriam ter saido (por padrao, hoje): um item por empresa, com canal
     (email ou whatsapp), destinatarios/whatsapp, assunto e corpo prontos e a competencia
     cobrada. 'corpo' e o texto puro; 'corpo_formatado' tem as marcas <b>, <i> e <u> (negrito,
-    italico, sublinhado) - se a sua ferramenta enviar HTML, use-o (troque as quebras de linha
-    por <br>). Envie cada um (email pela sua ferramenta de email, WhatsApp com 'enviar_whatsapp')
+    italico, sublinhado); 'corpo_html' e o email pronto em HTML, ja com a assinatura do
+    escritorio, e 'corpo_com_assinatura' o mesmo em texto puro. Se houver imagem na
+    assinatura ('assinatura.imagem'), anexe o arquivo como imagem embutida com o Content-ID
+    indicado (veja 'assinatura_email'). Imagens do meio do texto vem em 'imagens' (arquivo e
+    Content-ID): anexe cada uma como imagem embutida com o seu Content-ID. Envie cada um (email pela sua ferramenta de email, WhatsApp com 'enviar_whatsapp')
     e registre com 'registrar_envio' - o item some da lista depois de registrado como enviado.
     Itens com sem_contato=true nao tem para onde ir: registre como falhou com o motivo.
     data: AAAA-MM-DD (opcional, para simular outro dia)."""
     services = get_services()
     hoje = _parse_date(data)
     itens = services.envio_programado_service.a_enviar(hoje, envio_id)
-    return {"data": hoje.isoformat(), "total": len(itens), "itens": itens}
+    assinatura = load_email_signature()
+    return {
+        "data": hoje.isoformat(),
+        "total": len(itens),
+        "assinatura": _assinatura_para_claude(),
+        "itens": [_com_assinatura(services, item, assinatura) for item in itens],
+    }
+
+
+def _assinatura_para_claude(incluir_base64: bool = False) -> dict[str, Any] | None:
+    """A assinatura cadastrada no DocFlow (Envios automaticos > Assinatura do email)."""
+    assinatura = load_email_signature()
+    texto = texto_com_assinatura("", assinatura["texto"]).strip()
+    if not texto and not assinatura["imagem"]:
+        return None
+    dados: dict[str, Any] = {
+        "texto": texto,
+        "html": signature_html(assinatura),
+        "imagem": None,
+    }
+    if assinatura["imagem"]:
+        arquivo = Path(assinatura["imagem"])
+        imagem: dict[str, Any] = {
+            "caminho": str(arquivo),
+            "tipo": "image/" + {".jpg": "jpeg", ".jpeg": "jpeg"}.get(arquivo.suffix.lower(), arquivo.suffix.lower().lstrip(".")),
+            "content_id": SIGNATURE_CID,
+            "largura": assinatura["largura"],
+        }
+        if incluir_base64:
+            imagem["base64"] = base64.b64encode(arquivo.read_bytes()).decode("ascii")
+        dados["imagem"] = imagem
+    return dados
+
+
+def _com_assinatura(services: ApplicationServices, item: dict[str, Any], assinatura: dict[str, Any]) -> dict[str, Any]:
+    """Item de email com o corpo pronto em HTML (formatado + assinatura) e em texto, e as
+    imagens do meio do texto (arquivo + Content-ID). assinatura: load_email_signature()."""
+    if item.get("canal") != "email":
+        return item
+    marcado = item.get("corpo_formatado") or item.get("corpo") or ""
+    src = f"cid:{SIGNATURE_CID}" if assinatura["imagem"] else None
+    servico = services.envio_programado_service
+    imagens = []
+    for imagem_id in imagens_usadas(marcado):
+        arquivo = servico.arquivo_imagem(imagem_id)
+        if arquivo:
+            tipo = servico.imagem(imagem_id)["tipo"]
+            imagens.append({"content_id": cid_imagem(imagem_id), "caminho": str(arquivo), "tipo": f"image/{tipo}"})
+    return {
+        **item,
+        "corpo_html": para_html(marcado, assinatura["texto"], src, assinatura["largura"]),
+        "corpo_com_assinatura": texto_com_assinatura(marcado, assinatura["texto"]),
+        "imagens": imagens,
+    }
+
+
+@docflow_tool(read_only=True)
+def assinatura_email(incluir_base64: bool = False) -> dict[str, Any]:
+    """Assinatura que vai no fim de todo email do escritorio (cadastrada em Envios automaticos
+    > Assinatura do email): texto, html e imagem. A imagem fica no arquivo 'imagem.caminho';
+    no html ela aparece como <img src="cid:assinatura_docflow"> - anexe o arquivo como imagem
+    embutida (inline) com esse Content-ID. Se a sua ferramenta de email nao aceitar imagem
+    embutida, use incluir_base64=true para receber o conteudo ou anexe o arquivo. Sem
+    assinatura cadastrada devolve cadastrada=false."""
+    dados = _assinatura_para_claude(incluir_base64)
+    return {"cadastrada": dados is not None, **(dados or {})}
 
 
 @docflow_tool(read_only=True)

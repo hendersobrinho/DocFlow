@@ -11,6 +11,7 @@ from documentos_empresa_app.database.repositories import (
     EmpresaRepository,
     EnvioProgramadoRepository,
     LogRepository,
+    ImagemEmailRepository,
     ModeloMensagemRepository,
     PeriodoRepository,
     RememberedSessionRepository,
@@ -180,6 +181,7 @@ def build_application_services(
         audit_service=audit_service,
         session_service=session,
         modelo_repository=ModeloMensagemRepository(db_manager),
+        imagem_repository=ImagemEmailRepository(db_manager),
     )
 
     return ApplicationServices(

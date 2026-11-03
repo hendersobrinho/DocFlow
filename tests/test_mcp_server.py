@@ -53,6 +53,62 @@ class DocflowMcpServerTests(unittest.TestCase):
         self.assertTrue(panorama.annotations.read_only_hint)
         self.assertTrue(excluir.annotations.destructive_hint)
 
+    def test_claude_gets_the_signature_with_the_email(self) -> None:
+        import base64
+        from pathlib import Path
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        pasta = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, pasta, True)
+        imagem = pasta / "assinatura_email.png"
+        imagem.write_bytes(b"\x89PNG-de-teste")
+        assinatura = {"texto": "Att,\n<b>Maria</b>", "imagem": str(imagem), "largura": 320}
+        patcher = mock.patch.object(docflow_server, "load_email_signature", return_value=assinatura)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.call("gerar_periodos_ano", ano=2026)
+        self.call("cadastrar_empresa", codigo_empresa=30, nome_empresa="Padaria", email_contato="fin@pao.com")
+        self.call("cadastrar_documento", codigo_empresa=30, tipo="Informe de Rendimentos", nome_documento="Bradesco")
+        envio = self.call(
+            "cadastrar_envio_programado", nome="Informe", competencias="trimestral", dia_envio=5,
+            assunto="Informe {competencia}", corpo="Olá <b>{empresa}</b>", tipo_documento="informe de rendimentos",
+        )
+        a_fazer = self.call("envios_a_fazer", data="2026-07-05")
+        self.assertEqual(a_fazer["assinatura"]["texto"], "Att,\nMaria")
+        self.assertEqual(a_fazer["assinatura"]["imagem"]["caminho"], str(imagem))
+        self.assertEqual(a_fazer["assinatura"]["imagem"]["content_id"], "assinatura_docflow")
+        item = a_fazer["itens"][0]
+        self.assertEqual(item["corpo"], "Olá Padaria")
+        self.assertIn("Olá <b>Padaria</b>", item["corpo_html"])
+        self.assertIn('<img src="cid:assinatura_docflow" width="320"', item["corpo_html"])
+        self.assertEqual(item["corpo_com_assinatura"], "Olá Padaria\n\nAtt,\nMaria")
+
+        self.assertEqual(item["imagens"], [])
+        imagem_id = self.services.envio_programado_service.salvar_imagem(b"\x89PNG-corpo", "png")
+        from documentos_empresa_app.services import envio_programado_service as modulo_envio
+
+        pasta_cfg = mock.patch.object(modulo_envio, "CONFIG_DIR", pasta)
+        pasta_cfg.start()
+        self.addCleanup(pasta_cfg.stop)
+        self.services.envio_programado_service.atualizar(envio["envio_id"], {"corpo": f'Veja <img id="{imagem_id}">'})
+        item = self.call("envios_a_fazer", data="2026-07-05")["itens"][0]
+        self.assertIn(f'src="cid:docflow_img{imagem_id}"', item["corpo_html"])
+        self.assertEqual(item["imagens"][0]["content_id"], f"docflow_img{imagem_id}")
+        self.assertEqual(Path(item["imagens"][0]["caminho"]).read_bytes(), b"\x89PNG-corpo")
+
+        dados = self.call("assinatura_email", incluir_base64=True)
+        self.assertTrue(dados["cadastrada"])
+        self.assertEqual(base64.b64decode(dados["imagem"]["base64"]), b"\x89PNG-de-teste")
+        self.assertEqual(dados["imagem"]["tipo"], "image/png")
+
+        patcher.stop()
+        with mock.patch.object(docflow_server, "load_email_signature", return_value={"texto": "", "imagem": "", "largura": None}):
+            self.assertFalse(self.call("assinatura_email")["cadastrada"])
+        patcher.start()
+
     def test_scheduled_sending_flow(self) -> None:
         self.call("gerar_periodos_ano", ano=2026)
         self.call("cadastrar_empresa", codigo_empresa=20, nome_empresa="Padaria", email_contato="fin@pao.com")

@@ -1717,6 +1717,16 @@ class ModeloMensagemRepository(BaseRepository):
         return self._execute("DELETE FROM modelos_mensagem WHERE id = ?", (modelo_id,))
 
 
+class ImagemEmailRepository(BaseRepository):
+    def insert(self, nome: str | None, tipo: str, dados_base64: str) -> int:
+        return self._insert(
+            "INSERT INTO imagens_email (nome, tipo, dados) VALUES (?, ?, ?)", (nome, tipo, dados_base64)
+        )
+
+    def get(self, imagem_id: int) -> dict | None:
+        return self._fetchone("SELECT * FROM imagens_email WHERE id = ?", (imagem_id,))
+
+
 class EnvioProgramadoRepository(BaseRepository):
     _CAMPOS = (
         "nome",

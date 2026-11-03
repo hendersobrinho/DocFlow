@@ -8,13 +8,14 @@ from datetime import date
 from urllib.parse import quote
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -33,13 +34,21 @@ from PySide6.QtWidgets import (
 from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSelectDialog
 from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.common import Card, KpiCard, ToolbarRow, make_button
-from documentos_empresa_app.qt_ui.widgets.email_editor import EmailPreviewDialog, formatted_editor, preview_html
+from documentos_empresa_app.qt_ui.widgets.email_editor import (
+    EmailPreviewDialog,
+    formatted_editor,
+    preview_html,
+    registrar_imagens,
+)
 from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table, selected_key, selected_keys
 from documentos_empresa_app.services.email_sender_service import (
     PROVEDORES_SMTP,
     SEGURANCA_LABELS,
+    SIGNATURE_MAX_WIDTH,
     load_email_settings,
+    load_email_signature,
     save_email_settings,
+    save_email_signature,
 )
 from documentos_empresa_app.services.envio_programado_service import (
     CANAL_EMAIL,
@@ -53,6 +62,7 @@ from documentos_empresa_app.services.envio_programado_service import (
     MOTIVO_TIRADA,
 )
 from documentos_empresa_app.utils.common import ValidationError
+from documentos_empresa_app.utils.email_format import imagens_usadas
 from documentos_empresa_app.utils.helpers import open_bcc_email_draft
 
 # Acima disso o link mailto: costuma ser cortado pelo Windows/Outlook - a Cco vai pela area de
@@ -230,22 +240,6 @@ class EmailEnvioDialog(QDialog):
         form.addRow("Usuário", self.usuario_edit)
         layout.addLayout(form)
 
-        assinatura_titulo = QLabel("Assinatura")
-        assinatura_titulo.setStyleSheet("font-weight: 600;")
-        layout.addWidget(assinatura_titulo)
-        assinatura_bloco, self.assinatura_edit = formatted_editor()
-        self.assinatura_edit.set_marked(atual.get("assinatura") or "")
-        self.assinatura_edit.setPlaceholderText(
-            "Vai no fim de todo email que o DocFlow envia. Ex:\nAtenciosamente,\nMaria - Métodos Contabilidade\n(11) 99999-9999"
-        )
-        self.assinatura_edit.setMinimumHeight(90)
-        self.assinatura_edit.setMaximumHeight(140)
-        previa = make_button("Prévia", "quiet")
-        previa.setToolTip("Mostra como a assinatura aparece no fim do email.")
-        previa.clicked.connect(self._previa)
-        assinatura_bloco.format_bar.layout().addWidget(previa)
-        layout.addWidget(assinatura_bloco)
-
         dica = QLabel(
             "Gmail e Microsoft 365 costumam bloquear a senha normal: crie uma <b>senha de app</b> na conta "
             "(Segurança > Senhas de app) e use ela aqui."
@@ -276,18 +270,8 @@ class EmailEnvioDialog(QDialog):
         self.porta_spin.setValue(porta)
         self.seguranca_combo.setCurrentIndex(self.seguranca_combo.findData(seguranca))
 
-    def _previa(self) -> None:
-        EmailPreviewDialog(
-            self,
-            "Cobrança de documentos",
-            "Olá, Maria!\n\n(aqui vai o texto do envio)",
-            self.assinatura_edit.marked(),
-            aviso="Assim a assinatura aparece no fim de cada email enviado pelo DocFlow.",
-        ).exec()
-
     def values(self) -> dict:
         return {
-            "assinatura": self.assinatura_edit.marked(),
             "host": self.host_edit.text(),
             "porta": self.porta_spin.value(),
             "seguranca": self.seguranca_combo.currentData(),
@@ -317,6 +301,137 @@ class EmailEnvioDialog(QDialog):
             QMessageBox.critical(self, "Email de envio", str(exc))
             return
         QMessageBox.information(self, "Email de envio", f"Email de teste enviado para {destino}. Confira a caixa de entrada.")
+
+
+class AssinaturaDialog(QDialog):
+    """Assinatura de todo email: texto (com negrito, italico, sublinhado) e/ou uma imagem. Nao
+    depende do login de envio - o Claude tambem usa esta assinatura nos emails que monta."""
+
+    def __init__(self, parent: QWidget | None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Assinatura do email")
+        self.setMinimumWidth(560)
+        atual = load_email_signature()
+        self.imagem = atual["imagem"]
+        self.imagem_nova: str | None = None  # None = mantem; "" = tira; caminho = troca
+        self.largura = atual["largura"]
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        intro = QLabel(
+            "Vai no fim de todo email: dos enviados pelo DocFlow e dos que o Claude monta com os "
+            "dados do sistema. Pode ser só texto, só a imagem da assinatura, ou os dois."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        texto_bloco, self.texto_edit = formatted_editor()
+        self.texto_edit.set_marked(atual["texto"])
+        self.texto_edit.setPlaceholderText("Opcional. Ex:\nAtenciosamente,\nMaria - Métodos Contabilidade")
+        self.texto_edit.setMinimumHeight(80)
+        self.texto_edit.setMaximumHeight(130)
+        layout.addWidget(texto_bloco)
+
+        imagem_titulo = QLabel("Imagem da assinatura")
+        imagem_titulo.setStyleSheet("font-weight: 600;")
+        layout.addWidget(imagem_titulo)
+        self.imagem_label = QLabel()
+        self.imagem_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.imagem_label.setMinimumHeight(60)
+        self.imagem_label.setWordWrap(True)
+        layout.addWidget(self.imagem_label)
+        linha = QHBoxLayout()
+        escolher = make_button("Escolher imagem...")
+        escolher.setToolTip("PNG, JPG ou GIF de até 1 MB.")
+        escolher.clicked.connect(self._escolher)
+        linha.addWidget(escolher)
+        self.tirar_button = make_button("Tirar imagem", "quiet")
+        self.tirar_button.clicked.connect(self._tirar)
+        linha.addWidget(self.tirar_button)
+        linha.addStretch(1)
+        linha.addWidget(QLabel("Largura no email"))
+        self.largura_spin = QSpinBox()
+        self.largura_spin.setRange(80, SIGNATURE_MAX_WIDTH)
+        self.largura_spin.setSuffix(" px")
+        self.largura_spin.setValue(self.largura or SIGNATURE_MAX_WIDTH)
+        self.largura_spin.valueChanged.connect(self._mostrar_imagem)
+        linha.addWidget(self.largura_spin)
+        layout.addLayout(linha)
+        self._mostrar_imagem()
+
+        botoes = QHBoxLayout()
+        previa = make_button("Prévia do email")
+        previa.clicked.connect(self._previa)
+        botoes.addWidget(previa)
+        botoes.addStretch(1)
+        cancelar = make_button("Cancelar", "quiet")
+        cancelar.clicked.connect(self.reject)
+        botoes.addWidget(cancelar)
+        salvar = make_button("Salvar", "primary")
+        salvar.clicked.connect(self.salvar)
+        botoes.addWidget(salvar)
+        layout.addLayout(botoes)
+
+    def _imagem_atual(self) -> str:
+        return self.imagem if self.imagem_nova is None else self.imagem_nova
+
+    def _mostrar_imagem(self) -> None:
+        caminho = self._imagem_atual()
+        self.tirar_button.setEnabled(bool(caminho))
+        self.largura_spin.setEnabled(bool(caminho))
+        if not caminho:
+            self.imagem_label.setPixmap(QPixmap())
+            self.imagem_label.setText("Sem imagem.")
+            return
+        pixmap = QPixmap(caminho)
+        if pixmap.isNull():
+            self.imagem_label.setText("Não foi possível abrir a imagem.")
+            return
+        largura = min(self.largura_spin.value(), 520)
+        self.imagem_label.setPixmap(pixmap.scaledToWidth(min(largura, pixmap.width()), Qt.TransformationMode.SmoothTransformation))
+
+    def _escolher(self) -> None:
+        caminho, _filtro = QFileDialog.getOpenFileName(
+            self, "Imagem da assinatura", "", "Imagens (*.png *.jpg *.jpeg *.gif)"
+        )
+        if not caminho:
+            return
+        imagem = QImage(caminho)
+        if imagem.isNull():
+            QMessageBox.warning(self, "Assinatura", "Não foi possível abrir essa imagem.")
+            return
+        self.imagem_nova = caminho
+        self.largura_spin.setValue(min(imagem.width(), SIGNATURE_MAX_WIDTH))
+        self._mostrar_imagem()
+
+    def _tirar(self) -> None:
+        self.imagem_nova = ""
+        self._mostrar_imagem()
+
+    def values(self) -> dict:
+        caminho = self._imagem_atual()
+        return {
+            "texto": self.texto_edit.marked(),
+            "imagem": caminho,
+            "largura": self.largura_spin.value() if caminho else None,
+        }
+
+    def _previa(self) -> None:
+        EmailPreviewDialog(
+            self,
+            "Cobrança de documentos",
+            "Olá, Maria!\n\n(aqui vai o texto do envio)",
+            self.values(),
+            aviso="Assim a assinatura aparece no fim de cada email.",
+        ).exec()
+
+    def salvar(self) -> None:
+        try:
+            save_email_signature(self.texto_edit.marked(), self.imagem_nova, self.largura_spin.value())
+        except (ValidationError, OSError) as exc:
+            QMessageBox.critical(self, "Assinatura", str(exc))
+            return
+        self.accept()
 
 
 class WhatsAppSequenceDialog(QDialog):
@@ -727,10 +842,15 @@ class QuemRecebePanel(QWidget):
                 preview_html(
                     item["assunto"],
                     item.get("corpo_formatado") or item["corpo"],
-                    load_email_settings().get("assinatura"),
+                    load_email_signature(),
+                    imagens=self.services.envio_programado_service.imagens_do_texto(item.get("corpo_formatado")),
                     para=f'{item["para"] or "(falta o email do escritório - aba Mensagem)"}  ·  Cco: '
                     f'{len(item["cco"])} endereço(s), entre eles {linha["contato"]}',
                 )
+            )
+            registrar_imagens(
+                aba.preview.document(),
+                self.services.envio_programado_service.imagens_do_texto(item.get("corpo_formatado")),
             )
             return
         elif aba is self.whatsapp:
@@ -744,9 +864,14 @@ class QuemRecebePanel(QWidget):
                 preview_html(
                     item["assunto"],
                     item.get("corpo_formatado") or item["corpo"],
-                    load_email_settings().get("assinatura"),
+                    load_email_signature(),
+                    imagens=self.services.envio_programado_service.imagens_do_texto(item.get("corpo_formatado")),
                     para=", ".join(item["destinatarios"]) or "-",
                 )
+            )
+            registrar_imagens(
+                aba.preview.document(),
+                self.services.envio_programado_service.imagens_do_texto(item.get("corpo_formatado")),
             )
             return
         aba.preview.setPlainText(f"{cabecalho}\n\n{texto}")
@@ -774,6 +899,13 @@ class QuemRecebePanel(QWidget):
     def open_email(self) -> None:
         if not self.dados:
             return
+        if self.envio and imagens_usadas(self.envio.get("corpo")):
+            QMessageBox.information(
+                self,
+                "Email",
+                "O rascunho do seu programa de email não leva as imagens do texto (nem a formatação). "
+                "Para o email sair com elas, use \"Enviar emails agora\" ou peça ao Claude.",
+            )
         if self.dados["modo"] == MODO_CCO:
             item = self.dados.get("item_cco")
             if not item:

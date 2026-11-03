@@ -307,14 +307,50 @@ class EnvioProgramadoServiceTests(unittest.TestCase):
 
         settings = {
             "host": "smtp.x.com", "porta": 587, "seguranca": "starttls", "usuario": "u", "senha": "x",
-            "remetente_nome": "Escritorio", "remetente_email": "envios@escritorio.com", "assinatura": "<b>Equipe</b>",
+            "remetente_nome": "Escritorio", "remetente_email": "envios@escritorio.com",
         }
-        sender = EmailSenderService(settings_loader=lambda: settings, connect=lambda s: FakeSmtp())
+        sender = EmailSenderService(
+            settings_loader=lambda: settings,
+            connect=lambda s: FakeSmtp(),
+            signature_loader=lambda: {"texto": "<b>Equipe</b>", "imagem": "", "largura": None},
+        )
         servico.enviar_emails(self.envio["id"], 2026, 6, sender, empresa_ids=[self.empresas[1][0]])
         self.assertEqual(len(enviados), 1)
         pagina = enviados[0].get_body(preferencelist=("html",)).get_content()
         self.assertIn("<b>Ana</b>", pagina)
         self.assertIn("<b>Equipe</b>", pagina)
+
+    def test_images_in_the_text_are_stored_and_sent(self) -> None:
+        servico = self.services.envio_programado_service
+        png = b"\x89PNG\r\n\x1a\nimagem-de-teste"
+        imagem_id = servico.salvar_imagem(png, "image/png", "banner.png")
+        with self.assertRaises(ValidationError):
+            servico.salvar_imagem(b"x", "bmp")
+        servico._cache_imagens.clear()  # le do banco
+        self.assertEqual(servico.imagem(imagem_id)["dados"], png)
+        servico.atualizar(self.envio["id"], {"corpo": f'<img id="{imagem_id}" width="400"><img id="9999">'})
+
+        enviados = []
+
+        class FakeSmtp:
+            def send_message(self, email, to_addrs):
+                enviados.append(email)
+
+            def quit(self):
+                pass
+
+        settings = {
+            "host": "smtp.x.com", "porta": 587, "seguranca": "starttls", "usuario": "u", "senha": "x",
+            "remetente_nome": "Escritorio", "remetente_email": "envios@escritorio.com",
+        }
+        sender = EmailSenderService(
+            settings_loader=lambda: settings,
+            connect=lambda s: FakeSmtp(),
+            signature_loader=lambda: {"texto": "", "imagem": "", "largura": None},
+        )
+        servico.enviar_emails(self.envio["id"], 2026, 6, sender, empresa_ids=[self.empresas[1][0]])
+        imagens = [p for p in enviados[0].walk() if p.get_content_maintype() == "image"]
+        self.assertEqual([p.get_content() for p in imagens], [png])  # a 9999 nao existe: fica de fora
 
     def test_conference_explains_who_receives_and_why(self) -> None:
         servico = self.services.envio_programado_service

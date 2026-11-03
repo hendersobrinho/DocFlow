@@ -565,8 +565,14 @@ HELP_TOPICS: list[HelpTopic] = [
         <i>I</i> (itálico) e <u>S</u> (sublinhado), ou Ctrl+B, Ctrl+I e Ctrl+U.
         <b>Prévia do email</b> mostra como ele chega, já com a assinatura. No WhatsApp o
         negrito vira *assim* e o itálico _assim_.</li>
-        <li><b>Assinatura</b>: em <b>Email de envio...</b> (no alto da tela). Vai no fim de
-        todo email que o DocFlow envia.</li>
+        <li><b>Imagens no texto</b>: <b>Imagem...</b> põe uma imagem onde está o cursor - ou
+        copie a imagem (de outro email, de um site, um print) e cole com Ctrl+V. Dá para
+        mandar um email que é só a imagem. Duplo clique na imagem muda o tamanho. A imagem
+        fica guardada no DocFlow (vale em todos os computadores) e vai dentro do email.
+        O rascunho de <i>Abrir no meu email</i> não leva imagens.</li>
+        <li><b>Assinatura</b>: em <b>Assinatura do email...</b> (no alto da tela) - texto e/ou
+        a imagem da assinatura. Vai no fim de todo email que o DocFlow envia e dos que o
+        Claude monta com os dados do sistema. Não precisa do email de envio configurado.</li>
         <li><b>Histórico</b>: tudo o que já foi enviado neste envio.</li>
         </ul>
 
