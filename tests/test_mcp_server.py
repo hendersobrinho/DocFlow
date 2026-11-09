@@ -53,6 +53,36 @@ class DocflowMcpServerTests(unittest.TestCase):
         self.assertTrue(panorama.annotations.read_only_hint)
         self.assertTrue(excluir.annotations.destructive_hint)
 
+    def test_claude_reads_what_the_onvio_robot_downloaded(self) -> None:
+        import json
+        from pathlib import Path
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        pasta = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, pasta, True)
+        with mock.patch("documentos_empresa_app.utils.helpers.load_ui_state", return_value=str(pasta)):
+            self.assertFalse(docflow_server.documentos_baixados_onvio("03/2026")["baixado"])
+            empresa = pasta / "03-2026" / "170 - EMPRESA TESTE"
+            (empresa / "Extrato Bancário").mkdir(parents=True)
+            (empresa / "Extrato Bancário" / "marco.pdf").write_bytes(b"%PDF")
+            (empresa / "solto.pdf").write_bytes(b"%PDF")
+            (pasta / "03-2026" / "_resumo.json").write_text(json.dumps({
+                "competencia": "03/2026", "pasta": str(pasta / "03-2026"),
+                "empresas": [
+                    {"codigo": "170", "nome": "EMPRESA TESTE", "situacao": "baixada", "pasta": str(empresa)},
+                    {"codigo": "180", "nome": "Outra", "situacao": "sem_pasta", "pasta": ""},
+                ],
+            }), encoding="utf-8")
+            dados = docflow_server.documentos_baixados_onvio("03/2026", codigo_empresa="170")
+        self.assertTrue(dados["baixado"])
+        self.assertEqual(len(dados["empresas"]), 1)
+        arquivos = {(a["subpasta"], a["nome"]) for a in dados["empresas"][0]["lista_arquivos"]}
+        self.assertEqual(arquivos, {("Extrato Bancário", "marco.pdf"), ("", "solto.pdf")})
+        with self.assertRaises(Exception):
+            docflow_server.documentos_baixados_onvio("2026")
+
     def test_claude_gets_the_signature_with_the_email(self) -> None:
         import base64
         from pathlib import Path

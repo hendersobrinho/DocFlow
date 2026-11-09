@@ -354,6 +354,8 @@ class PanoramaPage(QWidget):
         tools_menu.addSeparator()
         tools_menu.addAction("Preparar email de cobrança", self.prepare_email)
         tools_menu.addAction("Mensagem de WhatsApp (abre a conversa, se tiver o número)", self.copy_whatsapp)
+        tools_menu.addSeparator()
+        tools_menu.addAction("Baixar documentos do Onvio...", self.open_onvio_dialog)
         tools_button.setMenu(tools_menu)
         toolbar.add(tools_button)
         toolbar.add_stretch()
@@ -996,6 +998,15 @@ class PanoramaPage(QWidget):
     def open_export_dialog(self) -> None:
         visible_ids = [row["empresa_id"] for row in self.filtered_rows]
         ExportReportDialog(self.services, self.period_combo.currentData(), visible_ids, self).exec()
+
+    def open_onvio_dialog(self) -> None:
+        from documentos_empresa_app.qt_ui.dialogs.onvio_dialog import OnvioDownloadDialog
+
+        competencia = None
+        texto = self.period_combo.currentText().strip()[:7]
+        if len(texto) == 7 and texto[2] == "/" and texto.replace("/", "").isdigit():
+            competencia = (int(texto[3:]), int(texto[:2]))
+        OnvioDownloadDialog(self.services, competencia, self).exec()
 
     def generate_year_periods(self) -> None:
         year, confirmed = QInputDialog.getInt(

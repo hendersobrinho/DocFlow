@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 from datetime import date
+import json
 import functools
 import os
 from pathlib import Path
@@ -1448,6 +1449,57 @@ def assinatura_email(incluir_base64: bool = False) -> dict[str, Any]:
     assinatura cadastrada devolve cadastrada=false."""
     dados = _assinatura_para_claude(incluir_base64)
     return {"cadastrada": dados is not None, **(dados or {})}
+
+
+@docflow_tool(read_only=True)
+def documentos_baixados_onvio(competencia: str, codigo_empresa: str | None = None) -> dict[str, Any]:
+    """O que o robo do Onvio baixou numa competencia (MM/AAAA): pasta no computador e, por
+    empresa, a situacao (baixada, sem pasta, sem cliente no Onvio, erro...) e os arquivos
+    baixados com o caminho completo, separados pela subpasta do Onvio (Extrato Bancario,
+    Nota Fiscal...). Use para classificar e salvar cada arquivo na pasta da empresa
+    (pasta_documentos em 'obter_empresa') e registrar com 'registrar_verificacao'.
+    Trabalhe so com o que esta na pasta: MOVA (nao copie) cada arquivo tratado para a pasta da
+    empresa, entao o que sobra no download e o que ainda falta tratar. O robo lembra o que ja
+    baixou (pelo id no Onvio), nao baixa de novo o que foi movido ou renomeado e, nas proximas
+    passadas, traz so os arquivos que chegaram depois: 'novos' (por empresa) lista os da ultima
+    passada. Depois de dar baixa em tudo como Recebido, a empresa sai das proximas passadas.
+    O robo roda no DocFlow em Panorama > Ferramentas > Baixar documentos do Onvio."""
+    from documentos_empresa_app.onvio.robo import RESUMO
+    from documentos_empresa_app.utils.helpers import load_ui_state
+
+    parsed = parse_period_label(competencia)
+    if parsed is None:
+        raise ToolError(f'Competencia invalida: "{competencia}". Use MM/AAAA.')
+    ano, mes = parsed
+    from documentos_empresa_app.onvio.robo import pasta_padrao
+
+    base = Path(load_ui_state("onvio:destino", "") or pasta_padrao())
+    pasta = base / f"{mes:02d}-{ano}"
+    caminho = pasta / RESUMO
+    if not caminho.exists():
+        return {
+            "baixado": False,
+            "pasta": str(pasta),
+            "mensagem": "O robo ainda nao baixou essa competencia. Rode no DocFlow: Panorama > Ferramentas > Baixar documentos do Onvio.",
+        }
+    resumo = json.loads(caminho.read_text(encoding="utf-8"))
+    empresas = resumo.get("empresas") or []
+    if codigo_empresa is not None:
+        empresas = [e for e in empresas if str(e.get("codigo")) == str(codigo_empresa).strip()]
+    for empresa in empresas:
+        alvo = Path(empresa.get("pasta") or "")
+        arquivos = []
+        if empresa.get("pasta") and alvo.is_dir():
+            for arquivo in sorted(p for p in alvo.rglob("*") if p.is_file()):
+                relativo = arquivo.relative_to(alvo)
+                arquivos.append({
+                    "subpasta": str(relativo.parent) if relativo.parent != Path(".") else "",
+                    "nome": arquivo.name,
+                    "caminho": str(arquivo),
+                    "tamanho_kb": round(arquivo.stat().st_size / 1024, 1),
+                })
+        empresa["lista_arquivos"] = arquivos
+    return {"baixado": True, **resumo, "empresas": empresas}
 
 
 @docflow_tool(read_only=True)

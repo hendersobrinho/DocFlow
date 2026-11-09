@@ -173,6 +173,28 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(second_run["created"], 0)
         self.assertEqual(second_run["existing"], 12)
 
+    def test_companies_that_send_through_onvio(self) -> None:
+        tipo_id = self.tipo_service.get_or_create_tipo("Documentos Financeiros")["id"]
+        com_onvio = self.empresa_service.create_empresa(170, "Com Onvio")
+        self.documento_service.create_documento(com_onvio, tipo_id, "Extrato", ["Email", "Onvio"])
+        sem_onvio = self.empresa_service.create_empresa(245, "Sem Onvio")
+        self.documento_service.create_documento(sem_onvio, tipo_id, "Extrato", ["Email"])
+        self.empresa_service.create_empresa(300, "Sem documentos")
+
+        codigos = [e["codigo_empresa"] for e in self.empresa_service.list_empresas_com_meio("onvio")]
+        self.assertEqual(codigos, [170])
+
+        # Filtro "so quem ainda tem pendencia": sem a competencia no DocFlow ele e ignorado.
+        pendentes = lambda: [e["codigo_empresa"] for e in self.empresa_service.list_empresas_com_meio("onvio", pendentes_em=(2026, 9))]
+        self.assertEqual(pendentes(), [170])
+        self.periodo_service.generate_year(2026)
+        documento_id = next(d["id"] for d in self.documento_service.list_documentos_empresa(com_onvio))
+        setembro = next(p for p in self.periodo_service.list_periodos() if (p["ano"], p["mes"]) == (2026, 9))
+        self.status_service.update_status(documento_id, setembro["id"], "Pendente")
+        self.assertEqual(pendentes(), [170])
+        self.status_service.update_status(documento_id, setembro["id"], "Recebido")
+        self.assertEqual(pendentes(), [])  # tudo recebido: o robo nao precisa visitar
+
     def test_closure_hides_future_periods(self) -> None:
         empresa_id = self.empresa_service.create_empresa(101, "Empresa Teste")
         tipo_id = self.tipo_service.get_or_create_tipo("Documentos Financeiros")["id"]

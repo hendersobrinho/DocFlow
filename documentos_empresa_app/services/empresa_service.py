@@ -33,6 +33,19 @@ class EmpresaService:
     def list_empresas(self, active_only: bool = False) -> list[dict]:
         return self.empresa_repository.list_all(active_only=active_only)
 
+    def list_empresas_com_meio(
+        self, meio: str, active_only: bool = True, pendentes_em: tuple[int, int] | None = None
+    ) -> list[dict]:
+        """Empresas que recebem pelo meio informado (ex: Onvio), marcado no cadastro. Com
+        pendentes_em=(ano, mes), so as que ainda tem documento Pendente nessa competencia
+        (se a competencia nao existe no DocFlow, esse filtro e ignorado)."""
+        ids = self.empresa_repository.ids_com_meio_recebimento(meio)
+        if pendentes_em:
+            pendentes = self.empresa_repository.ids_com_pendencia_no_meio(meio, *pendentes_em)
+            if pendentes is not None:
+                ids &= pendentes
+        return [e for e in self.list_empresas(active_only=active_only) if int(e["id"]) in ids]
+
     def get_empresa(self, empresa_id: int) -> dict:
         empresa = self.empresa_repository.get_by_id(empresa_id)
         if not empresa:

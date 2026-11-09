@@ -55,6 +55,39 @@ class BaseRepository:
 
 
 class EmpresaRepository(BaseRepository):
+    def ids_com_pendencia_no_meio(self, meio: str, ano: int, mes: int) -> set[int] | None:
+        """Empresas com documento ainda Pendente nessa competencia, entre os que chegam pelo meio.
+        None se a competencia nao existe no DocFlow (nao ha como saber o que esta pendente)."""
+        if not self._fetchall("SELECT 1 FROM periodos WHERE ano = ? AND mes = ?", (ano, mes)):
+            return None
+        rows = self._fetchall(
+            """
+            SELECT DISTINCT d.empresa_id
+            FROM documentos_empresa d
+            INNER JOIN status_documento_mensal s ON s.documento_empresa_id = d.id
+            INNER JOIN periodos p ON p.id = s.periodo_id
+            WHERE p.ano = ? AND p.mes = ? AND s.status = 'Pendente' AND d.meios_recebimento ILIKE ?
+            """,
+            (ano, mes, f"%{meio}%"),
+        )
+        return {int(row["empresa_id"]) for row in rows}
+
+    def ids_com_meio_recebimento(self, meio: str) -> set[int]:
+        """Empresas com o meio marcado no cadastro (na empresa ou em algum documento)."""
+        padrao = f"%{meio}%"
+        rows = self._fetchall(
+            """
+            SELECT e.id FROM empresas e
+            WHERE e.meios_recebimento ILIKE ?
+               OR EXISTS (
+                   SELECT 1 FROM documentos_empresa d
+                   WHERE d.empresa_id = e.id AND d.meios_recebimento ILIKE ?
+               )
+            """,
+            (padrao, padrao),
+        )
+        return {int(row["id"]) for row in rows}
+
     def list_all(self, active_only: bool = False) -> list[dict]:
         query = """
             SELECT id, codigo_empresa, nome_empresa, meios_recebimento, email_contato, nome_contato,

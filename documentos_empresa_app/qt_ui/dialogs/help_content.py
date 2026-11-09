@@ -229,6 +229,12 @@ HELP_TOPICS: list[HelpTopic] = [
         marcados nele (empresas e documentos continuam).</li>
         <li><b>Preparar email de cobrança</b> e <b>Copiar mensagem de WhatsApp</b> -
         texto pronto cobrando o que está em aberto da empresa selecionada.</li>
+        <li><b>Baixar documentos do Onvio</b> - o robô entra no Onvio e, de cada empresa,
+        baixa tudo da pasta Contabilidade &gt; ano &gt; competência (como o Gerenciar &gt;
+        Baixar), com as subpastas, para Documentos\\Onvio\\MM-AAAA\\código - nome. Na
+        primeira vez abre uma janela do Onvio para você entrar; depois lembra o login.
+        Quem já foi baixado é pulado (marque "Baixar de novo" para repetir). No fim fica
+        um <i>_resumo.json</i> na pasta, que o Claude usa para classificar os arquivos.</li>
         </ul>
         """,
     ),

@@ -29,14 +29,23 @@ for _folder in ("brand", "fonts"):
     _dir = ROOT_DIR / "assets" / _folder
     icon_datas += [(str(path), f"assets/{_folder}") for path in sorted(_dir.iterdir()) if path.is_file()]
 
+# Robo do Onvio: o Playwright precisa do driver (node + pacote js) que vem junto do pacote.
+# O navegador e o Edge/Chrome ja instalados no computador.
+try:
+    from PyInstaller.utils.hooks import collect_all
+
+    pw_datas, pw_binaries, pw_hidden = collect_all("playwright")
+except Exception:  # sem o playwright o DocFLow funciona, so sem o robo do Onvio
+    pw_datas, pw_binaries, pw_hidden = [], [], []
+
 
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=[],
-    datas=icon_datas,
+    binaries=pw_binaries,
+    datas=icon_datas + pw_datas,
     # O psycopg carrega a implementacao binaria (com a libpq embutida) dinamicamente.
-    hiddenimports=["psycopg_binary"],
+    hiddenimports=["psycopg_binary", *pw_hidden],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
