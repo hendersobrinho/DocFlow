@@ -279,6 +279,118 @@ class SituacoesCobrancaTests(unittest.TestCase):
         self.assertEqual((vazio["totais"]["empresas"], len(vazio["onvio"]), len(vazio["recebidos"])), (0, 0, 0))
         self.assertIn("Nada foi registrado", build_rodada_html(vazio, "10/11/2026 11:00"))
 
+    def test_overview_report_shows_what_arrived_what_is_missing_and_where_it_came_from(self) -> None:
+        import json
+        from pathlib import Path
+        import shutil
+        import tempfile
+
+        from documentos_empresa_app.services.relatorio_visao_geral import coletar_visao_geral
+        from documentos_empresa_app.services.report_visao_geral_html import build_visao_geral_html
+
+        tipo_id = self.services.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        bradesco = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Bradesco CC", ["Onvio"])
+        self.services.status_service.update_status(bradesco, self.janeiro, "Pendente")
+        caixa = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Caixa CC", ["Email"])
+        self.services.status_service.update_status(caixa, self.janeiro, "Nao cobrar")
+        outra = self.services.empresa_service.create_empresa(2, "Mercado Bom Preco", "fin@bom.com")
+        sicoob = self.services.documento_service.create_documento(outra, tipo_id, "Sicoob CC", ["Onvio"])
+        self.services.status_service.update_status(sicoob, self.janeiro, "Recebido")
+
+        pasta = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, pasta, True)
+        salvo = pasta / "Padaria" / "itau_janeiro.pdf"
+        self.cobranca.registrar_verificacao(
+            self.empresa_id,
+            ["Email"],
+            [{"documento_id": self.doc, "periodo_id": self.janeiro, "resultado": "recebido", "onde": "email do financeiro", "arquivo": str(salvo)}],
+        )
+        self.cobranca.registrar_cobranca(self.empresa_id, "Email", [(bradesco, self.janeiro)])
+
+        comp = pasta / f"01-{self.ano}"
+        (comp / "2 - Mercado").mkdir(parents=True)
+        (comp / "2 - Mercado" / "extrato sicoob.pdf").write_bytes(b"pdf")
+        (comp / "_resumo.json").write_text(
+            json.dumps(
+                {
+                    "competencia": f"01/{self.ano}",
+                    "pasta": str(comp),
+                    "gerado_em": date.today().isoformat() + "T08:30:00",
+                    "empresas": [
+                        {"codigo": "2", "nome": "Mercado Bom Preco", "situacao": "baixada", "arquivos": 3, "pasta": str(comp / "2 - Mercado")},
+                        {"codigo": "1", "nome": "Padaria Pao Quente", "situacao": "sem_pasta", "arquivos": 0, "situacao_texto": "Sem a pasta da competência"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        dados = coletar_visao_geral(
+            self.services.pending_report_service, self.cobranca, self.services.rodada_service, self.ano, 1, date.today(), pasta
+        )
+        totais = dados["totais"]
+        self.assertEqual((totais["esperados"], totais["chegaram"], totais["faltam"], totais["fora"]), (3, 2, 1, 1))
+        self.assertEqual((totais["completas"], totais["com_falta"], totais["cobrados"]), (1, 1, 1))
+        self.assertEqual((totais["pelo_claude"], totais["pelo_robo"], totais["manual"]), (1, 1, 0))
+        self.assertEqual((totais["robo_arquivos"], totais["robo_na_pasta"]), (3, 1))
+        padaria = next(e for e in dados["empresas"] if e["codigo"] == 1)
+        self.assertEqual([d["nome"] for d in padaria["faltam"]], ["Bradesco CC"])
+        self.assertEqual(padaria["faltam"][0]["cobranca"]["vezes"], 1)
+        self.assertEqual([c["arquivo"] for c in dados["salvos_claude"]], [str(salvo)])
+        self.assertEqual(len(dados["salvos_no_dia"]), 1)
+
+        html = build_visao_geral_html(dados, "10/11/2026 11:00")
+        for texto in (
+            "Visão geral da cobrança",
+            "chegaram 2 de 3 documento(s)",
+            "Falta(m) 1 de 2",
+            "Completa: 1 de 1",
+            "O que ainda falta chegar",
+            "Bradesco CC",
+            "1 de 1 cobrado(s)",
+            "itau_janeiro.pdf",
+            "Salvos pelo Claude (1)",
+            "extrato sicoob.pdf",
+            "1 Claude",
+            "1 robô do Onvio",
+        ):
+            self.assertIn(texto, html)
+        self.assertNotIn("Tudo em dia", html)
+
+        sem_competencia = coletar_visao_geral(
+            self.services.pending_report_service, self.cobranca, self.services.rodada_service, 1990, 1, date.today(), None
+        )
+        self.assertIn("ainda não foi criada", build_visao_geral_html(sem_competencia, "10/11/2026 11:00"))
+
+    def test_reports_tab_builds_overview_and_daily_detail(self) -> None:
+        import os
+        from unittest import mock
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QDate
+        from PySide6.QtWidgets import QApplication
+
+        from documentos_empresa_app.qt_ui.pages.cobrancas_page import CobrancasPage
+
+        _app = QApplication.instance() or QApplication([])
+        estado: dict = {}
+        with mock.patch("documentos_empresa_app.qt_ui.pages.cobrancas_page.load_ui_state", lambda k, d=None: estado.get(k, d)), \
+             mock.patch("documentos_empresa_app.qt_ui.pages.cobrancas_page.save_ui_state", lambda k, v: estado.__setitem__(k, v)):
+            page = CobrancasPage(self.services, lambda: None)
+            self.addCleanup(page.deleteLater)
+            page.tabs.setCurrentIndex(page.relatorio_tab_index)
+            self.assertEqual(page.tabs.tabText(page.relatorio_tab_index), "Relatórios")
+            self.assertIn("Visão geral da cobrança", page.relatorio_html)
+
+            page.relatorio_competencia.setDate(QDate(self.ano, 1, 1))
+            self.assertEqual(estado["relatorio:competencia"], f"01/{self.ano}")
+            self.assertIn("Itau CC", page.relatorio_html)
+            self.assertIn("faltam", page.relatorio_html.lower())
+
+            page.relatorio_tipo.setCurrentIndex(page.relatorio_tipo.findData("dia"))
+            self.assertIn("Relatório da cobrança do dia", page.relatorio_html)
+            self.assertFalse(page.relatorio_competencia.isVisibleTo(page))
+
 
 if __name__ == "__main__":
     unittest.main()

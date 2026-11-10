@@ -47,9 +47,16 @@ from documentos_empresa_app.qt_ui.widgets.visual import PillDelegate, PipelineBa
 from documentos_empresa_app.services.cobranca_service import ACAO_LABELS
 from documentos_empresa_app.onvio.robo import pasta_padrao
 from documentos_empresa_app.services.relatorio_rodada import coletar_dia
+from documentos_empresa_app.services.relatorio_visao_geral import coletar_visao_geral
 from documentos_empresa_app.services.report_rodada_html import build_rodada_html
+from documentos_empresa_app.services.report_visao_geral_html import build_visao_geral_html
 from documentos_empresa_app.utils.common import APP_NAME, ValidationError, format_utc_timestamp
-from documentos_empresa_app.utils.helpers import get_documents_directory, load_ui_state, open_file_in_default_app
+from documentos_empresa_app.utils.helpers import (
+    get_documents_directory,
+    load_ui_state,
+    open_file_in_default_app,
+    save_ui_state,
+)
 
 DEFAULT_CHANNELS = ("Email", "WhatsApp", "Onvio", "Telefone")
 
@@ -183,7 +190,7 @@ class CobrancasPage(QWidget):
         self.tabs.addTab(self._build_verificacoes_tab(), "Conferências feitas")
         self.tabs.addTab(self._build_cobrancas_tab(), "Cobranças enviadas")
         self.tabs.addTab(self._build_rodadas_tab(), "Rodadas do Claude")
-        self.relatorio_tab_index = self.tabs.addTab(self._build_relatorio_tab(), "Relatório do dia")
+        self.relatorio_tab_index = self.tabs.addTab(self._build_relatorio_tab(), "Relatórios")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs, 1)
 
@@ -339,12 +346,25 @@ class CobrancasPage(QWidget):
         layout.setSpacing(8)
         layout.addWidget(
             self._tab_hint(
-                "O sistema monta sozinho o que aconteceu no dia: o que chegou e foi marcado como recebido, o que o "
-                "robô baixou do Onvio e as cobranças enviadas. Se o Claude fez uma rodada, as conferências dele "
-                "entram também. Imprima ou salve em PDF."
+                "Visão geral da cobrança: da competência escolhida, o que já chegou e o que ainda falta (e por "
+                "onde chegou: robô do Onvio, Claude ou marcado à mão), mais o que aconteceu no dia - o que chegou, "
+                "o que o robô baixou, o que o Claude salvou e quem foi cobrado. Detalhes do dia lista tudo do dia, "
+                "item por item. O sistema monta sozinho; imprima ou salve em PDF."
             )
         )
         linha = QHBoxLayout()
+        self.relatorio_tipo = QComboBox()
+        self.relatorio_tipo.addItem("Visão geral da cobrança", "visao_geral")
+        self.relatorio_tipo.addItem("Detalhes do dia", "dia")
+        self.relatorio_tipo.currentIndexChanged.connect(self._on_relatorio_tipo_changed)
+        linha.addWidget(self.relatorio_tipo)
+        self.relatorio_competencia_label = QLabel("Competência")
+        linha.addWidget(self.relatorio_competencia_label)
+        self.relatorio_competencia = QDateEdit(self._competencia_inicial())
+        self.relatorio_competencia.setDisplayFormat("MM/yyyy")
+        self.relatorio_competencia.setCalendarPopup(True)
+        self.relatorio_competencia.dateChanged.connect(self._on_relatorio_competencia_changed)
+        linha.addWidget(self.relatorio_competencia)
         linha.addWidget(QLabel("Dia"))
         self.relatorio_data = QDateEdit(QDate.currentDate())
         self.relatorio_data.setCalendarPopup(True)
@@ -376,49 +396,88 @@ class CobrancasPage(QWidget):
         if index == self.relatorio_tab_index:
             self._gerar_relatorio()
 
+    @staticmethod
+    def _competencia_inicial() -> QDate:
+        """A ultima competencia usada; na primeira vez, o mes passado (o que esta sendo cobrado agora)."""
+        salvo = str(load_ui_state("relatorio:competencia", "") or "")
+        data = QDate.fromString(salvo, "MM/yyyy")
+        if data.isValid():
+            return data
+        hoje = QDate.currentDate()
+        return QDate(hoje.year(), hoje.month(), 1).addMonths(-1)
+
+    def _on_relatorio_competencia_changed(self, data: QDate) -> None:
+        save_ui_state("relatorio:competencia", data.toString("MM/yyyy"))
+        self._gerar_relatorio()
+
+    def _on_relatorio_tipo_changed(self, _index: int) -> None:
+        visao_geral = self.relatorio_tipo.currentData() == "visao_geral"
+        self.relatorio_competencia_label.setVisible(visao_geral)
+        self.relatorio_competencia.setVisible(visao_geral)
+        self._gerar_relatorio()
+
     def _gerar_relatorio(self) -> None:
         dia = self.relatorio_data.date().toPython()
         pasta_onvio = Path(str(load_ui_state("onvio:destino", "") or pasta_padrao()))
+        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
         try:
-            dados = coletar_dia(
-                self.services.cobranca_service,
-                self.services.rodada_service,
-                dia,
-                pasta_onvio,
-                recebidos_no_dia=self.services.pending_report_service.recebidos_no_dia,
-            )
+            if self.relatorio_tipo.currentData() == "visao_geral":
+                competencia = self.relatorio_competencia.date()
+                dados = coletar_visao_geral(
+                    self.services.pending_report_service,
+                    self.services.cobranca_service,
+                    self.services.rodada_service,
+                    competencia.year(),
+                    competencia.month(),
+                    dia,
+                    pasta_onvio,
+                )
+                self.relatorio_html = build_visao_geral_html(dados, agora)
+            else:
+                dados = coletar_dia(
+                    self.services.cobranca_service,
+                    self.services.rodada_service,
+                    dia,
+                    pasta_onvio,
+                    recebidos_no_dia=self.services.pending_report_service.recebidos_no_dia,
+                )
+                self.relatorio_html = build_rodada_html(dados, agora)
         except ValidationError as exc:
-            QMessageBox.critical(self, "Relatório do dia", str(exc))
+            QMessageBox.critical(self, "Relatórios", str(exc))
             return
-        self.relatorio_html = build_rodada_html(dados, datetime.now().strftime("%d/%m/%Y %H:%M"))
         self.relatorio_view.setHtml(self.relatorio_html)
 
     def _imprimir_relatorio(self) -> None:
         if not self.relatorio_html:
             self._gerar_relatorio()
         try:
-            print_html(self.relatorio_html, self, "Imprimir relatório da rodada")
+            print_html(self.relatorio_html, self, "Imprimir relatório")
         except Exception as exc:  # noqa: BLE001 - impressora/driver: mostra o motivo
-            QMessageBox.critical(self, "Relatório do dia", f"Não foi possível imprimir:\n{exc}")
+            QMessageBox.critical(self, "Relatórios", f"Não foi possível imprimir:\n{exc}")
 
     def _salvar_relatorio_pdf(self) -> None:
         if not self.relatorio_html:
             self._gerar_relatorio()
         dia = self.relatorio_data.date().toPython()
-        sugestao = str(get_documents_directory() / f"rodada_{dia:%Y-%m-%d}.pdf")
+        if self.relatorio_tipo.currentData() == "visao_geral":
+            competencia = self.relatorio_competencia.date()
+            nome = f"visao_geral_{competencia.month():02d}-{competencia.year()}_{dia:%Y-%m-%d}.pdf"
+        else:
+            nome = f"rodada_{dia:%Y-%m-%d}.pdf"
+        sugestao = str(get_documents_directory() / nome)
         caminho, _filtro = QFileDialog.getSaveFileName(self, "Salvar PDF", sugestao, "PDF (*.pdf)")
         if not caminho:
             return
         try:
             salvo = save_html_as_pdf(self.relatorio_html, caminho)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Relatório do dia", f"Não foi possível salvar o PDF:\n{exc}")
+            QMessageBox.critical(self, "Relatórios", f"Não foi possível salvar o PDF:\n{exc}")
             return
-        if QMessageBox.question(self, "Relatório do dia", f"PDF salvo em:\n{salvo}\n\nDeseja abrir agora?") == QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "Relatórios", f"PDF salvo em:\n{salvo}\n\nDeseja abrir agora?") == QMessageBox.StandardButton.Yes:
             try:
                 open_file_in_default_app(salvo)
             except ValidationError as exc:
-                QMessageBox.warning(self, "Relatório do dia", str(exc))
+                QMessageBox.warning(self, "Relatórios", str(exc))
 
     @staticmethod
     def _tab_hint(text: str) -> QLabel:

@@ -311,12 +311,27 @@ HELP_TOPICS: list[HelpTopic] = [
         quantas empresas, verificações e cobranças, e as falhas e avisos que ele anotou.
         Uma rodada que começou e nunca terminou aparece como <b>Interrompida</b>.</p>
 
-        <h3>Relatório do dia</h3>
-        <p>O relatório da rodada de um dia, para mostrar o que aconteceu na cobrança: o que
-        foi <b>encontrado</b> (e se deu baixa), o que <b>não foi encontrado</b> ou veio com
-        problema, as <b>cobranças e recobranças</b> enviadas, como terminou cada rodada (com
-        as falhas) e o que o robô <b>baixou do Onvio</b>. Escolha o dia e use <b>Imprimir</b>
-        ou <b>Salvar PDF</b>; o PDF sai com a identidade visual do DocFlow.</p>
+        <h3>Relatórios</h3>
+        <p>O sistema monta os relatórios sozinho, com o que ele mesmo registra. Escolha o tipo,
+        a competência e o dia, e use <b>Imprimir</b> ou <b>Salvar PDF</b> (sai com a identidade
+        visual do DocFlow).</p>
+        <p><b>Visão geral da cobrança</b>: o retrato da competência e do dia.</p>
+        <ul>
+        <li><b>Chegaram X de Y</b>: quantos documentos da competência já chegaram, com a barra
+        verde (chegou) e laranja (falta). Documentos "não cobrar" e encerrados ficam fora da conta.</li>
+        <li><b>O que aconteceu no dia</b>: por empresa, o que chegou, quantos arquivos o robô do
+        Onvio baixou, o que o Claude salvou e quem foi cobrado.</li>
+        <li><b>O que ainda falta chegar</b>: por empresa, quais documentos faltam, por onde
+        costumam chegar, se já foram cobrados (quantas vezes e quando) e se o robô baixou
+        arquivos que precisam ser conferidos.</li>
+        <li><b>O que já chegou</b>: por empresa, "Completa: 8 de 8" ou "Falta(m) 2 de 8", e como
+        chegou: robô do Onvio, Claude ou marcado à mão.</li>
+        <li><b>Arquivos</b>: o que o robô baixou (e quanto ainda está na pasta dele, esperando ser
+        organizado) e os arquivos que o Claude salvou na pasta da empresa.</li>
+        </ul>
+        <p><b>Detalhes do dia</b>: tudo o que aconteceu no dia, item por item: documentos marcados
+        como recebidos, cobranças e recobranças, o que o robô baixou e, quando o Claude fez uma
+        rodada, o que ele encontrou e não encontrou.</p>
         """,
     ),
     HelpTopic(

@@ -90,8 +90,8 @@ class PendingReportService:
             documentos_by_company.setdefault(documento["empresa_id"], []).append(documento)
 
         document_ids = [documento["id"] for documento in documentos]
-        statuses = {
-            (row["documento_empresa_id"], row["periodo_id"]): row["status"] or ""
+        status_rows = {
+            (row["documento_empresa_id"], row["periodo_id"]): row
             for row in self.status_repository.list_for_documents_and_periods(document_ids, period_ids)
         }
         closures = self._get_closure_key_map(documentos)
@@ -111,7 +111,8 @@ class PendingReportService:
                     if closure_key is not None and current_key > closure_key:
                         continue
 
-                    status = statuses.get((documento["id"], periodo["id"]), "")
+                    status_row = status_rows.get((documento["id"], periodo["id"])) or {}
+                    status = status_row.get("status") or ""
                     if all_statuses:
                         if not status:
                             continue
@@ -130,6 +131,12 @@ class PendingReportService:
                             "tipo_documento": documento["nome_tipo"],
                             "nome_documento": documento["nome_documento"],
                             "status": status,
+                            "empresa_id": company["id"],
+                            "documento_id": documento["id"],
+                            "periodo_id": periodo["id"],
+                            "meios_recebimento": documento.get("meios_recebimento") or "",
+                            "updated_at": status_row.get("updated_at"),
+                            "marcado_por": status_row.get("updated_by_username") or "",
                         }
                     )
 
