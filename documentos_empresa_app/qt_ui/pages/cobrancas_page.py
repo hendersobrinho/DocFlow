@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from html import escape
+from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -25,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from documentos_empresa_app.qt_ui.dialogs.resolver_dialog import ResolverDialog
 from documentos_empresa_app.qt_ui.icons import app_icon
+from documentos_empresa_app.qt_ui.report_printing import print_html, save_html_as_pdf
 from documentos_empresa_app.qt_ui.theme import tokens
 from documentos_empresa_app.qt_ui.widgets.acompanhamento import (
     DocLinkBrowser,
@@ -40,7 +45,11 @@ from documentos_empresa_app.qt_ui.widgets.common import PageHeader, ToolbarRow, 
 from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table, selected_key, selected_keys
 from documentos_empresa_app.qt_ui.widgets.visual import PillDelegate, PipelineBar
 from documentos_empresa_app.services.cobranca_service import ACAO_LABELS
+from documentos_empresa_app.onvio.robo import pasta_padrao
+from documentos_empresa_app.services.relatorio_rodada import coletar_dia
+from documentos_empresa_app.services.report_rodada_html import build_rodada_html
 from documentos_empresa_app.utils.common import APP_NAME, ValidationError, format_utc_timestamp
+from documentos_empresa_app.utils.helpers import get_documents_directory, load_ui_state, open_file_in_default_app
 
 DEFAULT_CHANNELS = ("Email", "WhatsApp", "Onvio", "Telefone")
 
@@ -174,6 +183,8 @@ class CobrancasPage(QWidget):
         self.tabs.addTab(self._build_verificacoes_tab(), "Conferências feitas")
         self.tabs.addTab(self._build_cobrancas_tab(), "Cobranças enviadas")
         self.tabs.addTab(self._build_rodadas_tab(), "Rodadas do Claude")
+        self.relatorio_tab_index = self.tabs.addTab(self._build_relatorio_tab(), "Relatório do dia")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs, 1)
 
     # Abas ------------------------------------------------------------------------
@@ -320,6 +331,94 @@ class CobrancasPage(QWidget):
         splitter.addWidget(self.rodada_detail)
         splitter.setSizes([700, 480])
         return tab
+
+    def _build_relatorio_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(
+            self._tab_hint(
+                "O sistema monta sozinho o que aconteceu no dia: o que chegou e foi marcado como recebido, o que o "
+                "robô baixou do Onvio e as cobranças enviadas. Se o Claude fez uma rodada, as conferências dele "
+                "entram também. Imprima ou salve em PDF."
+            )
+        )
+        linha = QHBoxLayout()
+        linha.addWidget(QLabel("Dia"))
+        self.relatorio_data = QDateEdit(QDate.currentDate())
+        self.relatorio_data.setCalendarPopup(True)
+        self.relatorio_data.setDisplayFormat("dd/MM/yyyy")
+        self.relatorio_data.dateChanged.connect(lambda _d: self._gerar_relatorio())
+        linha.addWidget(self.relatorio_data)
+        hoje_button = make_button("Hoje", "quiet")
+        hoje_button.clicked.connect(lambda: self.relatorio_data.setDate(QDate.currentDate()))
+        linha.addWidget(hoje_button)
+        atualizar_button = make_button("Atualizar", "quiet")
+        atualizar_button.clicked.connect(self._gerar_relatorio)
+        linha.addWidget(atualizar_button)
+        linha.addStretch(1)
+        self.relatorio_pdf_button = make_button("Salvar PDF")
+        self.relatorio_pdf_button.clicked.connect(self._salvar_relatorio_pdf)
+        linha.addWidget(self.relatorio_pdf_button)
+        self.relatorio_print_button = make_button("Imprimir", "primary")
+        self.relatorio_print_button.clicked.connect(self._imprimir_relatorio)
+        linha.addWidget(self.relatorio_print_button)
+        layout.addLayout(linha)
+        self.relatorio_html = ""
+        self.relatorio_view = QTextBrowser()
+        self.relatorio_view.setOpenLinks(False)
+        self.relatorio_view.setStyleSheet("QTextBrowser { background-color: #F2F5FA; border: 1px solid #DCE3EE; }")
+        layout.addWidget(self.relatorio_view, 1)
+        return tab
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == self.relatorio_tab_index:
+            self._gerar_relatorio()
+
+    def _gerar_relatorio(self) -> None:
+        dia = self.relatorio_data.date().toPython()
+        pasta_onvio = Path(str(load_ui_state("onvio:destino", "") or pasta_padrao()))
+        try:
+            dados = coletar_dia(
+                self.services.cobranca_service,
+                self.services.rodada_service,
+                dia,
+                pasta_onvio,
+                recebidos_no_dia=self.services.pending_report_service.recebidos_no_dia,
+            )
+        except ValidationError as exc:
+            QMessageBox.critical(self, "Relatório do dia", str(exc))
+            return
+        self.relatorio_html = build_rodada_html(dados, datetime.now().strftime("%d/%m/%Y %H:%M"))
+        self.relatorio_view.setHtml(self.relatorio_html)
+
+    def _imprimir_relatorio(self) -> None:
+        if not self.relatorio_html:
+            self._gerar_relatorio()
+        try:
+            print_html(self.relatorio_html, self, "Imprimir relatório da rodada")
+        except Exception as exc:  # noqa: BLE001 - impressora/driver: mostra o motivo
+            QMessageBox.critical(self, "Relatório do dia", f"Não foi possível imprimir:\n{exc}")
+
+    def _salvar_relatorio_pdf(self) -> None:
+        if not self.relatorio_html:
+            self._gerar_relatorio()
+        dia = self.relatorio_data.date().toPython()
+        sugestao = str(get_documents_directory() / f"rodada_{dia:%Y-%m-%d}.pdf")
+        caminho, _filtro = QFileDialog.getSaveFileName(self, "Salvar PDF", sugestao, "PDF (*.pdf)")
+        if not caminho:
+            return
+        try:
+            salvo = save_html_as_pdf(self.relatorio_html, caminho)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Relatório do dia", f"Não foi possível salvar o PDF:\n{exc}")
+            return
+        if QMessageBox.question(self, "Relatório do dia", f"PDF salvo em:\n{salvo}\n\nDeseja abrir agora?") == QMessageBox.StandardButton.Yes:
+            try:
+                open_file_in_default_app(salvo)
+            except ValidationError as exc:
+                QMessageBox.warning(self, "Relatório do dia", str(exc))
 
     @staticmethod
     def _tab_hint(text: str) -> QLabel:

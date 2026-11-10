@@ -244,6 +244,56 @@ class ApplicationServiceTests(unittest.TestCase):
             [("Banco A", 1, "Pendente"), ("Banco B", 2, "Pendente")],
         )
 
+    def test_status_report_shows_what_arrived_and_what_is_missing(self) -> None:
+        completa = self.empresa_service.create_empresa(120, "Empresa Em Dia")
+        faltando = self.empresa_service.create_empresa(121, "Empresa Faltando")
+        tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        doc_ok = self.documento_service.create_documento(completa, tipo_id, "Banco Ok")
+        doc_a = self.documento_service.create_documento(faltando, tipo_id, "Banco A")
+        doc_b = self.documento_service.create_documento(faltando, tipo_id, "Banco B")
+        self.periodo_service.generate_year(2026)
+        jan = next(p for p in self.periodo_service.list_periodos() if (p["ano"], p["mes"]) == (2026, 1))
+        self.status_service.update_status(doc_ok, jan["id"], "Recebido")
+        self.status_service.update_status(doc_a, jan["id"], "Recebido")
+        self.status_service.update_status(doc_b, jan["id"], "Pendente")
+
+        todos = self.pending_report_service.list_pending_rows(None, jan["id"], jan["id"], all_statuses=True)
+        self.assertEqual(
+            sorted((r["codigo_empresa"], r["nome_documento"], r["status"]) for r in todos["rows"]),
+            [(120, "Banco Ok", "Recebido"), (121, "Banco A", "Recebido"), (121, "Banco B", "Pendente")],
+        )
+        self.assertEqual(todos["pending_company_count"], 1)
+
+        relatorio = self.pending_report_service.build_printable_report(None, jan["id"], jan["id"], kind="situacao")
+        html = relatorio["html"]
+        self.assertIn("Situação da documentação", html)
+        self.assertIn("120 - Empresa Em Dia", html)
+        self.assertIn("Tudo em dia", html)
+        self.assertEqual((relatorio["result"]["received"], relatorio["result"]["pending"]), (2, 1))
+
+        sem_em_dia = self.pending_report_service.build_printable_report(
+            None, jan["id"], jan["id"], kind="situacao", include_complete=False
+        )
+        self.assertNotIn("120 - Empresa Em Dia", sem_em_dia["html"])
+
+        so_pendencias = self.pending_report_service.build_printable_report(None, jan["id"], jan["id"], kind="pendencias")
+        self.assertIn("Relatório de pendências", so_pendencias["html"])
+        self.assertNotIn("Banco Ok", so_pendencias["html"])
+
+    def test_status_report_works_even_when_nothing_is_pending(self) -> None:
+        empresa_id = self.empresa_service.create_empresa(122, "Empresa Tudo Recebido")
+        tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        documento_id = self.documento_service.create_documento(empresa_id, tipo_id, "Banco X")
+        self.periodo_service.generate_year(2026)
+        jan = next(p for p in self.periodo_service.list_periodos() if (p["ano"], p["mes"]) == (2026, 1))
+        self.status_service.update_status(documento_id, jan["id"], "Recebido")
+
+        # So pendencias: nada a listar. O retrato completo continua saindo (antes nao dava para imprimir).
+        with self.assertRaises(ValidationError):
+            self.pending_report_service.build_printable_report([empresa_id], jan["id"], jan["id"], kind="pendencias")
+        relatorio = self.pending_report_service.build_printable_report([empresa_id], jan["id"], jan["id"])
+        self.assertIn("Banco X", relatorio["html"])
+
     def test_status_view_includes_last_change_metadata(self) -> None:
         empresa_id = self.empresa_service.create_empresa(112, "Empresa Status")
         tipo_id = self.tipo_service.get_or_create_tipo("Extratos CC")["id"]

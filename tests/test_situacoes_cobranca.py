@@ -203,5 +203,82 @@ class SituacoesCobrancaTests(unittest.TestCase):
             rodadas.finalizar(rodada["id"])
 
 
+    def test_daily_round_report_gathers_what_was_found_charged_and_downloaded(self) -> None:
+        import json
+        from pathlib import Path
+        import shutil
+        import tempfile
+
+        from documentos_empresa_app.services.relatorio_rodada import coletar_dia
+        from documentos_empresa_app.services.report_rodada_html import build_rodada_html
+
+        tipo_id = self.services.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        doc2 = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Bradesco CC", ["Email"])
+        self.services.status_service.update_status(doc2, self.janeiro, "Pendente")
+
+        rodadas = self.services.rodada_service
+        rodada = rodadas.iniciar()
+        self.cobranca.registrar_verificacao(
+            self.empresa_id,
+            ["Email", "Onvio"],
+            [
+                {"documento_id": self.doc, "periodo_id": self.janeiro, "resultado": "recebido", "onde": "Onvio > Extrato"},
+                {"documento_id": doc2, "periodo_id": self.janeiro, "resultado": "nao_encontrado"},
+            ],
+            rodada_id=rodada["id"],
+        )
+        self.cobranca.registrar_cobranca(self.empresa_id, "Email", [(doc2, self.janeiro)], rodada_id=rodada["id"])
+        rodadas.registrar_ocorrencia(rodada["id"], "falha", "Onvio fora do ar", empresa_id=self.empresa_id)
+        rodadas.finalizar(rodada["id"], "1 empresa verificada")
+
+        pasta = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, pasta, True)
+        (pasta / "01-2025").mkdir()
+        (pasta / "01-2025" / "_resumo.json").write_text(
+            json.dumps(
+                {
+                    "competencia": "01/2025",
+                    "pasta": str(pasta / "01-2025"),
+                    "gerado_em": date.today().isoformat() + "T08:30:00",
+                    "empresas": [{"codigo": "1", "nome": "Padaria Pao Quente", "situacao": "baixada", "arquivos": 4, "novos": ["a", "b", "c", "d"]}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        pending = self.services.pending_report_service
+        # O proprio sistema sabe o que chegou: marcar como recebido entra no relatorio do dia.
+        self.services.status_service.update_status(self.doc, self.janeiro, "Recebido")
+
+        dados = coletar_dia(self.cobranca, rodadas, date.today(), pasta, recebidos_no_dia=pending.recebidos_no_dia)
+        self.assertEqual([r["nome_documento"] for r in dados["recebidos"]], ["Itau CC"])
+        self.assertEqual(dados["recebidos"][0]["competencia"], f"01/{self.ano}")
+        self.assertEqual(len(dados["rodadas"]), 1)
+        self.assertEqual([i["nome_documento"] for i in dados["encontrados"]], ["Itau CC"])
+        self.assertEqual([i["nome_documento"] for i in dados["nao_encontrados"]], ["Bradesco CC"])
+        self.assertEqual(len(dados["cobrancas"]), 1)
+        self.assertEqual(dados["totais"]["empresas"], 1)
+        self.assertEqual(dados["onvio"][0]["empresas"][0]["arquivos"], 4)
+
+        html = build_rodada_html(dados, "10/11/2026 11:00")
+        for texto in (
+            "Relatório da cobrança do dia", "Padaria Pao Quente", "Itau CC", "Bradesco CC", "Onvio fora do ar",
+            "Baixado do Onvio", "marcado como recebido",
+        ):
+            self.assertIn(texto, html)
+
+        # Sem nenhuma rodada do Claude o sistema ainda monta o relatorio com o que ele mesmo registrou.
+        sem_claude = coletar_dia(self.cobranca, rodadas, date.today(), None, recebidos_no_dia=pending.recebidos_no_dia)
+        sem_claude["rodadas"], sem_claude["verificacoes"] = [], []
+        html_sem_claude = build_rodada_html(sem_claude, "10/11/2026 11:00")
+        self.assertIn("Itau CC", html_sem_claude)
+        self.assertNotIn("Como foi a rodada", html_sem_claude)
+
+        # Outro dia: nada registrado, mas o relatorio sai (com o aviso de dia vazio).
+        vazio = coletar_dia(self.cobranca, rodadas, date.today() - timedelta(days=3), pasta, recebidos_no_dia=pending.recebidos_no_dia)
+        self.assertEqual((vazio["totais"]["empresas"], len(vazio["onvio"]), len(vazio["recebidos"])), (0, 0, 0))
+        self.assertIn("Nada foi registrado", build_rodada_html(vazio, "10/11/2026 11:00"))
+
+
 if __name__ == "__main__":
     unittest.main()

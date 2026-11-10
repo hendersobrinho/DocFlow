@@ -217,10 +217,12 @@ HELP_TOPICS: list[HelpTopic] = [
 
         <h3>Menu Ferramentas</h3>
         <ul>
-        <li><b>Imprimir ou exportar relatório de pendências</b> - escolha os meses (De /
-        até) e as empresas, e use <b>Imprimir</b> (vai direto para a impressora),
-        <b>Salvar PDF</b> ou <b>Salvar Excel</b>. Ao salvar, o DocFlow oferece abrir o
-        arquivo.</li>
+        <li><b>Relatório de documentação</b> - o retrato de como está a documentação das
+        empresas: <b>situação completa</b> (o que já chegou e o que ainda falta, com as
+        empresas que faltam primeiro) ou <b>só as pendências</b>. Escolha os meses (De /
+        até) e as empresas, e use <b>Imprimir</b>, <b>Salvar PDF</b> ou <b>Salvar Excel</b>.
+        O PDF e a impressão saem com a identidade visual do DocFlow. Ao salvar, o DocFlow
+        oferece abrir o arquivo.</li>
         <li><b>Gerar os meses de um ano</b> - cria as 12 competências de um ano. Normalmente
         não precisa: ao abrir, o DocFlow cria sozinho os meses do ano atual e, a partir de
         novembro, os do ano seguinte, para janeiro já chegar pronto. Use para um ano
@@ -308,6 +310,13 @@ HELP_TOPICS: list[HelpTopic] = [
         <p>Cada passada do Claude pelas cobranças é uma rodada: quando começou e terminou,
         quantas empresas, verificações e cobranças, e as falhas e avisos que ele anotou.
         Uma rodada que começou e nunca terminou aparece como <b>Interrompida</b>.</p>
+
+        <h3>Relatório do dia</h3>
+        <p>O relatório da rodada de um dia, para mostrar o que aconteceu na cobrança: o que
+        foi <b>encontrado</b> (e se deu baixa), o que <b>não foi encontrado</b> ou veio com
+        problema, as <b>cobranças e recobranças</b> enviadas, como terminou cada rodada (com
+        as falhas) e o que o robô <b>baixou do Onvio</b>. Escolha o dia e use <b>Imprimir</b>
+        ou <b>Salvar PDF</b>; o PDF sai com a identidade visual do DocFlow.</p>
         """,
     ),
     HelpTopic(

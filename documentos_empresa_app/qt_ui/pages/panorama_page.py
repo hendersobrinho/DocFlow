@@ -134,27 +134,38 @@ def _previous_months_tooltip(period_items: list[dict]) -> str:
 
 
 class ExportReportDialog(QDialog):
-    """Relatorio de pendencias: imprime direto ou salva em PDF/Excel."""
+    """Relatorio da documentacao (o que chegou e o que falta) ou so das pendencias: imprime direto
+    ou salva em PDF/Excel."""
 
     def __init__(self, services, default_period_id: int | None, visible_company_ids: list[int], parent=None) -> None:
         super().__init__(parent)
         self.services = services
         self.visible_company_ids = visible_company_ids
         self.manual_ids: list[int] = []
-        self.setWindowTitle("Relatório de pendências")
+        self.setWindowTitle("Relatório de documentação")
         self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 20, 22, 20)
         layout.setSpacing(14)
 
-        title = QLabel("Relatório de pendências")
+        title = QLabel("Relatório de documentação")
         title.setStyleSheet("font-size: 13pt; font-weight: 600;")
         layout.addWidget(title)
-        hint = QLabel("Lista os documentos marcados como Pendente no período escolhido.")
+        hint = QLabel("O retrato de como está a documentação das empresas no período escolhido.")
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        self.kind_situacao = QRadioButton("Situação completa: o que já chegou e o que ainda falta")
+        self.kind_situacao.setChecked(True)
+        layout.addWidget(self.kind_situacao)
+        self.kind_pendencias = QRadioButton("Só as pendências (documentos marcados como Pendente)")
+        layout.addWidget(self.kind_pendencias)
+        self.include_complete_check = QCheckBox("Listar também as empresas que já estão em dia")
+        self.include_complete_check.setChecked(True)
+        self.kind_situacao.toggled.connect(self.include_complete_check.setEnabled)
+        layout.addWidget(self.include_complete_check)
 
         period_row = QHBoxLayout()
         period_row.setSpacing(8)
@@ -224,7 +235,7 @@ class ExportReportDialog(QDialog):
         start_id = self.start_combo.currentData()
         end_id = self.end_combo.currentData()
         if start_id is None:
-            QMessageBox.warning(self, "Relatório de pendências", "Nenhuma competência cadastrada ainda.")
+            QMessageBox.warning(self, "Relatório de documentação", "Nenhuma competência cadastrada ainda.")
             return None
         start_index, end_index = self.start_combo.currentIndex(), self.end_combo.currentIndex()
         if end_index < start_index:
@@ -233,28 +244,41 @@ class ExportReportDialog(QDialog):
             return self.visible_company_ids, start_id, end_id
         if self.scope_manual.isChecked():
             if not self.manual_ids:
-                QMessageBox.warning(self, "Relatório de pendências", "Escolha as empresas do relatório.")
+                QMessageBox.warning(self, "Relatório de documentação", "Escolha as empresas do relatório.")
                 return None
             return self.manual_ids, start_id, end_id
         return None, start_id, end_id
+
+    def _kind(self) -> str:
+        return "situacao" if self.kind_situacao.isChecked() else "pendencias"
 
     def _printable(self) -> dict | None:
         filters = self._filters()
         if filters is None:
             return None
         try:
-            return self.services.pending_report_service.build_printable_report(*filters)
+            return self.services.pending_report_service.build_printable_report(
+                *filters, kind=self._kind(), include_complete=self.include_complete_check.isChecked()
+            )
         except ValidationError as exc:
-            QMessageBox.information(self, "Relatório de pendências", str(exc))
+            QMessageBox.information(self, "Relatório de documentação", str(exc))
             return None
 
     def _default_path(self, extension: str) -> str:
         label = self.start_combo.currentText().replace("/", "-")
-        return str(get_documents_directory() / f"pendencias_{label}.{extension}")
+        prefix = "situacao" if self._kind() == "situacao" else "pendencias"
+        return str(get_documents_directory() / f"{prefix}_{label}.{extension}")
 
     def _print(self) -> None:
         printable = self._printable()
-        if printable is not None and print_html(printable["html"], self, "Imprimir relatório de pendências"):
+        if printable is None:
+            return
+        try:
+            printed = print_html(printable["html"], self, "Imprimir relatório")
+        except Exception as exc:  # noqa: BLE001 - impressora/driver: mostra o motivo em vez de falhar calado
+            QMessageBox.critical(self, "Relatório de documentação", f"Não foi possível imprimir:\n{exc}")
+            return
+        if printed:
             self.accept()
 
     def _save_pdf(self) -> None:
@@ -264,7 +288,11 @@ class ExportReportDialog(QDialog):
         file_path, _f = QFileDialog.getSaveFileName(self, "Salvar PDF", self._default_path("pdf"), "PDF (*.pdf)")
         if not file_path:
             return
-        saved = save_html_as_pdf(printable["html"], file_path)
+        try:
+            saved = save_html_as_pdf(printable["html"], file_path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Relatório de documentação", f"Não foi possível salvar o PDF:\n{exc}")
+            return
         self._offer_to_open(saved, printable["result"])
 
     def _save_excel(self) -> None:
@@ -279,25 +307,31 @@ class ExportReportDialog(QDialog):
         runner = BlockingTaskRunner(self)
         runner.run(
             "Gerando planilha...",
-            lambda: self.services.pending_report_service.export_pending_report(file_path, *filters),
+            lambda: self.services.pending_report_service.export_pending_report(
+                file_path, *filters, all_statuses=self._kind() == "situacao"
+            ),
             on_success=lambda result: self._offer_to_open(Path(file_path), result),
-            on_error=lambda message: QMessageBox.critical(self, "Relatório de pendências", message),
+            on_error=lambda message: QMessageBox.critical(self, "Relatório de documentação", message),
         )
 
     def _offer_to_open(self, path: Path, result: dict) -> None:
+        if self._kind() == "situacao":
+            resumo = (
+                f'{result["received"]} recebido(s) e {result["pending"]} pendente(s), '
+                f'{result["pending_company_count"]} empresa(s) com pendência'
+            )
+        else:
+            resumo = f'{result["rows"]} pendência(s) de {result["pending_company_count"]} empresa(s)'
         answer = QMessageBox.question(
             self,
-            "Relatório de pendências",
-            (
-                f'Relatório salvo com {result["rows"]} pendência(s) de {result["pending_company_count"]} '
-                f"empresa(s).\n\n{path}\n\nDeseja abrir o arquivo agora?"
-            ),
+            "Relatório de documentação",
+            f"Relatório salvo: {resumo}.\n\n{path}\n\nDeseja abrir o arquivo agora?",
         )
         if answer == QMessageBox.StandardButton.Yes:
             try:
                 open_file_in_default_app(path)
             except ValidationError as exc:
-                QMessageBox.warning(self, "Relatório de pendências", str(exc))
+                QMessageBox.warning(self, "Relatório de documentação", str(exc))
         self.accept()
 
 
@@ -347,7 +381,7 @@ class PanoramaPage(QWidget):
         toolbar.add(clear_button)
         tools_button = make_button("Ferramentas")
         tools_menu = QMenu(tools_button)
-        tools_menu.addAction("Imprimir ou exportar relatório de pendências...", self.open_export_dialog)
+        tools_menu.addAction("Relatório de documentação (imprimir, PDF ou Excel)...", self.open_export_dialog)
         tools_menu.addSeparator()
         tools_menu.addAction("Gerar os meses de um ano...", self.generate_year_periods)
         tools_menu.addAction("Excluir os meses de um ano...", self.delete_year_periods)

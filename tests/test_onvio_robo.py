@@ -229,7 +229,7 @@ class OnvioDialogTests(unittest.TestCase):
 
         class Empresas:
             def list_empresas(self, active_only=False):
-                return [{"codigo_empresa": 170, "nome_empresa": "EMPRESA TESTE"}, {"codigo_empresa": 245, "nome_empresa": "Sem Onvio"}]
+                return [{"id": 1, "codigo_empresa": 170, "nome_empresa": "EMPRESA TESTE"}, {"id": 2, "codigo_empresa": 245, "nome_empresa": "Sem Onvio"}]
 
             def list_empresas_com_meio(self, meio, active_only=True, pendentes_em=None):
                 assert meio == "onvio"

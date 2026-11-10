@@ -73,18 +73,10 @@ class EmpresaRepository(BaseRepository):
         return {int(row["empresa_id"]) for row in rows}
 
     def ids_com_meio_recebimento(self, meio: str) -> set[int]:
-        """Empresas com o meio marcado no cadastro (na empresa ou em algum documento)."""
-        padrao = f"%{meio}%"
+        """Empresas com o meio marcado em algum documento (o meio de recebimento fica nos documentos)."""
         rows = self._fetchall(
-            """
-            SELECT e.id FROM empresas e
-            WHERE e.meios_recebimento ILIKE ?
-               OR EXISTS (
-                   SELECT 1 FROM documentos_empresa d
-                   WHERE d.empresa_id = e.id AND d.meios_recebimento ILIKE ?
-               )
-            """,
-            (padrao, padrao),
+            "SELECT DISTINCT d.empresa_id AS id FROM documentos_empresa d WHERE d.meios_recebimento ILIKE ?",
+            (f"%{meio}%",),
         )
         return {int(row["id"]) for row in rows}
 
@@ -1039,6 +1031,32 @@ class PeriodoRepository(BaseRepository):
 
 
 class StatusRepository(BaseRepository):
+    def list_marked_between(self, start_utc: str, end_utc: str, status: str = "Recebido") -> list[dict]:
+        """Documentos que receberam o status informado entre dois horarios (UTC, 'AAAA-MM-DD hh:mm:ss')."""
+        return self._fetchall(
+            """
+            SELECT
+                e.id AS empresa_id,
+                e.codigo_empresa,
+                e.nome_empresa,
+                d.nome_documento,
+                t.nome_tipo AS tipo_documento,
+                p.ano,
+                p.mes,
+                s.updated_at,
+                COALESCE(u.username, 'Sistema') AS username
+            FROM status_documento_mensal s
+            INNER JOIN documentos_empresa d ON d.id = s.documento_empresa_id
+            INNER JOIN tipos_documento t ON t.id = d.tipo_documento_id
+            INNER JOIN empresas e ON e.id = d.empresa_id
+            INNER JOIN periodos p ON p.id = s.periodo_id
+            LEFT JOIN usuarios u ON u.id = s.updated_by_user_id
+            WHERE s.status = ? AND s.updated_at >= ? AND s.updated_at < ?
+            ORDER BY e.codigo_empresa, p.ano, p.mes, d.nome_documento
+            """,
+            (status, start_utc, end_utc),
+        )
+
     def get_by_document_and_period(self, documento_empresa_id: int, periodo_id: int) -> dict | None:
         return self._fetchone(
             """

@@ -37,6 +37,7 @@ from documentos_empresa_app.utils.common import (
     month_key,
     normalize_type_occurrence_rule,
 )
+from documentos_empresa_app.services.report_html import build_report_html
 from documentos_empresa_app.utils.resources import get_packaging_icon_path, get_runtime_base_path
 
 
@@ -53,12 +54,29 @@ class PendingReportService:
         self.periodo_repository = periodo_repository
         self.status_repository = status_repository
 
+    def recebidos_no_dia(self, dia) -> list[dict]:
+        """Documentos marcados como Recebido no dia (data local), por quem marcou e quando."""
+        from datetime import datetime as _dt, time as _time, timedelta, timezone
+
+        inicio = _dt.combine(dia, _time.min).astimezone(timezone.utc)
+        fim = _dt.combine(dia + timedelta(days=1), _time.min).astimezone(timezone.utc)
+        formato = "%Y-%m-%d %H:%M:%S"
+        linhas = self.status_repository.list_marked_between(inicio.strftime(formato), fim.strftime(formato))
+        for linha in linhas:
+            momento = _dt.strptime(str(linha["updated_at"])[:19], formato).replace(tzinfo=timezone.utc).astimezone()
+            linha["hora"] = momento.strftime("%H:%M")
+            linha["competencia"] = f'{linha["mes"]:02d}/{linha["ano"]}'
+        return linhas
+
     def list_pending_rows(
         self,
         company_ids: list[int] | None,
         start_period_id: int,
         end_period_id: int,
+        all_statuses: bool = False,
     ) -> dict:
+        """Documentos marcados como Pendente no periodo. Com all_statuses=True traz todos os que
+        tem situacao marcada (Recebido, Pendente, Encerrado, Nao cobrar): o retrato da documentacao."""
         periodos = self._get_periods_between(start_period_id, end_period_id)
         companies = self._resolve_companies(company_ids)
 
@@ -93,10 +111,15 @@ class PendingReportService:
                     if closure_key is not None and current_key > closure_key:
                         continue
 
-                    if statuses.get((documento["id"], periodo["id"]), "") != "Pendente":
+                    status = statuses.get((documento["id"], periodo["id"]), "")
+                    if all_statuses:
+                        if not status:
+                            continue
+                    elif status != "Pendente":
                         continue
 
-                    pending_company_ids.add(company["id"])
+                    if status == "Pendente":
+                        pending_company_ids.add(company["id"])
                     rows.append(
                         {
                             "codigo_empresa": company["codigo_empresa"],
@@ -106,7 +129,7 @@ class PendingReportService:
                             "periodo": periodo["label"],
                             "tipo_documento": documento["nome_tipo"],
                             "nome_documento": documento["nome_documento"],
-                            "status": "Pendente",
+                            "status": status,
                         }
                     )
 
@@ -132,8 +155,11 @@ class PendingReportService:
         company_ids: list[int] | None,
         start_period_id: int,
         end_period_id: int,
+        all_statuses: bool = False,
     ) -> dict:
-        export_context = self._build_export_context(company_ids, start_period_id, end_period_id)
+        export_context = self._build_export_context(
+            company_ids, start_period_id, end_period_id, all_statuses=all_statuses
+        )
         report = export_context["report"]
         rows = export_context["rows"]
         if Workbook is None:
@@ -141,13 +167,13 @@ class PendingReportService:
 
         workbook = Workbook()
         worksheet = workbook.active
-        worksheet.title = "Pendencias"
+        worksheet.title = "Situacao" if all_statuses else "Pendencias"
 
         headers = (
             "Codigo da empresa",
             "Empresa",
             "Periodo",
-            "Documento pendente",
+            "Documento" if all_statuses else "Documento pendente",
             "Status",
         )
         worksheet.append(headers)
@@ -166,6 +192,15 @@ class PendingReportService:
                     row["status"],
                 )
             )
+
+        if all_statuses:
+            from openpyxl.styles import PatternFill
+
+            cores = {"Recebido": "DDF3E8", "Pendente": "FDEBD3", "Nao cobrar": "E8ECF4", "Encerrado": "E3E6EC"}
+            for linha in worksheet.iter_rows(min_row=2, min_col=5, max_col=5):
+                cor = cores.get(str(linha[0].value))
+                if cor:
+                    linha[0].fill = PatternFill("solid", start_color=cor, end_color=cor)
 
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
@@ -260,73 +295,41 @@ class PendingReportService:
         company_ids: list[int] | None,
         start_period_id: int,
         end_period_id: int,
+        kind: str = "situacao",
+        include_complete: bool = True,
     ) -> dict:
-        """Relatorio de pendencias em HTML simples (tabelas e cores basicas), pronto para
-        virar PDF vetorial ou ir direto para a impressora pela interface. Devolve
-        {"html", "result"} - result tem os mesmos totais da exportacao."""
-        context = self._build_export_context(company_ids, start_period_id, end_period_id)
+        """Relatorio em HTML (identidade visual do DocFlow), pronto para virar PDF ou ir para a
+        impressora pela interface. kind: 'situacao' (o que chegou e o que falta, o retrato do dia)
+        ou 'pendencias' (so o que falta). Devolve {"html", "result"}; result tem os totais."""
+        all_statuses = kind == "situacao"
+        context = self._build_export_context(company_ids, start_period_id, end_period_id, all_statuses=all_statuses)
         report = context["report"]
-        rows = context["rows"]
-
         periodos = report["periodos"]
         inicio = f'{periodos[0]["mes"]:02d}/{periodos[0]["ano"]}'
         fim = f'{periodos[-1]["mes"]:02d}/{periodos[-1]["ano"]}'
-        short_period_text = inicio if inicio == fim else f"{inicio} a {fim}"
-
-        by_company: dict[tuple[int, str], list[dict]] = {}
-        for row in rows:
-            by_company.setdefault((row["codigo_empresa"], row["nome_empresa"]), []).append(row)
-
-        def esc(value) -> str:
-            return html_escape(str(value))
-
-        parts = [
-            "<html><body style=\"font-family: 'Segoe UI', Arial, sans-serif; color: #1f2d3d;\">",
-            "<table width='100%' cellspacing='0' cellpadding='0'><tr>",
-            "<td><span style='font-size: 20pt; font-weight: 600;'>Relatório de pendências</span><br>",
-            f"<span style='color:#5b6b7f;'>Período: {esc(short_period_text)}"
-            f" &nbsp;|&nbsp; Empresas: {esc(context['company_label'])}</span></td>",
-            f"<td align='right' style='color:#5b6b7f;'>DocFlow<br>Gerado em {esc(context['generated_at'])}</td>",
-            "</tr></table>",
-            "<p style='margin-top: 10px;'>",
-            f"<b>{len(rows)}</b> documento(s) pendente(s) em "
-            f"<b>{report['pending_company_count']}</b> de {len(report['companies'])} empresa(s).",
-            "</p>",
-        ]
-        for (codigo, nome), company_rows in by_company.items():
-            parts.append(
-                f"<p style='margin-top: 14px; margin-bottom: 4px; font-size: 12pt; font-weight: 600;'>"
-                f"{esc(codigo)} - {esc(nome)} <span style='color:#5b6b7f; font-weight: 400;'>"
-                f"({len(company_rows)} pendente(s))</span></p>"
-            )
-            parts.append(
-                "<table width='100%' cellspacing='0' cellpadding='5' "
-                "style='border-collapse: collapse; border: 1px solid #c9d4e0;'>"
-                "<tr style='background-color: #e8eef6;'>"
-                "<th align='left' width='16%'>Competência</th>"
-                "<th align='left' width='27%'>Tipo</th>"
-                "<th align='left'>Documento</th></tr>"
-            )
-            for index, row in enumerate(company_rows):
-                background = "#ffffff" if index % 2 == 0 else "#f6f8fb"
-                parts.append(
-                    f"<tr style='background-color: {background};'>"
-                    f"<td>{row['mes']:02d}/{row['ano']}</td><td>{esc(row['tipo_documento'])}</td>"
-                    f"<td>{esc(row['nome_documento'])}</td></tr>"
-                )
-            parts.append("</table>")
-        parts.append("</body></html>")
-        return {"html": "".join(parts), "result": self._build_export_result(report)}
+        html = build_report_html(
+            kind=kind,
+            rows=context["rows"],
+            companies_total=len(report["companies"]),
+            period_text=inicio if inicio == fim else f"{inicio} a {fim}",
+            company_label=context["company_label"],
+            generated_at=context["generated_at"],
+            include_complete=include_complete,
+        )
+        return {"html": html, "result": self._build_export_result(report)}
 
     def _build_export_context(
         self,
         company_ids: list[int] | None,
         start_period_id: int,
         end_period_id: int,
+        all_statuses: bool = False,
     ) -> dict:
-        report = self.list_pending_rows(company_ids, start_period_id, end_period_id)
+        report = self.list_pending_rows(company_ids, start_period_id, end_period_id, all_statuses=all_statuses)
         rows = report["rows"]
         if not rows:
+            if all_statuses:
+                raise ValidationError("Nenhum documento com situacao marcada foi encontrado no filtro informado.")
             raise ValidationError("Nenhuma pendencia com status Pendente foi encontrada no filtro informado.")
 
         periodos = report["periodos"]
@@ -352,6 +355,8 @@ class PendingReportService:
 
     def _build_export_result(self, report: dict) -> dict:
         return {
+            "pending": sum(1 for row in report["rows"] if row["status"] == "Pendente"),
+            "received": sum(1 for row in report["rows"] if row["status"] == "Recebido"),
             "rows": len(report["rows"]),
             "company_count": len(report["companies"]),
             "pending_company_count": report["pending_company_count"],

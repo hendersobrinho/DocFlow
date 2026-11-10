@@ -6,7 +6,7 @@
 
 Sistema desktop local para controle de recebimento de documentos empresariais.
 
-Versao atual: `2.0.9`
+Versao atual: `2.0.10`
 
 Este repositorio publico foi preparado para portfolio tecnico. O codigo-fonte, a interface e o fluxo principal estao aqui para estudo e demonstracao, mas materiais operacionais privados de licenciamento e distribuicao comercial nao acompanham esta edicao.
 

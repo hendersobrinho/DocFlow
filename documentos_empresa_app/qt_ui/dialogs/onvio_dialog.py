@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QProgressBar,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from documentos_empresa_app.onvio.api import OnvioError
 from documentos_empresa_app.onvio.robo import BAIXADA, ERRO, ROTULOS, Resumo, pasta_padrao
+from documentos_empresa_app.qt_ui.dialogs.company_dialogs import CompanyMultiSelectDialog
 from documentos_empresa_app.qt_ui.widgets.common import make_button
 from documentos_empresa_app.utils.common import MONTH_NAMES
 from documentos_empresa_app.utils.helpers import load_ui_state, save_ui_state
@@ -71,6 +73,7 @@ class OnvioDownloadDialog(QDialog):
         self._thread: QThread | None = None
         self._robo: _Robo | None = None
         self.resumo: Resumo | None = None
+        self.manual_ids: list[int] = []
         self.setWindowTitle("Baixar documentos do Onvio")
         self.setMinimumSize(620, 520)
 
@@ -106,10 +109,24 @@ class OnvioDownloadDialog(QDialog):
         escolher.clicked.connect(self._escolher_pasta)
         pasta.addWidget(escolher)
         form.addRow("Salvar em", pasta)
+        self.escopo_filtros = QRadioButton("Empresas pelos filtros abaixo")
+        self.escopo_filtros.setChecked(True)
+        form.addRow("Empresas", self.escopo_filtros)
+        escolha = QHBoxLayout()
+        self.escopo_manual = QRadioButton("Escolher empresas")
+        escolha.addWidget(self.escopo_manual)
+        self.escolher_empresas_button = make_button("Escolher...", "quiet")
+        self.escolher_empresas_button.clicked.connect(self._escolher_empresas)
+        escolha.addWidget(self.escolher_empresas_button)
+        self.manual_label = QLabel("")
+        self.manual_label.setObjectName("Muted")
+        escolha.addWidget(self.manual_label)
+        escolha.addStretch(1)
+        form.addRow("", escolha)
         self.ativas_check = QCheckBox("Só empresas ativas no DocFlow")
         self.ativas_check.setChecked(True)
         form.addRow("", self.ativas_check)
-        self.so_onvio_check = QCheckBox("Só empresas com Onvio marcado no cadastro (meio de recebimento)")
+        self.so_onvio_check = QCheckBox("Só empresas que recebem documentos pelo Onvio (marcado nos documentos)")
         self.so_onvio_check.setChecked(bool(load_ui_state("onvio:so_onvio", True)))
         form.addRow("", self.so_onvio_check)
         self.so_pendentes_check = QCheckBox("Só quem ainda tem documento pendente no DocFlow nessa competência")
@@ -136,6 +153,10 @@ class OnvioDownloadDialog(QDialog):
         self.abrir_button = make_button("Abrir pasta", "quiet")
         self.abrir_button.clicked.connect(self._abrir_pasta)
         botoes.addWidget(self.abrir_button)
+        self.repetir_button = make_button("Repetir só as que deram erro", "quiet")
+        self.repetir_button.setVisible(False)
+        self.repetir_button.clicked.connect(self._repetir_com_erro)
+        botoes.addWidget(self.repetir_button)
         botoes.addStretch(1)
         self.fechar_button = make_button("Fechar", "quiet")
         self.fechar_button.clicked.connect(self.close)
@@ -162,9 +183,34 @@ class OnvioDownloadDialog(QDialog):
         pasta.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(pasta)))
 
+    def _todas_empresas(self) -> list[dict]:
+        return self.services.empresa_service.list_empresas(active_only=False)
+
+    def _escolher_empresas(self) -> None:
+        dialogo = CompanyMultiSelectDialog(self, self._todas_empresas(), self.manual_ids)
+        if dialogo.exec():
+            self.manual_ids = list(dialogo.selected_company_ids)
+            self._atualizar_escolha()
+            self.escopo_manual.setChecked(bool(self.manual_ids))
+
+    def _atualizar_escolha(self) -> None:
+        self.manual_label.setText(f"{len(self.manual_ids)} selecionada(s)" if self.manual_ids else "")
+
+    def _repetir_com_erro(self) -> None:
+        if not self.resumo:
+            return
+        codigos = {e.codigo for e in self.resumo.empresas if e.situacao == ERRO}
+        self.manual_ids = [int(e["id"]) for e in self._todas_empresas() if str(e["codigo_empresa"]) in codigos]
+        self._atualizar_escolha()
+        self.escopo_manual.setChecked(True)
+        self.iniciar()
+
     def empresas(self) -> list[tuple[str, str]]:
         servico = self.services.empresa_service
-        if self.so_onvio_check.isChecked():
+        if self.escopo_manual.isChecked():
+            escolhidas = set(self.manual_ids)
+            lista = [e for e in self._todas_empresas() if int(e["id"]) in escolhidas]
+        elif self.so_onvio_check.isChecked():
             pendentes_em = (self.ano_spin.value(), self.mes_combo.currentData()) if self.so_pendentes_check.isChecked() else None
             lista = servico.list_empresas_com_meio("onvio", active_only=self.ativas_check.isChecked(), pendentes_em=pendentes_em)
         else:
@@ -189,7 +235,9 @@ class OnvioDownloadDialog(QDialog):
         empresas = self.empresas()
         if not empresas:
             aviso = "Nenhuma empresa cadastrada."
-            if self.so_onvio_check.isChecked():
+            if self.escopo_manual.isChecked():
+                aviso = "Escolha pelo menos uma empresa."
+            elif self.so_onvio_check.isChecked():
                 aviso = "Nenhuma empresa para baixar: todas com Onvio já estão sem documento pendente nessa competência (ou nenhuma tem Onvio marcado no cadastro)."
             QMessageBox.information(self, "Onvio", aviso)
             return
@@ -198,9 +246,10 @@ class OnvioDownloadDialog(QDialog):
         self.barra.setVisible(True)
         self.barra.setRange(0, len(empresas))
         self.barra.setValue(0)
+        self.repetir_button.setVisible(False)
         self.situacao_label.setText("Abrindo o Onvio...")
         self.iniciar_button.setText("Parar")
-        for widget in (self.mes_combo, self.ano_spin, self.destino_edit, self.ativas_check, self.so_onvio_check, self.so_pendentes_check, self.de_novo_check):
+        for widget in (self.mes_combo, self.ano_spin, self.destino_edit, self.escopo_filtros, self.escopo_manual, self.escolher_empresas_button, self.ativas_check, self.so_onvio_check, self.so_pendentes_check, self.de_novo_check):
             widget.setEnabled(False)
 
         self._thread = QThread(self)
@@ -230,7 +279,7 @@ class OnvioDownloadDialog(QDialog):
         self._robo = None
         self.iniciar_button.setText("Baixar")
         self.iniciar_button.setEnabled(True)
-        for widget in (self.mes_combo, self.ano_spin, self.destino_edit, self.ativas_check, self.so_onvio_check, self.so_pendentes_check, self.de_novo_check):
+        for widget in (self.mes_combo, self.ano_spin, self.destino_edit, self.escopo_filtros, self.escopo_manual, self.escolher_empresas_button, self.ativas_check, self.so_onvio_check, self.so_pendentes_check, self.de_novo_check):
             widget.setEnabled(True)
 
     def _terminou(self, resumo: Resumo) -> None:
@@ -239,6 +288,7 @@ class OnvioDownloadDialog(QDialog):
         self.barra.setValue(self.barra.maximum())
         self.situacao_label.setText(resumo.texto())
         problemas = [e for e in resumo.empresas if e.situacao == ERRO]
+        self.repetir_button.setVisible(bool(problemas))
         if problemas:
             self.lista.addItem("")
             self.lista.addItem("Com erro (tente de novo):")
