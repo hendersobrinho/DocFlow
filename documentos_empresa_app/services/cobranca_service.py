@@ -267,6 +267,7 @@ class CobrancaService:
         - documento_com_problema: veio algo, mas errado; 'motivo' diz o que (MOTIVOS_PROBLEMA).
           Nunca da baixa.
         - nao_encontrado: procurou e nao achou; entra na fila de cobranca.
+        Com problema ou nao encontrado, o documento sem marcacao fica Pendente.
         - verificacao_falhou: nao deu para olhar; volta a ser verificado, sem cobrar."""
         fontes_normalizadas = normalize_delivery_methods(fontes)
         if not fontes_normalizadas:
@@ -316,8 +317,10 @@ class CobrancaService:
                         )
                 elif resultado == RESULTADO_PROBLEMA:
                     self._set_situacao(chave[0], chave[1], SITUACAO_PROBLEMA, motivo=motivo, detalhe=observacao, rodada_id=rodada_id)
+                    self._marcar_pendente_se_vazio(chave)
                 elif resultado == RESULTADO_NAO_ENCONTRADO:
                     self._set_situacao(chave[0], chave[1], SITUACAO_NAO_ENCONTRADO, detalhe=observacao, rodada_id=rodada_id)
+                    self._marcar_pendente_se_vazio(chave)
                 else:
                     self._set_situacao(
                         chave[0], chave[1], SITUACAO_FALHOU, motivo=motivo, detalhe=observacao, rodada_id=rodada_id
@@ -391,6 +394,17 @@ class CobrancaService:
         return self.resolver_manual(
             [(documento_id, periodo_id)], resultado, arquivo=arquivo, observacao=observacao
         )[0]
+
+    def _marcar_pendente_se_vazio(self, chave: tuple[int, int]) -> None:
+        """Procurou e nao achou (ou veio errado): o documento esta pendente. So marca quando
+        ainda nao tem marcacao; Pendente, Nao cobrar e Encerrado ficam como estao."""
+        existente = self.status_service.status_repository.get_by_document_and_period(*chave)
+        if existente and existente.get("status"):
+            return
+        try:
+            self.status_service.update_status(chave[0], chave[1], "Pendente")
+        except ValidationError:
+            pass
 
     def resolver_manual(
         self,

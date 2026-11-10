@@ -34,6 +34,15 @@ class PanoramaMarkingTests(unittest.TestCase):
         self.itau = self.services.documento_service.create_documento(empresa_id, tipo_id, "Itau CC", ["Email"])
         self.bb = self.services.documento_service.create_documento(empresa_id, tipo_id, "BB CC", ["Email"])
         self.changed = 0
+        # Preferencias de tela em memoria: o teste nao mexe na configuracao deste computador.
+        self.estado: dict = {}
+        for nome, func in (
+            ("load_ui_state", lambda k, d=None: self.estado.get(k, d)),
+            ("save_ui_state", lambda k, v: self.estado.__setitem__(k, v)),
+        ):
+            patcher = mock.patch(f"documentos_empresa_app.qt_ui.pages.panorama_page.{nome}", func)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.page = PanoramaPage(self.services, self._on_changed)
         self.page.refresh_data()
         self.page.table.selectRow(0)
@@ -45,6 +54,17 @@ class PanoramaMarkingTests(unittest.TestCase):
     def _status(self, documento_id: int, col: int) -> str:
         doc = next(d for d in self.page.year_map.documentos if d["documento_id"] == documento_id)
         return doc["celulas"][col]["status"]
+
+    def test_remembers_last_chosen_period(self) -> None:
+        combo = self.page.period_combo
+        escolhida = combo.findText(f"03/{date.today().year}")
+        combo.setCurrentIndex(escolhida)
+        self.assertEqual(self.estado["panorama:competencia"], f"03/{date.today().year}")
+
+        outra = PanoramaPage(self.services, lambda: None)  # como se abrisse o sistema de novo
+        self.addCleanup(outra.deleteLater)
+        outra.refresh_data()
+        self.assertEqual(outra.period_combo.currentText(), f"03/{date.today().year}")
 
     def test_typing_marks_like_the_spreadsheet(self) -> None:
         from PySide6.QtCore import Qt

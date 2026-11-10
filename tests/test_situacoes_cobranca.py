@@ -65,6 +65,28 @@ class SituacoesCobrancaTests(unittest.TestCase):
         self._verificar(resultado="nao_encontrado")
         self.assertEqual(self._acao(depois)["acao"], "recobrar")
 
+    def test_not_found_or_problem_marks_unmarked_document_as_pending(self) -> None:
+        """Procurou e nao achou: o documento sem marcacao fica Pendente. Marcacao que ja
+        existe (como Nao cobrar) nao muda."""
+        tipo_id = self.services.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        sem_marca = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Inter CC", ["Email"])
+        errado = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Caixa CC", ["Email"])
+        nao_cobrar = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Nubank CC", ["Email"])
+        self.services.status_service.update_status(nao_cobrar, self.janeiro, "Nao cobrar")
+        self.cobranca.registrar_verificacao(
+            self.empresa_id,
+            ["Email"],
+            [
+                {"documento_id": sem_marca, "periodo_id": self.janeiro, "resultado": "nao_encontrado"},
+                {"documento_id": errado, "periodo_id": self.janeiro, "resultado": "documento_com_problema",
+                 "motivo": "documento_errado"},
+                {"documento_id": nao_cobrar, "periodo_id": self.janeiro, "resultado": "nao_encontrado"},
+            ],
+        )
+        repo = self.services.status_service.status_repository
+        status = {d: (repo.get_by_document_and_period(d, self.janeiro) or {}).get("status") for d in (sem_marca, errado, nao_cobrar)}
+        self.assertEqual(status, {sem_marca: "Pendente", errado: "Pendente", nao_cobrar: "Nao cobrar"})
+
     def test_recharge_limit_sends_to_a_person(self) -> None:
         self.services.collection_service.update_followup_rules(0, 1, True)
         for _ in range(2):

@@ -18,7 +18,7 @@ ICONS_DIR = ROOT_DIR / "assets" / "icons"
 MASTER_ICON_PATH = ICONS_DIR / "icon.svg"
 # Versao para 16 a 48 px: a folha maior e mais grossa, senao some e o D fica todo branco.
 SMALL_ICON_PATH = ICONS_DIR / "icon-pequeno.svg"
-SMALL_ICO_SIZES = (16, 24, 32, 48)
+SMALL_ICO_SIZES = (16, 24)  # como manda a identidade: a versao "Pequeno" so em 16 e 24 px
 PNG_ICON_PATH = ICONS_DIR / "icon.png"
 ICO_ICON_PATH = ICONS_DIR / "icon.ico"
 ICNS_ICON_PATH = ICONS_DIR / "icon.icns"

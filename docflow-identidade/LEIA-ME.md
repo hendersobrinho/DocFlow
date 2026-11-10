@@ -50,4 +50,4 @@ Branco sobre ciano ou laranja não passa em contraste — use navy.
 
 `icone/icon.svg`, `icon.png`, `icon.ico` e `icon.icns` substituem os arquivos de `assets/icons/`, e `capa/capa.png` substitui `assets/capa.png`.
 
-O `scripts/generate_icons.py` (que o build roda) desenha o `icon.svg` com o QtSvg e usa o `assets/icons/icon-pequeno.svg` nos tamanhos de 16 a 48 px, com a folha maior para não sumir no atalho.
+O `scripts/generate_icons.py` (que o build roda) desenha o `icon.svg` com o QtSvg e usa a versão "Pequeno" (`icone/icon-pequeno.svg`, copiada em `assets/icons/`) só em 16 e 24 px; do 32 px para cima vai o desenho completo.

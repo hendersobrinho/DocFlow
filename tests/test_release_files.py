@@ -65,7 +65,7 @@ class ReleaseFileTests(unittest.TestCase):
         self.assertLess(sum(meio), 300, f"meio do D devia ser a folha escura, veio {meio}")
 
         frames = GENERATE_ICONS_MODULE.small_ico_frames()
-        self.assertEqual(sorted(frames), [16, 24, 32, 48])
+        self.assertEqual(sorted(frames), [16, 24])
         for tamanho, frame in frames.items():
             centro = frame.convert("RGB").getpixel((tamanho // 2, tamanho // 2))
             self.assertLess(sum(centro), 300, f"{tamanho}px: folha sumiu ({centro})")

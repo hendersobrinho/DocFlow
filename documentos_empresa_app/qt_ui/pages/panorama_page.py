@@ -88,6 +88,7 @@ COLUMN_TOOLTIPS = {
     ),
 }
 SORT_ROLE = Qt.ItemDataRole.UserRole + 1
+PERIODO_KEY = "panorama:competencia"  # ultima competencia escolhida (MM/AAAA), volta ao abrir
 
 
 class _SortableItem(QTableWidgetItem):
@@ -406,7 +407,7 @@ class PanoramaPage(QWidget):
         toolbar.add(QLabel("Competência"))
         self.period_combo = QComboBox()
         self.period_combo.setMinimumWidth(130)
-        self.period_combo.currentIndexChanged.connect(lambda _i: self.reload())
+        self.period_combo.currentIndexChanged.connect(self._periodo_escolhido)
         toolbar.add(self.period_combo)
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Buscar empresa...")
@@ -558,6 +559,11 @@ class PanoramaPage(QWidget):
         self._refresh_periods()
         self.reload()
 
+    def _periodo_escolhido(self, _index: int) -> None:
+        if self.period_combo.currentText():
+            save_ui_state(PERIODO_KEY, self.period_combo.currentText())
+        self.reload()
+
     def _refresh_periods(self) -> None:
         selected = self.period_combo.currentData()
         self.periods = self.services.periodo_service.list_periodos()
@@ -565,8 +571,12 @@ class PanoramaPage(QWidget):
         self.period_combo.clear()
         for periodo in sorted(self.periods, key=lambda p: (p["ano"], p["mes"])):
             self.period_combo.addItem(f'{periodo["mes"]:02d}/{periodo["ano"]}', periodo["id"])
+        salva = self.period_combo.findText(str(load_ui_state(PERIODO_KEY, "") or ""))
         if selected is not None and self.period_combo.findData(selected) >= 0:
             self.period_combo.setCurrentIndex(self.period_combo.findData(selected))
+        elif salva >= 0:
+            # A ultima competencia escolhida volta quando o sistema abre de novo.
+            self.period_combo.setCurrentIndex(salva)
         else:
             now = datetime.now()
             current = next((p for p in self.periods if p["ano"] == now.year and p["mes"] == now.month), None)

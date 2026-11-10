@@ -184,7 +184,9 @@ def _cabecalho_tabela(colunas: list[tuple[str, str, str]]) -> str:
 
 
 def _celula_empresa(codigo, nome, chegou: int, total: int, periodo: str = "") -> str:
-    competencia = f"<br><span style='color:{MUTED}; font-size:8pt;'>Competência {periodo}</span>" if periodo else ""
+    competencia = (
+        f"<br><span style='color:{NAVY}; font-size:8pt; font-weight:600;'>Competência {periodo}</span>" if periodo else ""
+    )
     return (
         f"<td valign='top' width='22%'><span style='color:{NAVY}; font-weight:600;'>{_esc(codigo)}</span>"
         f"<span style='color:{TEXT}; font-weight:600;'> - {_esc(nome)}</span>{competencia}"
@@ -244,8 +246,6 @@ def build_report_html(
         (com_falta if pendentes else completas).add(codigo)
         linhas.append((codigo, nome, ano, mes, docs, chegou, falta, nao_achou))
     completas -= com_falta
-    competencias = {(linha[2], linha[3]) for linha in linhas}
-    varios_meses = len(competencias) > 1
 
     if kind == "pendencias":
         title = "Relatório de pendências"
@@ -290,7 +290,7 @@ def build_report_html(
         ]
         for index, (codigo, nome, ano, mes, docs, chegou, falta, nao_achou) in enumerate(visiveis):
             fundo = "#FFFFFF" if index % 2 == 0 else "#F7F9FC"
-            periodo = f"{mes:02d}/{ano}" if varios_meses else ""
+            periodo = f"{mes:02d}/{ano}"  # sempre: deixa claro de que mes e cada documento
             celulas = [_celula_empresa(codigo, nome, len(chegou), len(docs), periodo)]
             if kind != "pendencias":
                 celulas.append(_celula(_lista(chegou, docs, GREEN), CHEGOU_FUNDO if chegou else fundo))

@@ -81,7 +81,7 @@ mcp = MCPServer(
         "descreva em 'onde' remetente, data, assunto ou pasta);\n"
         "   - documento_com_problema: veio algo, mas errado (motivo: documento_errado, "
         "competencia_errada, ilegivel_ou_incompleto, empresa_errada ou outro);\n"
-        "   - nao_encontrado: procurou direito e nao esta la;\n"
+        "   - nao_encontrado: procurou direito e nao esta la (o documento sem marcacao fica Pendente);\n"
         "   - verificacao_falhou: nao conseguiu olhar (sem acesso, erro, fora do ar) - diga o motivo. "
         "Isso NAO gera cobranca.\n"
         "   Na duvida, NUNCA use recebido: use documento_com_problema ou 'encaminhar_para_pessoa'.\n"

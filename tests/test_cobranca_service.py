@@ -70,7 +70,7 @@ class CobrancaServiceTests(unittest.TestCase):
         )
         statuses = {doc["nome_documento"]: doc["cells"][0].get("status") for g in status["groups"] for doc in g["documentos"]}
         self.assertEqual(statuses["Itau CC"], "Recebido")
-        self.assertFalse(statuses["BB CC"])
+        self.assertEqual(statuses["BB CC"], "Pendente")  # procurou e nao achou: fica pendente
 
         registro = self.cobranca.registro_documento(self.doc_itau)
         janeiro_label = f"01/{self.ano}"
