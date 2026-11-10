@@ -239,3 +239,43 @@ def coletar_visao_geral(
             "cobrados": sum(1 for e in lista for d in e["faltam"] if d["cobranca"]),
         },
     }
+
+
+def rodadas_recentes(rodada_service, dias: int = 31, limite: int = 20) -> list[dict]:
+    """As rodadas do Claude dos ultimos dias, da mais nova para a mais antiga."""
+    from datetime import timedelta
+
+    corte = (datetime.now(timezone.utc) - timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S")
+    rodadas = [r for r in rodada_service.listar(200) if str(r.get("iniciada_em") or "") >= corte]
+    rodadas.sort(key=lambda r: str(r["iniciada_em"]), reverse=True)
+    return rodadas[:limite]
+
+
+def procurados_nao_encontrados(cobranca_service) -> dict[tuple[int, int], str]:
+    """{(documento_id, periodo_id): detalhe} dos documentos cuja ultima conferencia do Claude foi
+    'nao encontrado' ou 'veio com problema'. Quem esta marcado como recebido nao entra (o
+    relatorio so usa isto para os pendentes)."""
+    from documentos_empresa_app.services.cobranca_service import MOTIVOS_PROBLEMA
+
+    ultimo: dict[tuple[int, int], dict] = {}
+    for verificacao in sorted(cobranca_service.listar_verificacoes(LIMITE), key=lambda v: str(v["realizada_em"])):
+        for item in verificacao["itens"]:
+            ultimo[(item["documento_id"], item["periodo_id"])] = {
+                **item,
+                "data": _data_curta(verificacao["realizada_em"]),
+                "fontes": verificacao.get("fontes") or "",
+            }
+    resultado: dict[tuple[int, int], str] = {}
+    for chave, item in ultimo.items():
+        if item["resultado"] == "nao_encontrado":
+            onde = f" em {item['fontes']}" if item.get("fontes") else ""
+            detalhe = f"procurado{onde} em {item['data']}, não estava"
+        elif item["resultado"] == "documento_com_problema":
+            motivo = MOTIVOS_PROBLEMA.get(item.get("motivo") or "", "com problema")
+            detalhe = f"veio errado ({motivo.lower()}) em {item['data']}"
+        else:
+            continue
+        if item.get("observacao"):
+            detalhe += f": {item['observacao']}"
+        resultado[chave] = detalhe
+    return resultado

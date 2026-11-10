@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -50,6 +51,7 @@ from documentos_empresa_app.utils.auto_backup import (
     should_run_auto_backup,
 )
 from documentos_empresa_app.services.database_maintenance_service import BACKUP_EXTENSION
+from documentos_empresa_app.services.mudancas_service import MudancasService
 from documentos_empresa_app.services.update_service import UpdateService, can_self_update
 from documentos_empresa_app.utils.backup_encryption import is_encrypted_backup
 from documentos_empresa_app.utils.common import APP_NAME, APP_TITLE, ValidationError
@@ -61,6 +63,7 @@ from documentos_empresa_app.utils.helpers import (
 
 
 SIDEBAR_WIDTH = 230
+NOVIDADES_INTERVALO_MS = 15000  # de quanto em quanto tempo olha se alguem de fora gravou no banco
 
 # Mapeia o titulo de cada pagina (usado em page_defs, dentro de _build_main_area)
 # pro topico correspondente do manual (F1) - ver qt_ui/dialogs/help_content.py.
@@ -105,6 +108,10 @@ class MainWindow(QMainWindow):
 
         self.help_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F1), self)
         self.help_shortcut.activated.connect(self.open_help)
+        # F5 recarrega tudo do banco (o que o Claude ou outro computador gravou), sem fechar.
+        self.refresh_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
+        self.refresh_shortcut.activated.connect(self.atualizar_tudo)
+        self.mudancas = MudancasService(self.services.database_maintenance_service.db_manager)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -116,6 +123,11 @@ class MainWindow(QMainWindow):
         self._build_main_area(root_layout)
 
         QTimer.singleShot(800, self.run_auto_backup_if_due)
+        # De tempos em tempos olha se alguem de fora gravou no banco e avisa no botao Atualizar.
+        self.novidades_timer = QTimer(self)
+        self.novidades_timer.setInterval(NOVIDADES_INTERVALO_MS)
+        self.novidades_timer.timeout.connect(self._verificar_novidades)
+        self.novidades_timer.start()
         if can_self_update():
             QTimer.singleShot(5000, self.check_updates_in_background)
 
@@ -159,6 +171,14 @@ class MainWindow(QMainWindow):
         self.update_button.setVisible(False)
         self.update_button.clicked.connect(self.open_update_dialog)
         layout.addWidget(self.update_button)
+
+        self.refresh_button = make_button("Atualizar (F5)", "quiet")
+        self.refresh_button.setToolTip(
+            "Recarrega as telas com o que está no banco agora: o que o Claude, o robô ou outro "
+            "computador gravou. Não precisa fechar o DocFlow."
+        )
+        self.refresh_button.clicked.connect(self.atualizar_tudo)
+        layout.addWidget(self.refresh_button)
 
         tools_row = QHBoxLayout()
         tools_row.setSpacing(6)
@@ -349,6 +369,26 @@ class MainWindow(QMainWindow):
             page = self.pages[current_index]
             if hasattr(page, "refresh_data"):
                 page.refresh_data()
+
+    def atualizar_tudo(self) -> None:
+        """Le tudo do banco de novo (sem fechar o sistema): limpa os caches de leitura e
+        recarrega a tela atual; as outras recarregam quando forem abertas."""
+        self.mudancas.invalidar_caches()
+        self.refresh_all_tabs()
+        self.mudancas.marcar_visto()
+        self._mostrar_novidades(False)
+
+    def _verificar_novidades(self) -> None:
+        if not self.isVisible() or QApplication.activeModalWidget() is not None:
+            return
+        if self.mudancas.ha_novidades():
+            self._mostrar_novidades(True)
+
+    def _mostrar_novidades(self, ha: bool) -> None:
+        self.refresh_button.setText("Atualizar · há novidades (F5)" if ha else "Atualizar (F5)")
+        self.refresh_button.setProperty("variant", "update" if ha else "quiet")
+        self.refresh_button.style().unpolish(self.refresh_button)
+        self.refresh_button.style().polish(self.refresh_button)
 
     def _refresh_attention_badge(self) -> None:
         """Mostra no menu quantos documentos e rodadas estao esperando uma pessoa."""

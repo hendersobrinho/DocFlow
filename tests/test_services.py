@@ -267,14 +267,17 @@ class ApplicationServiceTests(unittest.TestCase):
         relatorio = self.pending_report_service.build_printable_report(None, jan["id"], jan["id"], kind="situacao")
         html = relatorio["html"]
         self.assertIn("Situação da documentação", html)
-        self.assertIn("120 - Empresa Em Dia", html)
-        self.assertIn("Tudo em dia", html)
+        self.assertIn("Empresa Em Dia", html)
+        self.assertIn("Banco Ok", html)
+        self.assertIn("chegaram 1 de 2", html)
+        self.assertNotIn("Não falta nada", html)
+        self.assertNotIn("Tudo em dia", html)
         self.assertEqual((relatorio["result"]["received"], relatorio["result"]["pending"]), (2, 1))
 
         sem_em_dia = self.pending_report_service.build_printable_report(
             None, jan["id"], jan["id"], kind="situacao", include_complete=False
         )
-        self.assertNotIn("120 - Empresa Em Dia", sem_em_dia["html"])
+        self.assertNotIn("Empresa Em Dia", sem_em_dia["html"])
 
         so_pendencias = self.pending_report_service.build_printable_report(None, jan["id"], jan["id"], kind="pendencias")
         self.assertIn("Relatório de pendências", so_pendencias["html"])

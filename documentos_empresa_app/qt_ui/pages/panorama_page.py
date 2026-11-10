@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from html import escape
 from pathlib import Path
 
@@ -51,6 +51,13 @@ from documentos_empresa_app.qt_ui.widgets.visual import (
     status_icon,
 )
 from documentos_empresa_app.services.cobranca_service import SITUACAO_LABELS
+from documentos_empresa_app.onvio.robo import pasta_padrao
+from documentos_empresa_app.services.relatorio_visao_geral import (
+    coletar_visao_geral,
+    procurados_nao_encontrados,
+    rodadas_recentes,
+)
+from documentos_empresa_app.services.report_visao_geral_html import build_secao_robo_claude
 from documentos_empresa_app.services.whatsapp_service import build_link
 from documentos_empresa_app.qt_ui.report_printing import print_html, save_html_as_pdf
 from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner
@@ -157,15 +164,19 @@ class ExportReportDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        self.kind_situacao = QRadioButton("Situação completa: o que já chegou e o que ainda falta")
+        self.kind_situacao = QRadioButton("Completo: o que chegou, o que ainda não chegou e o que foi procurado e não encontrado")
         self.kind_situacao.setChecked(True)
         layout.addWidget(self.kind_situacao)
-        self.kind_pendencias = QRadioButton("Só as pendências (documentos marcados como Pendente)")
+        self.kind_pendencias = QRadioButton("Só o que falta (o que não chegou e o que não foi encontrado)")
         layout.addWidget(self.kind_pendencias)
-        self.include_complete_check = QCheckBox("Listar também as empresas que já estão em dia")
+        self.include_complete_check = QCheckBox("Listar também as empresas completas (em que já chegou tudo)")
         self.include_complete_check.setChecked(True)
         self.kind_situacao.toggled.connect(self.include_complete_check.setEnabled)
         layout.addWidget(self.include_complete_check)
+        self.robo_claude_check = QCheckBox("Incluir no fim o resumo do robô do Onvio e das rodadas do Claude")
+        self.robo_claude_check.setChecked(True)
+        self.kind_situacao.toggled.connect(self.robo_claude_check.setEnabled)
+        layout.addWidget(self.robo_claude_check)
 
         period_row = QHBoxLayout()
         period_row.setSpacing(8)
@@ -252,13 +263,43 @@ class ExportReportDialog(QDialog):
     def _kind(self) -> str:
         return "situacao" if self.kind_situacao.isChecked() else "pendencias"
 
+    def _robo_claude_html(self, periodo_id: int) -> str:
+        """Resumo do robo do Onvio e das rodadas do Claude da competencia (o fim do relatorio completo).
+        Se algo der errado aqui, o relatorio sai sem essa parte."""
+        if not self.robo_claude_check.isChecked():
+            return ""
+        try:
+            periodo = next(p for p in self.services.periodo_service.list_periodos() if p["id"] == periodo_id)
+            pasta = Path(str(load_ui_state("onvio:destino", "") or pasta_padrao()))
+            dados = coletar_visao_geral(
+                self.services.pending_report_service,
+                self.services.cobranca_service,
+                self.services.rodada_service,
+                periodo["ano"],
+                periodo["mes"],
+                date.today(),
+                pasta,
+            )
+            return build_secao_robo_claude(dados, rodadas_recentes(self.services.rodada_service))
+        except Exception:  # noqa: BLE001 - o relatorio principal nao depende disso
+            return ""
+
     def _printable(self) -> dict | None:
         filters = self._filters()
         if filters is None:
             return None
+        extra = self._robo_claude_html(filters[2]) if self._kind() == "situacao" else ""
+        try:
+            nao_encontrados = procurados_nao_encontrados(self.services.cobranca_service)
+        except Exception:  # noqa: BLE001 - sem isso o relatorio sai so com chegou / nao chegou
+            nao_encontrados = {}
         try:
             return self.services.pending_report_service.build_printable_report(
-                *filters, kind=self._kind(), include_complete=self.include_complete_check.isChecked()
+                *filters,
+                kind=self._kind(),
+                include_complete=self.include_complete_check.isChecked(),
+                extra_html=extra,
+                nao_encontrados=nao_encontrados,
             )
         except ValidationError as exc:
             QMessageBox.information(self, "Relatório de documentação", str(exc))
@@ -274,7 +315,7 @@ class ExportReportDialog(QDialog):
         if printable is None:
             return
         try:
-            printed = print_html(printable["html"], self, "Imprimir relatório")
+            printed = print_html(printable["html"], self, "Imprimir relatório", landscape=True)
         except Exception as exc:  # noqa: BLE001 - impressora/driver: mostra o motivo em vez de falhar calado
             QMessageBox.critical(self, "Relatório de documentação", f"Não foi possível imprimir:\n{exc}")
             return
@@ -289,7 +330,7 @@ class ExportReportDialog(QDialog):
         if not file_path:
             return
         try:
-            saved = save_html_as_pdf(printable["html"], file_path)
+            saved = save_html_as_pdf(printable["html"], file_path, landscape=True)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Relatório de documentação", f"Não foi possível salvar o PDF:\n{exc}")
             return

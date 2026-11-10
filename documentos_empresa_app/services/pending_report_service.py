@@ -304,13 +304,17 @@ class PendingReportService:
         end_period_id: int,
         kind: str = "situacao",
         include_complete: bool = True,
+        extra_html: str = "",
+        nao_encontrados: dict | None = None,
     ) -> dict:
         """Relatorio em HTML (identidade visual do DocFlow), pronto para virar PDF ou ir para a
         impressora pela interface. kind: 'situacao' (o que chegou e o que falta, o retrato do dia)
         ou 'pendencias' (so o que falta). Devolve {"html", "result"}; result tem os totais."""
-        all_statuses = kind == "situacao"
-        context = self._build_export_context(company_ids, start_period_id, end_period_id, all_statuses=all_statuses)
+        # Sempre com todas as situacoes: mesmo no "so pendencias" cada empresa mostra quantos ja chegaram.
+        context = self._build_export_context(company_ids, start_period_id, end_period_id, all_statuses=True)
         report = context["report"]
+        if kind == "pendencias" and not any(r["status"] == "Pendente" for r in context["rows"]):
+            raise ValidationError("Nenhuma pendencia com status Pendente foi encontrada no filtro informado.")
         periodos = report["periodos"]
         inicio = f'{periodos[0]["mes"]:02d}/{periodos[0]["ano"]}'
         fim = f'{periodos[-1]["mes"]:02d}/{periodos[-1]["ano"]}'
@@ -322,6 +326,8 @@ class PendingReportService:
             company_label=context["company_label"],
             generated_at=context["generated_at"],
             include_complete=include_complete,
+            extra_html=extra_html,
+            nao_encontrados=nao_encontrados,
         )
         return {"html": html, "result": self._build_export_result(report)}
 

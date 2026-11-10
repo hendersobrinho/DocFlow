@@ -357,10 +357,62 @@ class SituacoesCobrancaTests(unittest.TestCase):
             self.assertIn(texto, html)
         self.assertNotIn("Tudo em dia", html)
 
+        # O resumo do robo e do Claude que vai no fim do relatorio de documentacao.
+        from documentos_empresa_app.services.relatorio_visao_geral import rodadas_recentes
+        from documentos_empresa_app.services.report_visao_geral_html import build_secao_robo_claude
+
+        rodadas = self.services.rodada_service
+        rodada = rodadas.iniciar()
+        rodadas.registrar_ocorrencia(rodada["id"], "falha", "Email fora do ar")
+        rodadas.finalizar(rodada["id"], "Passada da manha")
+        secao = build_secao_robo_claude(dados, rodadas_recentes(rodadas))
+        for texto in ("Robô do Onvio e Claude", "Rodadas do Claude (1)", "Passada da manha", "Email fora do ar", "extrato sicoob.pdf"):
+            self.assertIn(texto, secao)
+        relatorio = self.services.pending_report_service.build_printable_report(
+            None, self.janeiro, self.janeiro, kind="situacao", extra_html=secao
+        )
+        self.assertIn("Rodadas do Claude (1)", relatorio["html"])
+        self.assertIn("Ainda não chegou", relatorio["html"])
+
         sem_competencia = coletar_visao_geral(
             self.services.pending_report_service, self.cobranca, self.services.rodada_service, 1990, 1, date.today(), None
         )
         self.assertIn("ainda não foi criada", build_visao_geral_html(sem_competencia, "10/11/2026 11:00"))
+
+    def test_documentation_report_separates_arrived_missing_and_not_found(self) -> None:
+        from documentos_empresa_app.services.relatorio_visao_geral import procurados_nao_encontrados
+
+        tipo_id = self.services.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        bradesco = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Bradesco CC", ["Email"])
+        self.services.status_service.update_status(bradesco, self.janeiro, "Pendente")
+        caixa = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Caixa CC", ["Email"])
+        self.services.status_service.update_status(caixa, self.janeiro, "Recebido")
+        sicredi = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Sicredi CC", ["Email"])
+        self.services.status_service.update_status(sicredi, self.janeiro, "Nao cobrar")
+        # So "nao cobrar": a empresa nem entra no relatorio.
+        outra = self.services.empresa_service.create_empresa(2, "Empresa Sem Cobranca")
+        doc_outra = self.services.documento_service.create_documento(outra, tipo_id, "Banco Parado", ["Email"])
+        self.services.status_service.update_status(doc_outra, self.janeiro, "Nao cobrar")
+        self._verificar(resultado="nao_encontrado", observacao="caixa de entrada vazia")
+
+        nao_encontrados = procurados_nao_encontrados(self.cobranca)
+        self.assertIn(self.par, nao_encontrados)
+        self.assertIn("caixa de entrada vazia", nao_encontrados[self.par])
+
+        html = self.services.pending_report_service.build_printable_report(
+            None, self.janeiro, self.janeiro, kind="situacao", nao_encontrados=nao_encontrados
+        )["html"]
+        for texto in ("Chegou", "Ainda não chegou", "Procurado e não encontrado", "Caixa CC", "Bradesco CC", "Itau CC",
+                      "caixa de entrada vazia", "chegaram 1 de 3"):
+            self.assertIn(texto, html)
+        for texto in ("Sicredi CC", "Empresa Sem Cobranca", "Não falta nada", "Nada chegou ainda", "Nada a cobrar"):
+            self.assertNotIn(texto, html)
+
+        pendencias = self.services.pending_report_service.build_printable_report(
+            None, self.janeiro, self.janeiro, kind="pendencias", nao_encontrados=nao_encontrados
+        )["html"]
+        self.assertIn("Bradesco CC", pendencias)
+        self.assertNotIn("Caixa CC", pendencias)
 
     def test_reports_tab_builds_overview_and_daily_detail(self) -> None:
         import os

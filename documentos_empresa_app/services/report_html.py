@@ -33,7 +33,6 @@ STATUS_STYLE = {
     "Nao cobrar": ("#E8ECF4", "#4D5A73", "Não cobrar"),
     "Encerrado": ("#E3E6EC", "#4F5868", "Encerrado"),
 }
-STATUS_ORDER = {"Pendente": 0, "Recebido": 1, "Encerrado": 2, "Nao cobrar": 3}
 
 PAGE_BACKGROUND = MIST
 FOOTER_TEXT = "DocFlow"
@@ -104,49 +103,93 @@ def _section(title: str, color: str) -> str:
     )
 
 
-def _chip(status: str) -> str:
-    fundo, cor, rotulo = STATUS_STYLE.get(status, ("#E8ECF4", "#4D5A73", status or "-"))
+GREEN = "#1F8A5B"
+BROWN = "#B86E12"
+RED = "#A93226"
+CHEGOU_FUNDO = "#F1FAF5"
+FALTA_FUNDO = "#FFF6EA"
+NAO_ACHOU_FUNDO = "#FDF0EE"
+FORA = ("Encerrado", "Nao cobrar")
+
+
+def _ordem_codigo(codigo) -> tuple:
+    texto = str(codigo)
+    return (0, int(texto), "") if texto.isdigit() else (1, 0, texto.casefold())
+
+
+def _rotulo(doc: dict, todos: list[dict]) -> str:
+    """Nome do documento; quando a empresa tem dois com o mesmo nome, o tipo entre parenteses separa."""
+    repetido = sum(1 for d in todos if d["nome_documento"] == doc["nome_documento"]) > 1
+    return f"{doc['nome_documento']} ({doc['tipo_documento']})" if repetido else doc["nome_documento"]
+
+
+def _lista(docs: list[dict], todos: list[dict], cor: str, detalhes: dict | None = None) -> str:
+    if not docs:
+        return f"<span style='color:{MUTED};'>-</span>"
+    linhas = []
+    for i, doc in enumerate(docs, start=1):
+        linha = f"<span style='color:{cor}; font-weight:600;'>{i}.</span>&nbsp;{_esc(_rotulo(doc, todos))}"
+        detalhe = (detalhes or {}).get((doc.get("documento_id"), doc.get("periodo_id")))
+        if detalhe:
+            linha += f"<br><span style='color:{MUTED}; font-size:8pt;'>&nbsp;&nbsp;&nbsp;&nbsp;{_esc(detalhe)}</span>"
+        linhas.append(linha)
+    return "<br>".join(linhas)
+
+
+def _barra(chegou: int, falta: int, altura: int = 7) -> str:
+    total = chegou + falta
+    if not total:
+        return ""
+    verde = round(100 * chegou / total)
+    celulas = ""
+    if verde:
+        celulas += f"<td width='{verde}%' bgcolor='{GREEN}' style='background-color:{GREEN};' height='{altura}'></td>"
+    if verde < 100:
+        celulas += f"<td width='{100 - verde}%' bgcolor='{ORANGE}' style='background-color:{ORANGE};' height='{altura}'></td>"
     return (
-        f"<td bgcolor='{fundo}' style='background-color:{fundo};' align='center' width='15%'>"
-        f"<span style='color:{cor}; font-weight:600; font-size:9pt;'>{_esc(rotulo)}</span></td>"
+        f"<table width='100%' cellspacing='0' cellpadding='0' style='margin-top:4px; font-size:{altura}px;'>"
+        f"<tr>{celulas}</tr></table>"
     )
 
 
-def _company_block(codigo, nome, rows: list[dict], multiple_periods: bool) -> str:
-    received = sum(1 for r in rows if r["status"] == "Recebido")
-    pending = sum(1 for r in rows if r["status"] == "Pendente")
-    if pending:
-        resumo = f"{pending} pendente(s)"
-        resumo_fundo, resumo_cor = STATUS_STYLE["Pendente"][0], STATUS_STYLE["Pendente"][1]
-    else:
-        resumo = "Tudo em dia"
-        resumo_fundo, resumo_cor = STATUS_STYLE["Recebido"][0], STATUS_STYLE["Recebido"][1]
-    colunas = 4 if multiple_periods else 3
-    parts = [
-        f"<table width='100%' cellspacing='0' cellpadding='5' style='margin-top:10px; border-collapse:collapse; border:1px solid {LINE};'>",
-        f"<tr><td colspan='{colunas - 1}' bgcolor='{NAVY_DARK}' style='background-color:{NAVY_DARK};'>"
-        f"<span style='color:#FFFFFF; font-weight:600; font-size:10.5pt;'>{_esc(codigo)} - {_esc(nome)}</span>"
-        f"<span style='color:{ON_NAVY}; font-size:8.5pt;'>&nbsp;&nbsp;{received} de {len(rows)} recebido(s)</span></td>"
-        f"<td bgcolor='{resumo_fundo}' style='background-color:{resumo_fundo};' align='center'>"
-        f"<span style='color:{resumo_cor}; font-weight:600; font-size:9pt;'>{_esc(resumo)}</span></td></tr>",
-    ]
-    ordered = sorted(
-        rows,
-        key=lambda r: (
-            r["ano"], r["mes"], STATUS_ORDER.get(r["status"], 9), r["tipo_documento"].casefold(), r["nome_documento"].casefold()
-        ),
+def _resumo_geral(chegou: int, falta: int, period_text: str) -> str:
+    total = chegou + falta
+    pct = round(100 * chegou / total) if total else 0
+    return (
+        f"<table width='100%' cellspacing='0' cellpadding='10' style='margin-top:10px; border:1px solid {LINE};'><tr>"
+        f"<td bgcolor='#FFFFFF' style='background-color:#FFFFFF;'>"
+        f"<span style='color:{NAVY}; font-size:14pt; font-weight:600;'>Competência {_esc(period_text)}: "
+        f"chegaram {chegou} de {total} documento(s) ({pct}%) &nbsp;·&nbsp; faltam {falta}</span>"
+        f"{_barra(chegou, falta, 10)}"
+        f"</td></tr></table>"
     )
-    for index, row in enumerate(ordered):
-        fundo = "#FFFFFF" if index % 2 == 0 else "#F7F9FC"
-        periodo = f"<td width='13%'>{row['mes']:02d}/{row['ano']}</td>" if multiple_periods else ""
-        parts.append(
-            f"<tr bgcolor='{fundo}' style='background-color:{fundo};'>{periodo}"
-            f"<td width='30%'><span style='color:{MUTED};'>{_esc(row['tipo_documento'])}</span></td>"
-            f"<td><span style='color:{TEXT};'>{_esc(row['nome_documento'])}</span></td>"
-            f"{_chip(row['status'])}</tr>"
+
+
+def _cabecalho_tabela(colunas: list[tuple[str, str, str]]) -> str:
+    """colunas: [(titulo, largura, cor de fundo)]"""
+    celulas = []
+    for titulo, largura, cor in colunas:
+        atributo = f" width='{largura}'" if largura else ""
+        celulas.append(
+            f"<td bgcolor='{cor}' style='background-color:{cor};'{atributo}>"
+            f"<span style='color:#FFFFFF; font-weight:600; font-size:9pt;'>{_esc(titulo)}</span></td>"
         )
-    parts.append("</table>")
-    return "".join(parts)
+    return f"<tr>{''.join(celulas)}</tr>"
+
+
+def _celula_empresa(codigo, nome, chegou: int, total: int, periodo: str = "") -> str:
+    competencia = f"<br><span style='color:{MUTED}; font-size:8pt;'>Competência {periodo}</span>" if periodo else ""
+    return (
+        f"<td valign='top' width='22%'><span style='color:{NAVY}; font-weight:600;'>{_esc(codigo)}</span>"
+        f"<span style='color:{TEXT}; font-weight:600;'> - {_esc(nome)}</span>{competencia}"
+        f"<br><span style='color:{MUTED}; font-size:8pt;'>chegaram {chegou} de {total}</span>"
+        f"{_barra(chegou, total - chegou)}</td>"
+    )
+
+
+def _celula(conteudo: str, fundo: str, largura: str = "") -> str:
+    atributo = f" width='{largura}'" if largura else ""
+    return f"<td valign='top'{atributo} bgcolor='{fundo}' style='background-color:{fundo};'>{conteudo}</td>"
 
 
 def build_report_html(
@@ -158,66 +201,104 @@ def build_report_html(
     company_label: str,
     generated_at: str,
     include_complete: bool = True,
+    extra_html: str = "",
+    nao_encontrados: dict | None = None,
 ) -> str:
-    """kind: 'pendencias' (so o que falta) ou 'situacao' (tudo: o que chegou e o que falta)."""
-    by_company: dict[tuple, list[dict]] = {}
+    """Uma linha por empresa (e competencia), em pagina deitada, so com o que interessa: o que
+    chegou, o que ainda nao chegou e o que foi procurado e nao encontrado.
+    kind 'pendencias' mostra so o que falta. Documentos 'nao cobrar' e encerrados nao entram.
+    nao_encontrados: {(documento_id, periodo_id): detalhe} dos pendentes que o Claude procurou
+    e nao achou (ou que vieram errados)."""
+    nao_encontrados = nao_encontrados or {}
+    grupos: dict[tuple, list[dict]] = {}
     for row in rows:
-        by_company.setdefault((row["codigo_empresa"], row["nome_empresa"]), []).append(row)
+        if row["status"] in FORA:
+            continue
+        grupos.setdefault((row["codigo_empresa"], row["nome_empresa"], row["ano"], row["mes"]), []).append(row)
+    ordenados = sorted(
+        grupos.items(), key=lambda kv: (_ordem_codigo(kv[0][0]), str(kv[0][1]).casefold(), kv[0][2], kv[0][3])
+    )
 
-    counts: dict[str, int] = {}
-    for row in rows:
-        counts[row["status"]] = counts.get(row["status"], 0) + 1
-    with_pending = {key for key, items in by_company.items() if any(r["status"] == "Pendente" for r in items)}
-    complete = [key for key in by_company if key not in with_pending]
+    def ordem_doc(r):
+        return (r["tipo_documento"].casefold(), r["nome_documento"].casefold())
 
-    title = "Relatório de pendências" if kind == "pendencias" else "Situação da documentação"
+    linhas = []
+    completas: set = set()
+    com_falta: set = set()
+    chegou_total = falta_total = nao_achou_total = 0
+    for (codigo, nome, ano, mes), docs in ordenados:
+        chegou = sorted((d for d in docs if d["status"] == "Recebido"), key=ordem_doc)
+        pendentes = sorted((d for d in docs if d["status"] == "Pendente"), key=ordem_doc)
+        nao_achou = [d for d in pendentes if (d.get("documento_id"), d.get("periodo_id")) in nao_encontrados]
+        falta = [d for d in pendentes if d not in nao_achou]
+        chegou_total += len(chegou)
+        falta_total += len(pendentes)
+        nao_achou_total += len(nao_achou)
+        (com_falta if pendentes else completas).add(codigo)
+        linhas.append((codigo, nome, ano, mes, docs, chegou, falta, nao_achou))
+    completas -= com_falta
+    competencias = {(linha[2], linha[3]) for linha in linhas}
+    varios_meses = len(competencias) > 1
+
+    if kind == "pendencias":
+        title = "Relatório de pendências"
+        visiveis = [linha for linha in linhas if linha[6] or linha[7]]
+    else:
+        title = "Situação da documentação"
+        visiveis = linhas if include_complete else [linha for linha in linhas if linha[6] or linha[7]]
+
     subtitle = f"Competência: {_esc(period_text)} &nbsp;|&nbsp; Empresas: {_esc(company_label)}"
-    multiple_periods = len({(r["ano"], r["mes"]) for r in rows}) > 1
-
     parts = [
         f"<html><body style=\"font-family: 'Segoe UI', Arial, sans-serif; color:{TEXT}; font-size:9.5pt;\">",
         _header(title, subtitle, generated_at),
     ]
-    if kind == "pendencias":
+    if kind != "pendencias":
+        parts.append(_resumo_geral(chegou_total, falta_total, period_text))
+    parts.append(
+        _cards(
+            [
+                ("empresa(s)", len(linhas) if kind != "pendencias" else len(com_falta), "#FFFFFF", NAVY),
+                ("documento(s) chegaram", chegou_total, STATUS_STYLE["Recebido"][0], STATUS_STYLE["Recebido"][1]),
+                ("documento(s) ainda não chegaram", falta_total - nao_achou_total, STATUS_STYLE["Pendente"][0], STATUS_STYLE["Pendente"][1]),
+                ("procurado(s) e não encontrado(s)", nao_achou_total, "#FBE3E0", RED),
+            ]
+        )
+    )
+
+    if not visiveis:
         parts.append(
-            _cards(
-                [
-                    ("documento(s) pendente(s)", len(rows), STATUS_STYLE["Pendente"][0], STATUS_STYLE["Pendente"][1]),
-                    ("empresa(s) com pendência", len(with_pending), "#FFFFFF", NAVY),
-                    ("empresa(s) no relatório", companies_total, "#FFFFFF", NAVY),
-                ]
-            )
+            f"<table width='100%' cellspacing='0' cellpadding='10' style='margin-top:8px;'><tr>"
+            f"<td bgcolor='#FFFFFF' style='background-color:#FFFFFF; border:1px solid {LINE};' align='center'>"
+            f"<span style='color:{MUTED};'>Nenhuma empresa para mostrar no filtro escolhido.</span></td></tr></table>"
         )
     else:
-        outros = counts.get("Encerrado", 0) + counts.get("Nao cobrar", 0)
+        colunas = [("Empresa", "22%", NAVY)]
+        if kind != "pendencias":
+            colunas.append(("Chegou", "26%", GREEN))
+        colunas += [("Ainda não chegou", "", BROWN), ("Procurado e não encontrado", "26%", RED)]
+        tabela = [
+            f"<table width='100%' cellspacing='0' cellpadding='6' "
+            f"style='margin-top:6px; border-collapse:collapse; border:1px solid {LINE};'>",
+            _cabecalho_tabela(colunas),
+        ]
+        for index, (codigo, nome, ano, mes, docs, chegou, falta, nao_achou) in enumerate(visiveis):
+            fundo = "#FFFFFF" if index % 2 == 0 else "#F7F9FC"
+            periodo = f"{mes:02d}/{ano}" if varios_meses else ""
+            celulas = [_celula_empresa(codigo, nome, len(chegou), len(docs), periodo)]
+            if kind != "pendencias":
+                celulas.append(_celula(_lista(chegou, docs, GREEN), CHEGOU_FUNDO if chegou else fundo))
+            celulas.append(_celula(_lista(falta, docs, BROWN), FALTA_FUNDO if falta else fundo))
+            celulas.append(_celula(_lista(nao_achou, docs, RED, nao_encontrados), NAO_ACHOU_FUNDO if nao_achou else fundo))
+            tabela.append(f"<tr bgcolor='{fundo}' style='background-color:{fundo};'>{''.join(celulas)}</tr>")
+        tabela.append("</table>")
+        parts.append("".join(tabela))
+
+    if kind != "pendencias" and len(visiveis) < len(linhas):
         parts.append(
-            _cards(
-                [
-                    ("recebido(s)", counts.get("Recebido", 0), STATUS_STYLE["Recebido"][0], STATUS_STYLE["Recebido"][1]),
-                    ("pendente(s)", counts.get("Pendente", 0), STATUS_STYLE["Pendente"][0], STATUS_STYLE["Pendente"][1]),
-                    ("encerrado(s) / não cobrar", outros, STATUS_STYLE["Nao cobrar"][0], STATUS_STYLE["Nao cobrar"][1]),
-                    ("empresa(s) em dia", len(complete), "#FFFFFF", NAVY),
-                    ("empresa(s) com pendência", len(with_pending), "#FFFFFF", NAVY),
-                ]
-            )
+            f"<p style='margin-top:8px; color:{MUTED};'>{len(completas)} empresa(s) em que já chegou tudo não foram "
+            f"listadas (marque a opção para listar também).</p>"
         )
-
-    ordered_pending = sorted(with_pending, key=lambda k: (int(k[0]) if str(k[0]).isdigit() else 0, str(k[1]).casefold()))
-    if ordered_pending:
-        parts.append(_section(f"Faltando documento ({len(ordered_pending)} empresa(s))", ORANGE))
-        for key in ordered_pending:
-            parts.append(_company_block(key[0], key[1], by_company[key], multiple_periods))
-
-    if kind == "situacao" and include_complete and complete:
-        ordered_complete = sorted(complete, key=lambda k: (int(k[0]) if str(k[0]).isdigit() else 0, str(k[1]).casefold()))
-        parts.append(_section(f"Em dia ({len(ordered_complete)} empresa(s))", "#1F8A5B"))
-        for key in ordered_complete:
-            parts.append(_company_block(key[0], key[1], by_company[key], multiple_periods))
-    elif kind == "situacao" and complete:
-        parts.append(
-            f"<p style='margin-top:12px; color:{MUTED};'>{len(complete)} empresa(s) em dia, sem pendência "
-            f"(não listadas neste relatório).</p>"
-        )
-
+    if extra_html:
+        parts.append(extra_html)
     parts.append("</body></html>")
     return "".join(parts)

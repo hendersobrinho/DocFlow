@@ -1,3 +1,3 @@
 """Aplicacao desktop para controle de documentos por empresa."""
 
-__version__ = "2.0.11"
+__version__ = "2.0.12"

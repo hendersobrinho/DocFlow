@@ -14,11 +14,11 @@ FOOTER_HEIGHT = 26.0  # em pixels de tela (96 dpi) - faixa do rodape com o numer
 SCREEN_DPI = 96.0
 
 
-def _configure(printer: QPrinter) -> None:
+def _configure(printer: QPrinter, landscape: bool = False) -> None:
     printer.setPageLayout(
         QPageLayout(
             QPageSize(QPageSize.PageSizeId.A4),
-            QPageLayout.Orientation.Portrait,
+            QPageLayout.Orientation.Landscape if landscape else QPageLayout.Orientation.Portrait,
             QMarginsF(PAGE_MARGIN_MM, PAGE_MARGIN_MM, PAGE_MARGIN_MM, PAGE_MARGIN_MM),
             QPageLayout.Unit.Millimeter,
         )
@@ -77,7 +77,7 @@ def _render(html: str, printer: QPrinter, background: str = PAGE_BACKGROUND) -> 
         painter.end()
 
 
-def save_html_as_pdf(html: str, file_path: str | Path) -> Path:
+def save_html_as_pdf(html: str, file_path: str | Path, landscape: bool = False) -> Path:
     """Gera um PDF A4 com texto de verdade (selecionavel, nitido na impressao), quebrando
     paginas automaticamente."""
     target = Path(file_path)
@@ -86,16 +86,16 @@ def save_html_as_pdf(html: str, file_path: str | Path) -> Path:
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
     printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
     printer.setOutputFileName(str(target))
-    _configure(printer)
+    _configure(printer, landscape)
     _render(html, printer)
     return target
 
 
-def print_html(html: str, parent: QWidget | None = None, title: str = "Imprimir") -> bool:
+def print_html(html: str, parent: QWidget | None = None, title: str = "Imprimir", landscape: bool = False) -> bool:
     """Abre a janela de impressao do sistema e imprime o conteudo. Devolve False se o
     usuario cancelar."""
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    _configure(printer)
+    _configure(printer, landscape)
     dialog = QPrintDialog(printer, parent)
     dialog.setWindowTitle(title)
     if dialog.exec() != QPrintDialog.DialogCode.Accepted:

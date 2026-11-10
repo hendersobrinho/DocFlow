@@ -44,7 +44,7 @@ class ReportPrintingTests(unittest.TestCase):
 
     def test_html_uses_the_brand_colors_and_all_statuses(self) -> None:
         html = self._html(_linhas(12))
-        for texto in ("Situação da documentação", "#203461", "#4BBDCD", "Pendente", "Recebido", "Faltando documento", "Em dia"):
+        for texto in ("Situação da documentação", "#203461", "#4BBDCD", "Chegou", "Ainda não chegou", "Procurado e não encontrado"):
             self.assertIn(texto, html)
 
     def test_pdf_has_the_system_background_on_every_page(self) -> None:

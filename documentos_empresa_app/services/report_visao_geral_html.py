@@ -370,6 +370,93 @@ def _secao_arquivos(dados: dict) -> list[str]:
     return parts
 
 
+def _data_hora(raw) -> tuple[str, str]:
+    from datetime import datetime, timezone
+
+    try:
+        momento = datetime.strptime(str(raw)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone()
+    except (TypeError, ValueError):
+        return "-", ""
+    return momento.strftime("%d/%m/%Y"), momento.strftime("%H:%M")
+
+
+RODADA_PILL = {
+    "concluida": VERDE,
+    "concluida_com_falhas": LARANJA,
+    "interrompida": VERMELHO,
+    "em_andamento": AZUL,
+}
+
+
+def _tabela_rodadas(rodadas: list[dict]) -> list[str]:
+    parts = [
+        f"<p style='margin-top:12px; margin-bottom:0px;'><span style='color:{NAVY}; font-weight:600;'>"
+        f"Rodadas do Claude ({len(rodadas)})</span><span style='color:{MUTED};'> &nbsp;·&nbsp; "
+        f"cada passada do Claude pela cobrança, com o que ele fez e o que deu errado</span></p>"
+    ]
+    if not rodadas:
+        return parts + [_vazio("O Claude não fez nenhuma rodada de cobrança no período.")]
+    linhas = []
+    for i, rodada in enumerate(rodadas):
+        dia, inicio = _data_hora(rodada.get("iniciada_em"))
+        _d, fim = _data_hora(rodada.get("finalizada_em")) if rodada.get("finalizada_em") else ("", "")
+        falhas = [o for o in rodada.get("ocorrencias") or [] if o.get("tipo") == "falha"]
+        avisos = [o for o in rodada.get("ocorrencias") or [] if o.get("tipo") == "aviso"]
+        detalhe = rodada.get("resumo") or ""
+        if falhas or avisos:
+            problemas = "; ".join(str(o.get("mensagem") or "") for o in (falhas + avisos)[:3])
+            detalhe = (detalhe + " · " if detalhe else "") + f"{len(falhas)} falha(s), {len(avisos)} aviso(s): {problemas}"
+        linhas.append(
+            _row(
+                i,
+                [
+                    _cell(dia, MUTED, True),
+                    _cell(f"{inicio}" + (f" às {fim}" if fim else ""), MUTED, True),
+                    _cell(
+                        f"{rodada.get('empresas', 0)} empresa(s) · {rodada.get('verificacoes', 0)} conferência(s) · "
+                        f"{rodada.get('cobrancas', 0)} cobrança(s)",
+                        TEXT,
+                        True,
+                    ),
+                    _pill(*RODADA_PILL.get(rodada.get("status_efetivo"), CINZA), rodada.get("status_label") or "", "13%"),
+                    _cell(detalhe or "-", MUTED, True),
+                ],
+            )
+        )
+    cabecalho = [("Dia", "9%"), ("Horário", "9%"), ("O que fez", "27%"), ("Como terminou", "13%"), ("Resumo e falhas", "")]
+    return parts + [_table(cabecalho, linhas, NAVY_DARK)]
+
+
+def build_secao_robo_claude(dados: dict, rodadas: list[dict]) -> str:
+    """O resumo do robo do Onvio e do Claude para a competencia (sem <html>), para entrar no fim de
+    outro relatorio: o que o robo baixou, o que o Claude conferiu e salvou, e as rodadas dele."""
+    totais = dados["totais"]
+    conferidos = [
+        d["conferencia"]
+        for e in dados["empresas"]
+        for d in e["chegaram"] + e["faltam"] + e["fora"]
+        if d.get("conferencia")
+    ]
+    encontrados = sum(1 for c in conferidos if c["resultado"] == "recebido")
+    nao_encontrados = len(conferidos) - encontrados
+    parts = [
+        _section(f"Robô do Onvio e Claude na competência {dados['competencia']}", CYAN),
+        _cards(
+            [
+                ("arquivo(s) o robô baixou", totais["robo_arquivos"], *AZUL),
+                ("empresa(s) com arquivo no Onvio", totais["robo_empresas"], "#FFFFFF", NAVY),
+                ("ainda na pasta do robô", totais["robo_na_pasta"], "#FFFFFF", MUTED),
+                ("conferido(s) pelo Claude: encontrado(s)", encontrados, *VERDE),
+                ("conferido(s): não encontrado(s)", nao_encontrados, *LARANJA),
+            ]
+        ),
+    ]
+    arquivos = _secao_arquivos(dados)
+    parts += arquivos[1:]  # o titulo da secao ja esta acima
+    parts += _tabela_rodadas(rodadas)
+    return "".join(parts)
+
+
 def build_visao_geral_html(dados: dict, generated_at: str) -> str:
     """'dados' vem de services.relatorio_visao_geral.coletar_visao_geral."""
     totais = dados["totais"]

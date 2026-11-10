@@ -34,6 +34,12 @@ HELP_TOPICS: list[HelpTopic] = [
         para abrir este manual já na página correspondente ao que você está usando.
         Use a caixa de busca no topo da lista para filtrar por palavra.</p>
 
+        <h3>Atualizar sem fechar</h3>
+        <p>O botão <b>Atualizar (F5)</b>, no menu à esquerda, recarrega as telas com o que está
+        no banco agora: o que o Claude, o robô do Onvio ou outro computador gravou. Não precisa
+        fechar e abrir o DocFlow. Quando alguém de fora grava alguma coisa, o botão muda para
+        <b>Atualizar · há novidades</b>; clique nele (ou aperte F5) para ver.</p>
+
         <h3>Navegação geral</h3>
         <ul>
         <li>O menu à esquerda é dividido em três grupos: <b>Acompanhamento</b> (o dia a
@@ -218,11 +224,14 @@ HELP_TOPICS: list[HelpTopic] = [
         <h3>Menu Ferramentas</h3>
         <ul>
         <li><b>Relatório de documentação</b> - o retrato de como está a documentação das
-        empresas: <b>situação completa</b> (o que já chegou e o que ainda falta, com as
-        empresas que faltam primeiro) ou <b>só as pendências</b>. Escolha os meses (De /
-        até) e as empresas, e use <b>Imprimir</b>, <b>Salvar PDF</b> ou <b>Salvar Excel</b>.
-        O PDF e a impressão saem com a identidade visual do DocFlow. Ao salvar, o DocFlow
-        oferece abrir o arquivo.</li>
+        empresas, uma linha por empresa, em página deitada. Na <b>situação completa</b>, lado
+        a lado: o que <b>já chegou</b> e o que <b>ainda não chegou</b>, numerados, com
+        "Completa: 4 de 4" ou "Faltam 2 de 8" e a barrinha de cada empresa. Pode incluir no fim
+        o resumo do <b>robô do Onvio</b> (o que baixou e o que ainda está na pasta dele) e das
+        <b>rodadas do Claude</b> (o que fez, como terminou e as falhas). <b>Só as pendências</b>
+        lista apenas o que falta. Escolha os meses (De / até) e as empresas, e use
+        <b>Imprimir</b>, <b>Salvar PDF</b> ou <b>Salvar Excel</b>. Ao salvar, o DocFlow oferece
+        abrir o arquivo.</li>
         <li><b>Gerar os meses de um ano</b> - cria as 12 competências de um ano. Normalmente
         não precisa: ao abrir, o DocFlow cria sozinho os meses do ano atual e, a partir de
         novembro, os do ano seguinte, para janeiro já chegar pronto. Use para um ano
