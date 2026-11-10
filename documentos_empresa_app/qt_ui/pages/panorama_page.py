@@ -197,8 +197,9 @@ class ExportReportDialog(QDialog):
             self.end_combo.setCurrentIndex(max(0, self.end_combo.findData(default_period_id)))
         layout.addLayout(period_row)
         period_hint = QLabel(
-            "O PDF e a impressão são da competência do “até”. O que ficou pendente dos meses "
-            "anteriores aparece junto, com o mês de cada documento. O “De” vale para o Excel."
+            "Com “De” e “até” no mesmo mês, o relatório mostra só aquele mês. Escolhendo um "
+            "intervalo, o que ficou pendente nos meses anteriores do intervalo entra junto, com o "
+            "mês de cada documento."
         )
         period_hint.setObjectName("Muted")
         period_hint.setWordWrap(True)

@@ -311,19 +311,18 @@ class PendingReportService:
     ) -> dict:
         """Relatorio em HTML (identidade visual do DocFlow), pronto para virar PDF ou ir para a
         impressora pela interface. E da competencia final (end_period_id): o que chegou no mes, o
-        que falta (com o que ficou Pendente dos meses anteriores, cada um com o seu mes) e as
-        empresas que nao mandaram nada. kind: 'situacao' (tudo) ou 'pendencias' (so o que falta).
-        Devolve {"html", "result"}; result tem os totais. start_period_id fica para o Excel."""
+        que falta e as empresas que nao mandaram nada. Se o periodo comeca antes (start_period_id),
+        o que ficou Pendente nesses meses entra junto, cada um com o seu mes; sem isso, so o mes.
+        kind: 'situacao' (tudo) ou 'pendencias' (so o que falta). Devolve {"html", "result"}."""
         # O mes com todas as situacoes (e as sem marcacao): cada empresa mostra quantos ja chegaram.
         context = self._build_export_context(
             company_ids, end_period_id, end_period_id, all_statuses=True, include_unmarked=True
         )
         report = context["report"]
         periodo = report["periodos"][-1]
+        # So o periodo pedido: com "De" antes do "ate", os Pendente desses meses entram junto.
         anteriores_ids = [
-            p["id"]
-            for p in sorted(self.periodo_repository.list_all(), key=lambda p: (p["ano"], p["mes"]))
-            if (p["ano"], p["mes"]) < (periodo["ano"], periodo["mes"])
+            p["id"] for p in self._get_periods_between(start_period_id, end_period_id) if p["id"] != periodo["id"]
         ]
         anteriores = (
             self.list_pending_rows(company_ids, anteriores_ids[0], anteriores_ids[-1])["rows"] if anteriores_ids else []

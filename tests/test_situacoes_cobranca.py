@@ -429,8 +429,17 @@ class SituacoesCobrancaTests(unittest.TestCase):
         self.services.status_service.update_status(caixa, fevereiro, "Recebido")
         self.services.status_service.update_status(sicredi, fevereiro, "Nao cobrar")
         self.services.status_service.update_status(doc_outra, fevereiro, "Nao cobrar")
-        html = self.services.pending_report_service.build_printable_report(
+        # So o mes pedido: nada de janeiro aparece.
+        so_mes = self.services.pending_report_service.build_printable_report(
             None, fevereiro, fevereiro, kind="situacao"
+        )["html"]
+        self.assertIn(f"02/{self.ano}", so_mes)
+        self.assertNotIn(f"01/{self.ano}", so_mes)
+        self.assertNotIn("meses anteriores", so_mes)
+
+        # Intervalo de janeiro a fevereiro: os Pendente de janeiro entram, com o mes.
+        html = self.services.pending_report_service.build_printable_report(
+            None, self.janeiro, fevereiro, kind="situacao"
         )["html"]
         for texto in ("Chegou", "Ainda não chegou", "Procurado e não encontrado", "Caixa CC", "Inter CC",
                       "Banco Sumido", f"02/{self.ano}", f"01/{self.ano}", "pendente(s) de meses anteriores"):
