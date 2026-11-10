@@ -308,31 +308,37 @@ class PendingReportService:
         kind: str = "situacao",
         include_complete: bool = True,
         extra_html: str = "",
-        nao_encontrados: dict | None = None,
     ) -> dict:
         """Relatorio em HTML (identidade visual do DocFlow), pronto para virar PDF ou ir para a
-        impressora pela interface. kind: 'situacao' (o que chegou e o que falta, o retrato do dia)
-        ou 'pendencias' (so o que falta). Devolve {"html", "result"}; result tem os totais."""
-        # Sempre com todas as situacoes: mesmo no "so pendencias" cada empresa mostra quantos ja chegaram.
+        impressora pela interface. E da competencia final (end_period_id): o que chegou no mes, o
+        que falta (com o que ficou Pendente dos meses anteriores, cada um com o seu mes) e as
+        empresas que nao mandaram nada. kind: 'situacao' (tudo) ou 'pendencias' (so o que falta).
+        Devolve {"html", "result"}; result tem os totais. start_period_id fica para o Excel."""
+        # O mes com todas as situacoes (e as sem marcacao): cada empresa mostra quantos ja chegaram.
         context = self._build_export_context(
-            company_ids, start_period_id, end_period_id, all_statuses=True, include_unmarked=True
+            company_ids, end_period_id, end_period_id, all_statuses=True, include_unmarked=True
         )
         report = context["report"]
-        if kind == "pendencias" and not any(r["status"] in ("Pendente", "") for r in context["rows"]):
+        periodo = report["periodos"][-1]
+        anteriores_ids = [
+            p["id"]
+            for p in sorted(self.periodo_repository.list_all(), key=lambda p: (p["ano"], p["mes"]))
+            if (p["ano"], p["mes"]) < (periodo["ano"], periodo["mes"])
+        ]
+        anteriores = (
+            self.list_pending_rows(company_ids, anteriores_ids[0], anteriores_ids[-1])["rows"] if anteriores_ids else []
+        )
+        if kind == "pendencias" and not anteriores and not any(r["status"] in ("Pendente", "") for r in context["rows"]):
             raise ValidationError("Nenhuma pendencia com status Pendente foi encontrada no filtro informado.")
-        periodos = report["periodos"]
-        inicio = f'{periodos[0]["mes"]:02d}/{periodos[0]["ano"]}'
-        fim = f'{periodos[-1]["mes"]:02d}/{periodos[-1]["ano"]}'
         html = build_report_html(
             kind=kind,
             rows=context["rows"],
-            companies_total=len(report["companies"]),
-            period_text=inicio if inicio == fim else f"{inicio} a {fim}",
+            pendentes_anteriores=anteriores,
+            competencia=f'{periodo["mes"]:02d}/{periodo["ano"]}',
             company_label=context["company_label"],
             generated_at=context["generated_at"],
             include_complete=include_complete,
             extra_html=extra_html,
-            nao_encontrados=nao_encontrados,
         )
         return {"html": html, "result": self._build_export_result(report)}
 

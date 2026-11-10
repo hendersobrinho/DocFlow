@@ -54,7 +54,6 @@ from documentos_empresa_app.services.cobranca_service import SITUACAO_LABELS
 from documentos_empresa_app.onvio.robo import pasta_padrao
 from documentos_empresa_app.services.relatorio_visao_geral import (
     coletar_visao_geral,
-    procurados_nao_encontrados,
     rodadas_recentes,
 )
 from documentos_empresa_app.services.report_visao_geral_html import build_secao_robo_claude
@@ -168,7 +167,7 @@ class ExportReportDialog(QDialog):
         self.kind_situacao = QRadioButton("Completo: o que chegou, o que ainda não chegou e o que foi procurado e não encontrado")
         self.kind_situacao.setChecked(True)
         layout.addWidget(self.kind_situacao)
-        self.kind_pendencias = QRadioButton("Só o que falta (o que não chegou e o que não foi encontrado)")
+        self.kind_pendencias = QRadioButton("Só o que falta (o que ainda não chegou e o que foi procurado e não encontrado)")
         layout.addWidget(self.kind_pendencias)
         self.include_complete_check = QCheckBox("Listar também as empresas completas (em que já chegou tudo)")
         self.include_complete_check.setChecked(True)
@@ -197,6 +196,13 @@ class ExportReportDialog(QDialog):
             self.start_combo.setCurrentIndex(max(0, self.start_combo.findData(default_period_id)))
             self.end_combo.setCurrentIndex(max(0, self.end_combo.findData(default_period_id)))
         layout.addLayout(period_row)
+        period_hint = QLabel(
+            "O PDF e a impressão são da competência do “até”. O que ficou pendente dos meses "
+            "anteriores aparece junto, com o mês de cada documento. O “De” vale para o Excel."
+        )
+        period_hint.setObjectName("Muted")
+        period_hint.setWordWrap(True)
+        layout.addWidget(period_hint)
 
         scope_title = QLabel("Empresas")
         scope_title.setStyleSheet("font-weight: 600;")
@@ -291,16 +297,11 @@ class ExportReportDialog(QDialog):
             return None
         extra = self._robo_claude_html(filters[2]) if self._kind() == "situacao" else ""
         try:
-            nao_encontrados = procurados_nao_encontrados(self.services.cobranca_service)
-        except Exception:  # noqa: BLE001 - sem isso o relatorio sai so com chegou / nao chegou
-            nao_encontrados = {}
-        try:
             return self.services.pending_report_service.build_printable_report(
                 *filters,
                 kind=self._kind(),
                 include_complete=self.include_complete_check.isChecked(),
                 extra_html=extra,
-                nao_encontrados=nao_encontrados,
             )
         except ValidationError as exc:
             QMessageBox.information(self, "Relatório de documentação", str(exc))

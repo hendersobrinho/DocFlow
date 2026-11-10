@@ -19,6 +19,8 @@ from documentos_empresa_app.services.report_html import PAGE_BACKGROUND, build_r
 def _linhas(quantidade: int) -> list[dict]:
     return [
         {
+            "empresa_id": numero // 3,
+            "documento_id": numero,
             "codigo_empresa": 100 + numero // 3,
             "nome_empresa": f"Empresa {numero // 3}",
             "ano": 2026,
@@ -38,7 +40,7 @@ class ReportPrintingTests(unittest.TestCase):
 
     def _html(self, linhas: list[dict], kind: str = "situacao") -> str:
         return build_report_html(
-            kind=kind, rows=linhas, companies_total=10, period_text="09/2026",
+            kind=kind, rows=linhas, competencia="09/2026",
             company_label="Todas as empresas (10)", generated_at="10/11/2026 11:00",
         )
 
