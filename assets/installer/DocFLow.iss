@@ -1,5 +1,5 @@
 #define AppName "DocFLow"
-#define AppVersion "2.0.12"
+#define AppVersion "2.0.13"
 #define AppPublisher "hndlab.dev.br"
 #define AppExeName "DocFLow.exe"
 
@@ -22,6 +22,8 @@ SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=..\icons\icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
+; Avisa o Windows para redesenhar os icones (senao o atalho fica com o icone antigo guardado).
+ChangesAssociations=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 VersionInfoVersion={#AppVersion}
 ; Atualizacao automatica: o DocFlow baixa este instalador e roda com /VERYSILENT
@@ -45,6 +47,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Abrir {#AppName}"; Flags: nowait postinstall skipifsilent
+; Renova o cache de icones do Windows (atalho da area de trabalho com o icone novo).
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden waituntilterminated skipifdoesntexist
 Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: ReabrirDepoisDeAtualizar
 
 [Code]

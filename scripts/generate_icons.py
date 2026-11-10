@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ICONS_DIR = ROOT_DIR / "assets" / "icons"
 MASTER_ICON_PATH = ICONS_DIR / "icon.svg"
+# Versao para 16 a 48 px: a folha maior e mais grossa, senao some e o D fica todo branco.
+SMALL_ICON_PATH = ICONS_DIR / "icon-pequeno.svg"
+SMALL_ICO_SIZES = (16, 24, 32, 48)
 PNG_ICON_PATH = ICONS_DIR / "icon.png"
 ICO_ICON_PATH = ICONS_DIR / "icon.ico"
 ICNS_ICON_PATH = ICONS_DIR / "icon.icns"
@@ -34,11 +37,42 @@ def get_pillow_image_module():
     return Image
 
 
+def render_svg_with_qt(svg_path: Path, size: int = OUTPUT_SIZE) -> Image.Image | None:
+    """Desenha o SVG com o QtSvg (vem com o PySide6, que o build ja instala). Entende tudo do
+    SVG, inclusive os arcos dos cantos da folha - o desenhador simples abaixo nao entende."""
+    try:
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QByteArray, Qt
+        from PySide6.QtGui import QGuiApplication, QImage, QPainter
+        from PySide6.QtSvg import QSvgRenderer
+    except ImportError:
+        return None
+    _app = QGuiApplication.instance() or QGuiApplication([])
+    renderer = QSvgRenderer(QByteArray(svg_path.read_bytes()))
+    if not renderer.isValid():
+        return None
+    qimage = QImage(size, size, QImage.Format.Format_ARGB32)
+    qimage.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(qimage)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    renderer.render(painter)
+    painter.end()
+    image_module = get_pillow_image_module()
+    data = qimage.bits().tobytes()
+    return image_module.frombuffer("RGBA", (size, size), data, "raw", "BGRA", 0, 1).copy()
+
+
 def load_svg_as_image(svg_path: Path) -> Image.Image:
     image_module = get_pillow_image_module()
     try:
         import cairosvg  # type: ignore[import-not-found]
     except ImportError:
+        rendered = render_svg_with_qt(svg_path)
+        if rendered is not None:
+            return rendered
         try:
             return extract_embedded_png(svg_path)
         except RuntimeError:
@@ -440,8 +474,28 @@ def save_png(image: Image.Image, destination: Path) -> None:
     image.save(destination, format="PNG")
 
 
+def small_ico_frames() -> dict[int, Image.Image]:
+    """Os tamanhos pequenos desenhados direto no tamanho final, a partir do icon-pequeno.svg."""
+    if not SMALL_ICON_PATH.exists():
+        return {}
+    frames = {}
+    for size in SMALL_ICO_SIZES:
+        frame = render_svg_with_qt(SMALL_ICON_PATH, size)
+        if frame is None:
+            return {}
+        frames[size] = frame
+    return frames
+
+
 def save_ico(image: Image.Image, destination: Path) -> None:
-    image.save(destination, format="ICO", sizes=ICO_SIZES)
+    image_module = get_pillow_image_module()
+    small = small_ico_frames()
+    frames = [
+        small.get(width) or image.resize((width, height), image_module.Resampling.LANCZOS)
+        for width, height in ICO_SIZES
+    ]
+    largest = frames[-1]
+    largest.save(destination, format="ICO", sizes=ICO_SIZES, append_images=frames[:-1])
 
 
 def save_icns(image: Image.Image, destination: Path) -> None:

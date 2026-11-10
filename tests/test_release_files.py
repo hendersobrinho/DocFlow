@@ -57,6 +57,24 @@ class ReleaseFileTests(unittest.TestCase):
         self.assertEqual(image.size, (GENERATE_ICONS_MODULE.OUTPUT_SIZE, GENERATE_ICONS_MODULE.OUTPUT_SIZE))
         self.assertIsNotNone(image.getchannel("A").getbbox())
 
+    def test_icon_keeps_the_document_inside_the_d(self) -> None:
+        """O build desenha o icone com o QtSvg: a folha (navy) aparece dentro do D branco. O
+        desenhador simples nao entende os arcos e deixava o D todo branco no atalho."""
+        imagem = GENERATE_ICONS_MODULE.load_svg_as_image(GENERATE_ICONS_MODULE.MASTER_ICON_PATH).convert("RGB")
+        meio = imagem.getpixel((522, 540))
+        self.assertLess(sum(meio), 300, f"meio do D devia ser a folha escura, veio {meio}")
+
+        frames = GENERATE_ICONS_MODULE.small_ico_frames()
+        self.assertEqual(sorted(frames), [16, 24, 32, 48])
+        for tamanho, frame in frames.items():
+            centro = frame.convert("RGB").getpixel((tamanho // 2, tamanho // 2))
+            self.assertLess(sum(centro), 300, f"{tamanho}px: folha sumiu ({centro})")
+
+    def test_installer_refreshes_windows_icon_cache(self) -> None:
+        installer_text = INSTALLER_PATH.read_text(encoding="utf-8")
+        self.assertIn("ChangesAssociations=yes", installer_text)
+        self.assertIn("ie4uinit.exe", installer_text)
+
     def test_optional_icns_failure_does_not_block_non_macos_builds(self) -> None:
         output = io.StringIO()
         with patch.object(GENERATE_ICONS_MODULE, "save_icns", side_effect=OSError("icns indisponivel")):

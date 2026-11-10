@@ -114,7 +114,9 @@ def coletar_visao_geral(
     periodo = pending_report_service.periodo_repository.get_by_year_month(ano, mes)
     rows = []
     if periodo:
-        rows = pending_report_service.list_pending_rows(None, periodo["id"], periodo["id"], all_statuses=True)["rows"]
+        rows = pending_report_service.list_pending_rows(
+            None, periodo["id"], periodo["id"], all_statuses=True, include_unmarked=True
+        )["rows"]
 
     # Conferencias do Claude para a competencia: o ultimo resultado de cada documento.
     conferencias: dict[int, dict] = {}
@@ -177,7 +179,7 @@ def coletar_visao_geral(
             else:
                 doc["origem"] = "manual"
             empresa["chegaram"].append(doc)
-        elif row["status"] == "Pendente":
+        elif row["status"] in ("Pendente", ""):
             empresa["faltam"].append(doc)
         else:
             empresa["fora"].append(doc)

@@ -74,6 +74,7 @@ class PendingReportService:
         start_period_id: int,
         end_period_id: int,
         all_statuses: bool = False,
+        include_unmarked: bool = False,
     ) -> dict:
         """Documentos marcados como Pendente no periodo. Com all_statuses=True traz todos os que
         tem situacao marcada (Recebido, Pendente, Encerrado, Nao cobrar): o retrato da documentacao."""
@@ -114,7 +115,9 @@ class PendingReportService:
                     status_row = status_rows.get((documento["id"], periodo["id"])) or {}
                     status = status_row.get("status") or ""
                     if all_statuses:
-                        if not status:
+                        # Sem marcacao: o documento devia ter chegado e ninguem marcou nada. Conta
+                        # como o que falta (so de empresa ativa), como no Panorama.
+                        if not status and not (include_unmarked and company.get("ativa", True)):
                             continue
                     elif status != "Pendente":
                         continue
@@ -311,9 +314,11 @@ class PendingReportService:
         impressora pela interface. kind: 'situacao' (o que chegou e o que falta, o retrato do dia)
         ou 'pendencias' (so o que falta). Devolve {"html", "result"}; result tem os totais."""
         # Sempre com todas as situacoes: mesmo no "so pendencias" cada empresa mostra quantos ja chegaram.
-        context = self._build_export_context(company_ids, start_period_id, end_period_id, all_statuses=True)
+        context = self._build_export_context(
+            company_ids, start_period_id, end_period_id, all_statuses=True, include_unmarked=True
+        )
         report = context["report"]
-        if kind == "pendencias" and not any(r["status"] == "Pendente" for r in context["rows"]):
+        if kind == "pendencias" and not any(r["status"] in ("Pendente", "") for r in context["rows"]):
             raise ValidationError("Nenhuma pendencia com status Pendente foi encontrada no filtro informado.")
         periodos = report["periodos"]
         inicio = f'{periodos[0]["mes"]:02d}/{periodos[0]["ano"]}'
@@ -337,8 +342,11 @@ class PendingReportService:
         start_period_id: int,
         end_period_id: int,
         all_statuses: bool = False,
+        include_unmarked: bool = False,
     ) -> dict:
-        report = self.list_pending_rows(company_ids, start_period_id, end_period_id, all_statuses=all_statuses)
+        report = self.list_pending_rows(
+            company_ids, start_period_id, end_period_id, all_statuses=all_statuses, include_unmarked=include_unmarked
+        )
         rows = report["rows"]
         if not rows:
             if all_statuses:

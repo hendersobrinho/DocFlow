@@ -393,6 +393,12 @@ class SituacoesCobrancaTests(unittest.TestCase):
         outra = self.services.empresa_service.create_empresa(2, "Empresa Sem Cobranca")
         doc_outra = self.services.documento_service.create_documento(outra, tipo_id, "Banco Parado", ["Email"])
         self.services.status_service.update_status(doc_outra, self.janeiro, "Nao cobrar")
+        # Cadastrado e sem nenhuma marcacao na competencia: conta como o que ainda nao chegou.
+        self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Inter CC", ["Email"])
+        # ...mas so de empresa ativa.
+        inativa = self.services.empresa_service.create_empresa(3, "Empresa Inativa")
+        self.services.documento_service.create_documento(inativa, tipo_id, "Banco Da Inativa", ["Email"])
+        self.services.empresa_service.set_empresa_ativa(inativa, False)
         self._verificar(resultado="nao_encontrado", observacao="caixa de entrada vazia")
 
         nao_encontrados = procurados_nao_encontrados(self.cobranca)
@@ -403,9 +409,9 @@ class SituacoesCobrancaTests(unittest.TestCase):
             None, self.janeiro, self.janeiro, kind="situacao", nao_encontrados=nao_encontrados
         )["html"]
         for texto in ("Chegou", "Ainda não chegou", "Procurado e não encontrado", "Caixa CC", "Bradesco CC", "Itau CC",
-                      "caixa de entrada vazia", "chegaram 1 de 3"):
+                      "caixa de entrada vazia", "chegaram 1 de 4", "Inter CC", "1 ainda estão sem"):
             self.assertIn(texto, html)
-        for texto in ("Sicredi CC", "Empresa Sem Cobranca", "Não falta nada", "Nada chegou ainda", "Nada a cobrar"):
+        for texto in ("Sicredi CC", "Empresa Sem Cobranca", "Banco Da Inativa", "Não falta nada", "Nada chegou ainda", "Nada a cobrar"):
             self.assertNotIn(texto, html)
 
         pendencias = self.services.pending_report_service.build_printable_report(

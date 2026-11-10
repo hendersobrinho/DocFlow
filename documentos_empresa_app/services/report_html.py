@@ -152,15 +152,21 @@ def _barra(chegou: int, falta: int, altura: int = 7) -> str:
     )
 
 
-def _resumo_geral(chegou: int, falta: int, period_text: str) -> str:
+def _resumo_geral(chegou: int, falta: int, period_text: str, sem_marcacao: int = 0) -> str:
     total = chegou + falta
     pct = round(100 * chegou / total) if total else 0
+    nota = (
+        f"<br><span style='color:{MUTED}; font-size:8.5pt;'>Dos que faltam, {sem_marcacao} ainda estão sem "
+        f"marcação (ninguém marcou como recebido nem como pendente). Contam como “ainda não chegou”.</span>"
+        if sem_marcacao
+        else ""
+    )
     return (
         f"<table width='100%' cellspacing='0' cellpadding='10' style='margin-top:10px; border:1px solid {LINE};'><tr>"
         f"<td bgcolor='#FFFFFF' style='background-color:#FFFFFF;'>"
         f"<span style='color:{NAVY}; font-size:14pt; font-weight:600;'>Competência {_esc(period_text)}: "
         f"chegaram {chegou} de {total} documento(s) ({pct}%) &nbsp;·&nbsp; faltam {falta}</span>"
-        f"{_barra(chegou, falta, 10)}"
+        f"{_barra(chegou, falta, 10)}{nota}"
         f"</td></tr></table>"
     )
 
@@ -225,15 +231,16 @@ def build_report_html(
     linhas = []
     completas: set = set()
     com_falta: set = set()
-    chegou_total = falta_total = nao_achou_total = 0
+    chegou_total = falta_total = nao_achou_total = sem_marcacao_total = 0
     for (codigo, nome, ano, mes), docs in ordenados:
         chegou = sorted((d for d in docs if d["status"] == "Recebido"), key=ordem_doc)
-        pendentes = sorted((d for d in docs if d["status"] == "Pendente"), key=ordem_doc)
+        pendentes = sorted((d for d in docs if d["status"] in ("Pendente", "")), key=ordem_doc)
         nao_achou = [d for d in pendentes if (d.get("documento_id"), d.get("periodo_id")) in nao_encontrados]
         falta = [d for d in pendentes if d not in nao_achou]
         chegou_total += len(chegou)
         falta_total += len(pendentes)
         nao_achou_total += len(nao_achou)
+        sem_marcacao_total += sum(1 for d in pendentes if d["status"] == "")
         (com_falta if pendentes else completas).add(codigo)
         linhas.append((codigo, nome, ano, mes, docs, chegou, falta, nao_achou))
     completas -= com_falta
@@ -253,7 +260,7 @@ def build_report_html(
         _header(title, subtitle, generated_at),
     ]
     if kind != "pendencias":
-        parts.append(_resumo_geral(chegou_total, falta_total, period_text))
+        parts.append(_resumo_geral(chegou_total, falta_total, period_text, sem_marcacao_total))
     parts.append(
         _cards(
             [
