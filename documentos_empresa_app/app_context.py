@@ -17,6 +17,7 @@ from documentos_empresa_app.database.repositories import (
     RememberedSessionRepository,
     RodadaRepository,
     SituacaoCobrancaRepository,
+    SocioRepository,
     StatusRepository,
     TipoRepository,
     UsuarioRepository,
@@ -41,6 +42,7 @@ from documentos_empresa_app.services.pending_report_service import PendingReport
 from documentos_empresa_app.services.periodo_service import PeriodoService
 from documentos_empresa_app.services.rodada_service import RodadaService
 from documentos_empresa_app.services.session_service import SessionService
+from documentos_empresa_app.services.socios_service import SociosService
 from documentos_empresa_app.services.whatsapp_service import WhatsAppService
 from documentos_empresa_app.services.status_service import StatusService
 from documentos_empresa_app.services.tipo_service import TipoService
@@ -71,6 +73,7 @@ class ApplicationServices:
     audit_service: AuditService
     whatsapp_service: WhatsAppService
     email_sender_service: EmailSenderService
+    socios_service: SociosService
 
 
 def build_application_services(
@@ -207,5 +210,12 @@ def build_application_services(
         audit_service=audit_service,
         whatsapp_service=WhatsAppService(),
         email_sender_service=EmailSenderService(),
+        socios_service=SociosService(
+            SocioRepository(db_manager),
+            empresa_repository,
+            periodo_repository,
+            audit_service=audit_service,
+            session_service=session,
+        ),
     )
 

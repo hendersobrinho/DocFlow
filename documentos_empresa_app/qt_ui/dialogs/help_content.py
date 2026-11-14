@@ -245,7 +245,9 @@ HELP_TOPICS: list[HelpTopic] = [
         Baixar), com as subpastas, para Documentos\\Onvio\\MM-AAAA\\código - nome. Na
         primeira vez abre uma janela do Onvio para você entrar; depois lembra o login.
         Quem já foi baixado é pulado (marque "Baixar de novo" para repetir). No fim fica
-        um <i>_resumo.json</i> na pasta, que o Claude usa para classificar os arquivos.</li>
+        um <i>_resumo.json</i> na pasta, que o Claude usa para classificar os arquivos.
+        Para baixar vários meses de uma vez (ex: 01 a 08), marque <b>Várias competências,
+        até</b> e escolha o último mês: cada um vai para a sua pasta MM-AAAA.</li>
         </ul>
         """,
     ),
@@ -545,6 +547,38 @@ HELP_TOPICS: list[HelpTopic] = [
         <li><b>Copiar configuração</b> serve para colar à mão no Claude, em Configurações &gt;
         Desenvolvedor &gt; Editar configuração.</li>
         </ul>
+        """,
+    ),
+    HelpTopic(
+        id="socios",
+        title="Sócios (R$ 50 mil)",
+        html="""
+        <h2>Para que serve</h2>
+        <p>Desde janeiro de 2026 (Lei 15.270/2025), quando a <b>mesma empresa</b> paga mais de
+        <b>R$ 50.000,00 no mês</b> ao <b>mesmo sócio</b> pessoa física, retém <b>10% de IR</b>
+        sobre o total pago no mês. Os pagamentos do mês se somam, de todas as contas da empresa.
+        Esta tela junta os sócios de cada empresa e os casos que passaram do limite.</p>
+
+        <h3>Como funciona</h3>
+        <ul>
+        <li>Cadastre os sócios de cada empresa (nome e CPF) na aba <b>Sócios cadastrados</b>, um
+        a um ou por <b>Importar planilha</b> (.xlsx ou CSV com as colunas Código da empresa,
+        Nome e CPF).</li>
+        <li>Depois que os extratos de um mês chegam, o Claude (pelo MCP) lê cada extrato e anota
+        o que saiu da conta da empresa para cada sócio. O DocFlow soma o mês e, passando de
+        R$ 50 mil, abre um caso em <b>Retiradas acima de R$ 50 mil</b>.</li>
+        <li>Clique num caso para ver cada pagamento e o extrato de onde veio (<b>Abrir
+        extrato</b>). Depois de conferir, marque <b>Resolvido</b> (ex: IR retido no DARF) ou
+        <b>Descartar</b> (ex: era pró-labore ou devolução de empréstimo), com uma observação.</li>
+        <li>Se o Claude revisar de novo e o total mudar, um caso resolvido volta para
+        <i>A resolver</i>.</li>
+        </ul>
+
+        <h3>Extratos revisados</h3>
+        <p>Mostra, por competência, o que o Claude já revisou, quantos pagamentos a sócios achou
+        em cada extrato e os que ele não conseguiu ler. Empresas com extrato mas sem sócio
+        cadastrado aparecem no aviso do topo: cadastre os sócios para o Claude poder revisar.</p>
+        <p>Peça ao Claude: <i>"revise os extratos de 03/2026 atrás de retiradas de sócios"</i>.</p>
         """,
     ),
     HelpTopic(

@@ -40,6 +40,7 @@ from documentos_empresa_app.qt_ui.pages.envios_page import EnviosPage
 from documentos_empresa_app.qt_ui.pages.ficha_page import FichaEmpresaPage
 from documentos_empresa_app.qt_ui.pages.logs_page import LogsPage
 from documentos_empresa_app.qt_ui.pages.panorama_page import PanoramaPage
+from documentos_empresa_app.qt_ui.pages.socios_page import SociosPage
 from documentos_empresa_app.qt_ui.pages.usuarios_page import UsuariosPage
 from documentos_empresa_app.qt_ui.theme import ThemeManager
 from documentos_empresa_app.qt_ui.widgets.common import make_button, SinglePageStackedWidget
@@ -75,6 +76,7 @@ PAGE_TOPIC_IDS = {
     "Empresas": "empresas",
     "Ficha da empresa": "ficha",
     "Documentos": "documentos",
+    "Sócios (R$ 50 mil)": "socios",
     "Configurações": "configuracoes",
     "Envios automáticos": "envios",
     "Usuários": "usuarios",
@@ -255,6 +257,8 @@ class MainWindow(QMainWindow):
             (NAV_SECTION_CADASTROS, "Ficha da empresa", "ficha_page",
              lambda: FichaEmpresaPage(self.services, self.refresh_all_tabs)),
             (NAV_SECTION_CADASTROS, "Documentos", None, lambda: DocumentosPage(self.services, self.refresh_all_tabs)),
+            (NAV_SECTION_CADASTROS, "Sócios (R$ 50 mil)", "socios_page",
+             lambda: SociosPage(self.services, self.refresh_all_tabs)),
         ]
         if is_admin:
             specs += [
@@ -403,6 +407,22 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - o contador nunca pode derrubar a janela
             total = 0
         button.setText(f"Precisa de atenção ({total})" if total else "Precisa de atenção")
+        button.setProperty("alert", "true" if total else "false")
+        button.style().unpolish(button)
+        button.style().polish(button)
+        self._refresh_socios_badge()
+
+    def _refresh_socios_badge(self) -> None:
+        """Quantas retiradas de socios acima de R$ 50 mil estao esperando alguem resolver."""
+        page = getattr(self, "socios_page", None)
+        button = self.nav_buttons.get(self.pages.index(page)) if page in self.pages else None
+        if button is None:
+            return
+        try:
+            total = self.services.socios_service.contar_alertas_abertos()
+        except Exception:  # noqa: BLE001 - o contador nunca pode derrubar a janela
+            total = 0
+        button.setText(f"Sócios (R$ 50 mil) ({total})" if total else "Sócios (R$ 50 mil)")
         button.setProperty("alert", "true" if total else "false")
         button.style().unpolish(button)
         button.style().polish(button)

@@ -19,7 +19,10 @@ SELECT
     (SELECT max(id) FROM situacao_eventos) AS situacoes,
     (SELECT max(id) FROM envios_registrados) AS envios,
     (SELECT count(*) FROM empresas) AS empresas,
-    (SELECT count(*) FROM documentos_empresa) AS documentos
+    (SELECT count(*) FROM documentos_empresa) AS documentos,
+    (SELECT max(id) FROM revisoes_socios) AS revisoes_socios,
+    (SELECT max(atualizado_em) FROM alertas_socios) AS alertas_socios,
+    (SELECT count(*) FROM socios) AS socios
 """
 
 

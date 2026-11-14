@@ -261,6 +261,53 @@ def baixar_competencia(
     return resumo
 
 
+MAX_COMPETENCIAS = 24  # um intervalo maior que dois anos e quase sempre erro de digitacao
+
+
+def competencias_entre(inicio: tuple[int, int], fim: tuple[int, int]) -> list[tuple[int, int]]:
+    """[(ano, mes)] de inicio ate fim, inclusive: (2026, 1) a (2026, 8) = 8 competencias."""
+    (ano, mes), (ano_fim, mes_fim) = inicio, fim
+    if (ano_fim, mes_fim) < (ano, mes):
+        raise ValueError("A competência final vem antes da inicial.")
+    lista = []
+    while (ano, mes) <= (ano_fim, mes_fim):
+        lista.append((ano, mes))
+        ano, mes = (ano + 1, 1) if mes == 12 else (ano, mes + 1)
+    if len(lista) > MAX_COMPETENCIAS:
+        raise ValueError(f"São {len(lista)} competências; o máximo de uma vez é {MAX_COMPETENCIAS}.")
+    return lista
+
+
+def baixar_competencias(
+    api: OnvioApi,
+    trabalhos: list[tuple[int, int, list[tuple[str, str]]]],
+    destino: Path | None = None,
+    baixar_de_novo: bool = False,
+    on_progress: Callable[[int, int, ResultadoEmpresa | None, str], None] | None = None,
+    cancelado: Callable[[], bool] | None = None,
+) -> list[Resumo]:
+    """Varias competencias na mesma sessao do Onvio, uma depois da outra, cada uma na sua pasta
+    MM-AAAA. trabalhos: [(ano, mes, empresas)] - as empresas podem mudar de um mes para outro
+    (ex: so quem tem pendencia naquele mes). Para no primeiro mes interrompido (cancelou, o login
+    expirou, o Onvio caiu)."""
+    resumos: list[Resumo] = []
+    varias = len(trabalhos) > 1
+    for ano, mes, empresas in trabalhos:
+        if cancelado and cancelado():
+            break
+        prefixo = f"{int(mes):02d}/{int(ano)} · " if varias else ""
+
+        def avisar(feitas, total, resultado, mensagem, prefixo=prefixo):
+            if on_progress:
+                on_progress(feitas, total, resultado, prefixo + mensagem)
+
+        resumo = baixar_competencia(api, ano, mes, empresas, destino, baixar_de_novo, avisar, cancelado)
+        resumos.append(resumo)
+        if resumo.interrompido:
+            break
+    return resumos
+
+
 def _baixar_novidades(
     api: OnvioApi, pasta_id: str, codigo: str, alvo: Path, manifesto: dict, resultado: ResultadoEmpresa, baixar_de_novo: bool
 ) -> None:

@@ -1940,3 +1940,241 @@ class EnvioProgramadoRepository(BaseRepository):
         query += " ORDER BY r.registrado_em DESC, r.id DESC LIMIT ?"
         params.append(limit)
         return self._fetchall(query, tuple(params))
+
+
+class SocioRepository(BaseRepository):
+    """Socios das empresas e o que o Claude achou nos extratos (pagamentos a cada socio)."""
+
+    _SELECT_SOCIO = """
+        SELECT s.*, e.codigo_empresa, e.nome_empresa
+        FROM socios s
+        JOIN empresas e ON e.id = s.empresa_id
+    """
+
+    def list_socios(self, empresa_id: int | None = None, somente_ativos: bool = False) -> list[dict]:
+        filtros, params = [], []
+        if empresa_id is not None:
+            filtros.append("s.empresa_id = ?")
+            params.append(empresa_id)
+        if somente_ativos:
+            filtros.append("s.ativo = 1")
+        where = f"WHERE {' AND '.join(filtros)}" if filtros else ""
+        return self._fetchall(f"{self._SELECT_SOCIO} {where} ORDER BY e.codigo_empresa, s.nome", tuple(params))
+
+    def get_socio(self, socio_id: int) -> dict | None:
+        return self._fetchone(f"{self._SELECT_SOCIO} WHERE s.id = ?", (socio_id,))
+
+    def get_socio_by_cpf(self, empresa_id: int, cpf: str) -> dict | None:
+        return self._fetchone(f"{self._SELECT_SOCIO} WHERE s.empresa_id = ? AND s.cpf = ?", (empresa_id, cpf))
+
+    def create_socio(self, empresa_id: int, nome: str, cpf: str, observacao: str | None) -> int:
+        return self._insert(
+            "INSERT INTO socios (empresa_id, nome, cpf, observacao) VALUES (?, ?, ?, ?)",
+            (empresa_id, nome, cpf, observacao),
+        )
+
+    def update_socio(self, socio_id: int, nome: str, cpf: str, ativo: bool, observacao: str | None) -> int:
+        return self._execute(
+            f"""
+            UPDATE socios SET nome = ?, cpf = ?, ativo = ?, observacao = ?, atualizado_em = {UTC_NOW_FUNCTION}
+            WHERE id = ?
+            """,
+            (nome, cpf, 1 if ativo else 0, observacao, socio_id),
+        )
+
+    def delete_socio(self, socio_id: int) -> int:
+        return self._execute("DELETE FROM socios WHERE id = ?", (socio_id,))
+
+    # Revisoes dos extratos ---------------------------------------------------------
+
+    def delete_revisoes_do_extrato(
+        self, empresa_id: int, periodo_id: int, documento_id: int | None, arquivo: str | None
+    ) -> int:
+        """Apaga a revisao anterior do mesmo extrato (mesma empresa, competencia, documento e
+        arquivo): revisar de novo substitui o que foi achado antes."""
+        return self._execute(
+            """
+            DELETE FROM revisoes_socios
+            WHERE empresa_id = ? AND periodo_id = ?
+              AND documento_id IS NOT DISTINCT FROM ?
+              AND COALESCE(lower(arquivo), '') = COALESCE(lower(?), '')
+            """,
+            (empresa_id, periodo_id, documento_id, arquivo),
+        )
+
+    def create_revisao(
+        self,
+        empresa_id: int,
+        periodo_id: int,
+        documento_id: int | None,
+        arquivo: str | None,
+        resultado: str,
+        resumo: str | None,
+        usuario_id: int | None,
+        rodada_id: int | None,
+    ) -> int:
+        return self._insert(
+            """
+            INSERT INTO revisoes_socios (empresa_id, periodo_id, documento_id, arquivo, resultado, resumo,
+                                         usuario_id, rodada_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (empresa_id, periodo_id, documento_id, arquivo, resultado, resumo, usuario_id, rodada_id),
+        )
+
+    def add_movimento(
+        self, revisao_id: int, socio_id: int, data: str | None, descricao: str | None, valor_centavos: int
+    ) -> int:
+        return self._insert(
+            "INSERT INTO movimentos_socios (revisao_id, socio_id, data, descricao, valor_centavos) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (revisao_id, socio_id, data, descricao, valor_centavos),
+        )
+
+    def list_revisoes(self, periodo_id: int | None = None, empresa_id: int | None = None) -> list[dict]:
+        filtros, params = [], []
+        if periodo_id is not None:
+            filtros.append("r.periodo_id = ?")
+            params.append(periodo_id)
+        if empresa_id is not None:
+            filtros.append("r.empresa_id = ?")
+            params.append(empresa_id)
+        where = f"WHERE {' AND '.join(filtros)}" if filtros else ""
+        return self._fetchall(
+            f"""
+            SELECT r.*, e.codigo_empresa, e.nome_empresa, p.ano, p.mes, d.nome_documento, t.nome_tipo,
+                   u.username AS revisado_por,
+                   (SELECT count(*) FROM movimentos_socios m WHERE m.revisao_id = r.id) AS pagamentos,
+                   (SELECT COALESCE(sum(m.valor_centavos), 0) FROM movimentos_socios m WHERE m.revisao_id = r.id)
+                       AS total_centavos
+            FROM revisoes_socios r
+            JOIN empresas e ON e.id = r.empresa_id
+            JOIN periodos p ON p.id = r.periodo_id
+            LEFT JOIN documentos_empresa d ON d.id = r.documento_id
+            LEFT JOIN tipos_documento t ON t.id = d.tipo_documento_id
+            LEFT JOIN usuarios u ON u.id = r.usuario_id
+            {where}
+            ORDER BY r.revisado_em DESC, r.id DESC
+            """,
+            tuple(params),
+        )
+
+    def list_movimentos(self, empresa_id: int, periodo_id: int, socio_id: int | None = None) -> list[dict]:
+        filtro = "AND m.socio_id = ?" if socio_id is not None else ""
+        params = (empresa_id, periodo_id) + ((socio_id,) if socio_id is not None else ())
+        return self._fetchall(
+            f"""
+            SELECT m.*, r.arquivo, r.documento_id, d.nome_documento, s.nome AS nome_socio, s.cpf
+            FROM movimentos_socios m
+            JOIN revisoes_socios r ON r.id = m.revisao_id
+            JOIN socios s ON s.id = m.socio_id
+            LEFT JOIN documentos_empresa d ON d.id = r.documento_id
+            WHERE r.empresa_id = ? AND r.periodo_id = ? {filtro}
+            ORDER BY m.data NULLS LAST, m.id
+            """,
+            params,
+        )
+
+    def totais_por_socio(self, empresa_id: int, periodo_id: int) -> dict[int, int]:
+        rows = self._fetchall(
+            """
+            SELECT m.socio_id, sum(m.valor_centavos) AS total
+            FROM movimentos_socios m
+            JOIN revisoes_socios r ON r.id = m.revisao_id
+            WHERE r.empresa_id = ? AND r.periodo_id = ?
+            GROUP BY m.socio_id
+            """,
+            (empresa_id, periodo_id),
+        )
+        return {int(r["socio_id"]): int(r["total"]) for r in rows}
+
+    # Alertas ------------------------------------------------------------------------
+
+    def list_alertas_da_competencia(self, empresa_id: int, periodo_id: int) -> list[dict]:
+        return self._fetchall(
+            "SELECT * FROM alertas_socios WHERE empresa_id = ? AND periodo_id = ?", (empresa_id, periodo_id)
+        )
+
+    def create_alerta(self, empresa_id: int, periodo_id: int, socio_id: int, total_centavos: int) -> int:
+        return self._insert(
+            "INSERT INTO alertas_socios (empresa_id, periodo_id, socio_id, total_centavos) VALUES (?, ?, ?, ?)",
+            (empresa_id, periodo_id, socio_id, total_centavos),
+        )
+
+    def update_alerta_total(self, alerta_id: int, total_centavos: int, reabrir: bool) -> int:
+        reabre = ", status = 'aberto', resolvido_em = NULL, resolvido_por = NULL" if reabrir else ""
+        return self._execute(
+            f"UPDATE alertas_socios SET total_centavos = ?, atualizado_em = {UTC_NOW_FUNCTION}{reabre} WHERE id = ?",
+            (total_centavos, alerta_id),
+        )
+
+    def delete_alerta(self, alerta_id: int) -> int:
+        return self._execute("DELETE FROM alertas_socios WHERE id = ?", (alerta_id,))
+
+    def set_alerta_status(self, alerta_id: int, status: str, observacao: str | None, usuario_id: int | None) -> int:
+        resolvido = status != "aberto"
+        quando = UTC_NOW_FUNCTION if resolvido else "NULL"
+        return self._execute(
+            f"""
+            UPDATE alertas_socios
+            SET status = ?, observacao = ?, atualizado_em = {UTC_NOW_FUNCTION},
+                resolvido_em = {quando}, resolvido_por = ?
+            WHERE id = ?
+            """,
+            (status, observacao, usuario_id if resolvido else None, alerta_id),
+        )
+
+    def get_alerta(self, alerta_id: int) -> dict | None:
+        rows = self.list_alertas(alerta_id=alerta_id)
+        return rows[0] if rows else None
+
+    def list_alertas(
+        self, periodo_id: int | None = None, status: str | None = None, alerta_id: int | None = None
+    ) -> list[dict]:
+        filtros, params = [], []
+        if alerta_id is not None:
+            filtros.append("a.id = ?")
+            params.append(alerta_id)
+        if periodo_id is not None:
+            filtros.append("a.periodo_id = ?")
+            params.append(periodo_id)
+        if status:
+            filtros.append("a.status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(filtros)}" if filtros else ""
+        return self._fetchall(
+            f"""
+            SELECT a.*, e.codigo_empresa, e.nome_empresa, p.ano, p.mes, s.nome AS nome_socio, s.cpf,
+                   u.username AS resolvido_por_nome
+            FROM alertas_socios a
+            JOIN empresas e ON e.id = a.empresa_id
+            JOIN periodos p ON p.id = a.periodo_id
+            JOIN socios s ON s.id = a.socio_id
+            LEFT JOIN usuarios u ON u.id = a.resolvido_por
+            {where}
+            ORDER BY p.ano DESC, p.mes DESC, e.codigo_empresa, s.nome
+            """,
+            tuple(params),
+        )
+
+    def list_extratos_recebidos(self, periodo_id: int) -> list[dict]:
+        """Extratos (tipo com "extrato" no nome) marcados como Recebido na competencia, com o
+        arquivo da ultima verificacao que achou o documento (quando o Claude anotou)."""
+        return self._fetchall(
+            """
+            SELECT d.id AS documento_id, d.empresa_id, d.nome_documento, t.nome_tipo,
+                   e.codigo_empresa, e.nome_empresa, e.diretorio_documentos, e.ativa,
+                   (SELECT vi.arquivo
+                      FROM verificacao_itens vi JOIN verificacoes v ON v.id = vi.verificacao_id
+                     WHERE vi.documento_empresa_id = d.id AND vi.periodo_id = s.periodo_id
+                       AND vi.arquivo IS NOT NULL AND vi.arquivo <> ''
+                     ORDER BY v.realizada_em DESC, vi.id DESC LIMIT 1) AS arquivo
+            FROM status_documento_mensal s
+            JOIN documentos_empresa d ON d.id = s.documento_empresa_id
+            JOIN tipos_documento t ON t.id = d.tipo_documento_id
+            JOIN empresas e ON e.id = d.empresa_id
+            WHERE s.periodo_id = ? AND s.status = 'Recebido' AND t.nome_tipo ILIKE '%extrato%'
+            ORDER BY e.codigo_empresa, t.nome_tipo, d.nome_documento
+            """,
+            (periodo_id,),
+        )

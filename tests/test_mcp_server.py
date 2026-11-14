@@ -362,6 +362,44 @@ class DocflowMcpServerTests(unittest.TestCase):
         with self.assertRaises(docflow_server.ToolError):
             docflow_server._usuario_do_claude(self.services)
 
+    def test_claude_reviews_extratos_for_socio_withdrawals_above_50k(self) -> None:
+        self.services.periodo_service.generate_year(2026)
+        empresa_id = self.services.empresa_service.create_empresa(10, "Clinica Sorriso")
+        tipo = self.services.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        itau = self.services.documento_service.create_documento(empresa_id, tipo, "Itau CC")
+        bb = self.services.documento_service.create_documento(empresa_id, tipo, "BB CC")
+        marco = next(p["id"] for p in self.services.periodo_service.list_periodos() if (p["ano"], p["mes"]) == (2026, 3))
+        for doc in (itau, bb):
+            self.services.status_service.update_status(doc, marco, "Recebido")
+
+        socio = self.call("cadastrar_socio", codigo_empresa=10, nome="Ana Souza", cpf="52998224725")
+        self.assertEqual(socio["cpf"], "529.982.247-25")
+        self.assertEqual(len(self.call("socios_empresa", codigo_empresa=10)), 1)
+
+        fila = self.call("extratos_para_revisar_socios", competencia="03/2026")
+        self.assertEqual(fila["extratos_pendentes"], 2)
+
+        self.call(
+            "registrar_revisao_socios", codigo_empresa=10, competencia="03/2026", documento_id=itau,
+            pagamentos=[{"cpf": "529.982.247-25", "valor": "30.000,00", "data": "10/03/2026", "descricao": "PIX ANA"}],
+        )
+        resposta = self.call(
+            "registrar_revisao_socios", codigo_empresa=10, competencia="03/2026", documento_id=bb,
+            pagamentos=[{"cpf": "529.982.247-25", "valor": 25000}],
+        )
+        self.assertEqual(len(resposta["alertas"]), 1)
+        self.assertEqual(self.call("extratos_para_revisar_socios", competencia="03/2026")["extratos_pendentes"], 0)
+
+        alertas = self.call("alertas_retirada_socios", situacao="aberto", com_pagamentos=True)
+        self.assertEqual(len(alertas), 1)
+        self.assertEqual((alertas[0]["total_no_mes"], alertas[0]["retencao_estimada_10pct"]), ("R$ 55.000,00", "R$ 5.500,00"))
+        self.assertEqual(len(alertas[0]["pagamentos"]), 2)
+
+        resolvido = self.call("resolver_alerta_socio", alerta_id=alertas[0]["alerta_id"], situacao="resolvido",
+                              observacao="IR retido")
+        self.assertEqual(resolvido["situacao"], "resolvido")
+        self.assertIn("confirmar", self.call_error("excluir_socio", socio_id=socio["socio_id"]))
+
 
 if __name__ == "__main__":
     unittest.main()

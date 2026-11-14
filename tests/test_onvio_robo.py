@@ -17,6 +17,8 @@ from documentos_empresa_app.onvio.robo import (
     SEM_CLIENTE,
     SEM_PASTA,
     baixar_competencia,
+    baixar_competencias,
+    competencias_entre,
     extrair_zip,
     nome_seguro,
 )
@@ -177,6 +179,30 @@ class OnvioRoboTests(unittest.TestCase):
         self.assertEqual(api.pasta_da_competencia("cli-170", 2026, 3)["id"], "comp-03")
         self.assertIsNone(api.pasta_da_competencia("cli-170", 2026, 4))
 
+    def test_range_of_competences_each_in_its_own_folder(self) -> None:
+        self.assertEqual(competencias_entre((2025, 11), (2026, 2)), [(2025, 11), (2025, 12), (2026, 1), (2026, 2)])
+        self.assertEqual(competencias_entre((2026, 3), (2026, 3)), [(2026, 3)])
+        with self.assertRaises(ValueError):
+            competencias_entre((2026, 8), (2026, 1))
+        with self.assertRaises(ValueError):
+            competencias_entre((2020, 1), (2026, 1))
+
+        falso = OnvioFalso()
+        falso.arvore["comp-02"] = [_arquivo("f-9", "fevereiro.pdf")]
+        api = OnvioApi(falso, espera=lambda _s: None)
+        mensagens = []
+        resumos = baixar_competencias(
+            api, [(2026, 2, [("170", "A")]), (2026, 3, [("170", "A")])], self.pasta,
+            on_progress=lambda f, t, r, m: mensagens.append(m),
+        )
+        self.assertEqual([r.competencia for r in resumos], ["02/2026", "03/2026"])
+        self.assertTrue((self.pasta / "02-2026" / RESUMO).exists())
+        self.assertTrue((self.pasta / "03-2026" / RESUMO).exists())
+        self.assertTrue(any(m.startswith("02/2026 · ") for m in mensagens))
+        # Cancelou: para antes da proxima competencia.
+        parou = baixar_competencias(api, [(2026, 2, [("170", "A")]), (2026, 3, [("170", "A")])], self.pasta, cancelado=lambda: True)
+        self.assertEqual(parou, [])
+
     def test_empty_folder_and_cancel(self) -> None:
         falso = OnvioFalso()
         falso.arvore["comp-03"] = []
@@ -250,6 +276,11 @@ class OnvioDialogTests(unittest.TestCase):
             dialogo.so_onvio_check.setChecked(False)
             self.assertEqual(len(dialogo.empresas()), 2)
             dialogo.so_onvio_check.setChecked(True)
+            self.assertFalse(dialogo.ate_mes_combo.isEnabled())  # uma competencia so, por padrao
+            dialogo.varias_check.setChecked(True)
+            self.assertTrue(dialogo.ate_mes_combo.isEnabled())
+            dialogo.mes_combo.setCurrentIndex(1)  # 02 ate 03
+            self.assertEqual(dialogo.competencias(), [(2026, 2), (2026, 3)])
             dialogo.iniciar()
             for _ in range(500):
                 app.processEvents()
@@ -257,6 +288,7 @@ class OnvioDialogTests(unittest.TestCase):
                     break
                 dialogo._thread and dialogo._thread.wait(10)
             self.assertIsNotNone(dialogo.resumo)
+        self.assertEqual([r.competencia for r in dialogo.resumos], ["02/2026", "03/2026"])
         self.assertEqual(dialogo.resumo.empresas[0].situacao, BAIXADA)
         self.assertTrue((pasta / "03-2026" / "170 - EMPRESA TESTE" / "solto.pdf").exists())
         self.assertIsNone(dialogo._thread)

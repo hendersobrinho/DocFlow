@@ -130,6 +130,12 @@ mcp = MCPServer(
         "- As regras (ex: Informe de Rendimentos trimestral, mala direta de aviso geral) sao criadas "
         "e alteradas com 'cadastrar_envio_programado' / 'atualizar_envio_programado' quando o "
         "usuario pedir. O WhatsApp de cada empresa e cadastrado com 'definir_whatsapp_empresa'.\n\n"
+        "Socios e retiradas acima de R$ 50 mil (Lei 15.270/2025: a mesma empresa pagando mais de "
+        "R$ 50 mil no mes ao mesmo socio pessoa fisica retem 10% de IR sobre o total): depois de dar "
+        "baixa nos extratos de uma competencia, chame 'extratos_para_revisar_socios', leia cada "
+        "extrato procurando as saidas para os socios cadastrados e registre com "
+        "'registrar_revisao_socios' (um extrato por chamada, mesmo sem achar nada). O sistema soma o "
+        "mes e abre o alerta na tela Socios; quem resolve e uma pessoa.\n\n"
         "Acesso total: alem das tools especificas (preferidas, porque aplicam as regras e registram "
         "no historico), 'consultar_banco' roda qualquer SELECT e 'executar_sql' qualquer comando de "
         "escrita ou exclusao (confirmar=true). Use-os quando o usuario pedir algo que nenhuma tool cobre."
@@ -1500,6 +1506,171 @@ def documentos_baixados_onvio(competencia: str, codigo_empresa: str | None = Non
                 })
         empresa["lista_arquivos"] = arquivos
     return {"baixado": True, **resumo, "empresas": empresas}
+
+
+# Socios e retiradas acima de R$ 50 mil (Lei 15.270/2025) -------------------------------
+
+
+class PagamentoSocio(BaseModel):
+    cpf: str = Field(description="CPF do socio (de 'socios_empresa' ou 'extratos_para_revisar_socios'), com ou sem pontuacao")
+    valor: float | str = Field(description='valor que saiu da conta da empresa para o socio, ex: 25000.00 ou "25.000,00"')
+    data: str | None = Field(default=None, description="data do lancamento no extrato, dd/mm/aaaa")
+    descricao: str | None = Field(
+        default=None, description="historico do lancamento como aparece no extrato (ex: PIX ENVIADO ANA SOUZA)"
+    )
+
+
+def _public_socio(socio: dict) -> dict[str, Any]:
+    return {
+        "socio_id": socio["id"],
+        "codigo_empresa": socio["codigo_empresa"],
+        "nome_empresa": socio["nome_empresa"],
+        "nome": socio["nome"],
+        "cpf": socio["cpf_formatado"],
+        "ativo": socio["ativo"],
+        "observacao": socio.get("observacao"),
+    }
+
+
+def _public_alerta(alerta: dict) -> dict[str, Any]:
+    dados = {
+        "alerta_id": alerta["id"],
+        "codigo_empresa": alerta["codigo_empresa"],
+        "nome_empresa": alerta["nome_empresa"],
+        "competencia": alerta["competencia"],
+        "socio": alerta["nome_socio"],
+        "cpf": alerta["cpf_formatado"],
+        "total_no_mes": alerta["total"],
+        "retencao_estimada_10pct": alerta["retencao_estimada"],
+        "situacao": alerta["status"],
+        "observacao": alerta.get("observacao"),
+        "resolvido_por": alerta.get("resolvido_por_nome"),
+        "resolvido_em": _local(alerta.get("resolvido_em")),
+    }
+    if "pagamentos" in alerta:
+        dados["pagamentos"] = [
+            {k: p[k] for k in ("data", "descricao", "valor", "extrato", "arquivo")} for p in alerta["pagamentos"]
+        ]
+    return dados
+
+
+@docflow_tool(read_only=True)
+def socios_empresa(codigo_empresa: int | None = None, somente_ativos: bool = True) -> list[dict[str, Any]]:
+    """Socios pessoa fisica cadastrados (nome e CPF), de uma empresa ou de todas. Sao eles que
+    voce procura nos extratos para a conferencia das retiradas acima de R$ 50 mil."""
+    services = get_services()
+    empresa_id = _company(services, codigo_empresa)["id"] if codigo_empresa is not None else None
+    return [_public_socio(s) for s in services.socios_service.listar_socios(empresa_id, somente_ativos)]
+
+
+@docflow_tool(read_only=False)
+def cadastrar_socio(codigo_empresa: int, nome: str, cpf: str, observacao: str | None = None) -> dict[str, Any]:
+    """Cadastra um socio pessoa fisica (nome e CPF) na empresa. So use com dados que o usuario
+    passou ou que estao num documento da empresa (contrato social, cartao CNPJ) - nunca invente."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    socio_id = services.socios_service.cadastrar_socio(empresa["id"], nome, cpf, observacao)
+    return _public_socio(services.socios_service.obter_socio(socio_id))
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def atualizar_socio(
+    socio_id: int, nome: str, cpf: str, ativo: bool = True, observacao: str | None = None
+) -> dict[str, Any]:
+    """Altera nome, CPF, situacao (ativo=false para quem saiu da sociedade) ou observacao de um socio."""
+    services = get_services()
+    services.socios_service.atualizar_socio(socio_id, nome, cpf, ativo, observacao)
+    return _public_socio(services.socios_service.obter_socio(socio_id))
+
+
+@docflow_tool(read_only=False, destructive=True)
+def excluir_socio(socio_id: int, confirmar: bool = False) -> dict[str, Any]:
+    """Exclui o socio e tudo que foi achado para ele nos extratos (prefira atualizar_socio com
+    ativo=false para quem saiu da sociedade). Exige confirmar=true."""
+    _require_confirmation(confirmar, "Excluir o socio")
+    get_services().socios_service.excluir_socio(socio_id)
+    return {"excluido": True, "socio_id": socio_id}
+
+
+@docflow_tool(read_only=True)
+def extratos_para_revisar_socios(competencia: str, incluir_revisados: bool = False) -> dict[str, Any]:
+    """Extratos que chegaram (Recebido) na competencia (MM/AAAA) e ainda nao foram revisados
+    atras de pagamentos a socios, por empresa, com os socios (nome e CPF) e o arquivo do extrato
+    (quando anotado na verificacao; senao procure na pasta_documentos da empresa).
+
+    Regra (Lei 15.270/2025): se a MESMA empresa pagar mais de R$ 50.000,00 no MES ao MESMO
+    socio pessoa fisica, retem 10% de IR sobre o total do mes. Os pagamentos do mes se somam
+    (de todas as contas da empresa); o sistema faz a soma e abre o alerta - voce so registra.
+
+    Para cada extrato: abra o arquivo, procure as SAIDAS da conta da empresa para cada socio
+    (PIX, TED, DOC, transferencia, pagamento) pelo nome ou CPF do socio, e registre com
+    'registrar_revisao_socios' (um extrato por chamada), inclusive quando nao achar nada
+    (pagamentos=[]). Nao conte entradas (dinheiro que o socio pos na empresa) nem transferencia
+    entre contas da propria empresa. Pagamento a quem tem o mesmo nome mas nao da para ter
+    certeza: registre e explique em 'descricao' - uma pessoa confere na tela. Empresas em
+    'empresas_sem_socio_cadastrado' precisam do cadastro dos socios antes (avise o usuario)."""
+    services = get_services()
+    periodo = _period(services, competencia)
+    return services.socios_service.extratos_para_revisar(periodo["id"], incluir_revisados)
+
+
+@docflow_tool(read_only=False)
+def registrar_revisao_socios(
+    codigo_empresa: int,
+    competencia: str,
+    pagamentos: list[PagamentoSocio],
+    documento_id: int | None = None,
+    arquivo: str | None = None,
+    resultado: Literal["revisado", "nao_deu"] = "revisado",
+    resumo: str | None = None,
+) -> dict[str, Any]:
+    """Registra a revisao de UM extrato da empresa na competencia (MM/AAAA): os pagamentos a
+    socios achados nele (lista vazia = revisou e nao achou nenhum). documento_id e arquivo
+    identificam o extrato (de 'extratos_para_revisar_socios'); revisar de novo o mesmo extrato
+    substitui a revisao anterior. resultado='nao_deu' quando nao conseguiu ler (arquivo
+    ilegivel, sem acesso) - diga o motivo em resumo. A resposta traz o total do mes por socio,
+    somando todos os extratos ja revisados da empresa, e os alertas (acima de R$ 50 mil) que
+    ficam na tela Socios do DocFlow para as pessoas resolverem."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    periodo = _period(services, competencia)
+    return services.socios_service.registrar_revisao(
+        empresa["id"],
+        periodo["id"],
+        [p.model_dump() for p in pagamentos],
+        documento_id=documento_id,
+        arquivo=arquivo,
+        resultado=resultado,
+        resumo=resumo,
+        rodada_id=_rodada_atual,
+    )
+
+
+@docflow_tool(read_only=True)
+def alertas_retirada_socios(
+    competencia: str | None = None,
+    situacao: Literal["aberto", "resolvido", "descartado"] | None = None,
+    com_pagamentos: bool = False,
+) -> list[dict[str, Any]]:
+    """Socios que receberam mais de R$ 50 mil da mesma empresa num mes (de todas as competencias,
+    ou so de uma MM/AAAA), com o total, a retencao estimada de 10% e a situacao (aberto = a
+    resolver). com_pagamentos=true traz cada lancamento e o extrato de onde veio."""
+    services = get_services()
+    periodo_id = _period(services, competencia)["id"] if competencia else None
+    alertas = services.socios_service.listar_alertas(periodo_id, situacao)
+    if com_pagamentos:
+        alertas = [services.socios_service.obter_alerta(a["id"]) for a in alertas]
+    return [_public_alerta(a) for a in alertas]
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def resolver_alerta_socio(
+    alerta_id: int, situacao: Literal["resolvido", "descartado", "aberto"], observacao: str | None = None
+) -> dict[str, Any]:
+    """Marca um alerta de retirada como resolvido (ex: IR retido e recolhido), descartado (ex:
+    era pro-labore ou devolucao, nao distribuicao de lucro) ou reabre. So faca isso quando o
+    usuario pedir: quem decide e a pessoa que conferiu."""
+    return _public_alerta(get_services().socios_service.resolver_alerta(alerta_id, situacao, observacao))
 
 
 @docflow_tool(read_only=True)
