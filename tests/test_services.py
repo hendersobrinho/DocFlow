@@ -269,7 +269,8 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertIn("Situação da documentação", html)
         self.assertIn("Empresa Em Dia", html)
         self.assertIn("Banco Ok", html)
-        self.assertIn("chegaram 1 de 2", html)
+        self.assertIn("Banco B", html)
+        self.assertNotIn("no mês</span>", html)  # so o nome da empresa, sem contagem nem barra
         self.assertNotIn("Não falta nada", html)
         self.assertNotIn("Tudo em dia", html)
         self.assertEqual((relatorio["result"]["received"], relatorio["result"]["pending"]), (2, 1))

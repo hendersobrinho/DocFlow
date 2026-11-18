@@ -1,5 +1,6 @@
 """Relatorios do DocFlow em HTML (para imprimir ou salvar em PDF), na identidade visual do sistema:
-cabecalho navy com o simbolo, filete ciano, laranja para o que falta e verde para o que chegou.
+cabecalho navy com o simbolo, filete ciano, laranja para o que falta e verde para o que chegou
+(o relatorio de documentacao usa a versao discreta: cabecalho claro e cor so nos detalhes).
 
 So usa o que o QTextDocument do Qt entende (tabelas, cor de fundo de celula, spans)."""
 
@@ -106,9 +107,6 @@ def _section(title: str, color: str) -> str:
 GREEN = "#1F8A5B"
 BROWN = "#B86E12"
 RED = "#A93226"
-CHEGOU_FUNDO = "#F1FAF5"
-FALTA_FUNDO = "#FFF6EA"
-NAO_ACHOU_FUNDO = "#FDF0EE"
 FORA = ("Encerrado", "Nao cobrar")
 FALTANDO = ("Pendente", "")
 
@@ -140,7 +138,7 @@ def _lista(docs: list[dict], todos: list[dict], cor: str) -> str:
     for ano, mes in sorted(por_mes, reverse=True):
         linhas = [f"<span style='color:{NAVY}; font-size:8pt; font-weight:600;'>{mes:02d}/{ano}</span>"]
         for i, doc in enumerate(sorted(por_mes[(ano, mes)], key=_ordem_doc), start=1):
-            linhas.append(f"<span style='color:{cor}; font-weight:600;'>{i}.</span>&nbsp;{_esc(_rotulo(doc, todos))}")
+            linhas.append(f"<span style='color:{MUTED};'>{i}.</span>&nbsp;{_esc(_rotulo(doc, todos))}")
         blocos.append("<br>".join(linhas))
     return "<br><br>".join(blocos)
 
@@ -182,24 +180,44 @@ def _lista_por_documento(docs: list[dict], todos: list[dict], cor: str) -> str:
     for i, grupo in enumerate(grupos, start=1):
         meses = intervalos_competencias([(d["ano"], d["mes"]) for d in grupo])
         linhas.append(
-            f"<span style='color:{cor}; font-weight:600;'>{i}.</span>&nbsp;{_esc(_rotulo(grupo[0], todos))}"
+            f"<span style='color:{MUTED};'>{i}.</span>&nbsp;{_esc(_rotulo(grupo[0], todos))}"
             f" <span style='color:{NAVY}; font-size:8pt; font-weight:600;'>&nbsp;{_esc(meses)}</span>"
         )
     return "<br>".join(linhas)
 
-def _barra(chegou: int, falta: int, altura: int = 7) -> str:
-    total = chegou + falta
-    if not total:
-        return ""
-    verde = round(100 * chegou / total)
-    celulas = ""
-    if verde:
-        celulas += f"<td width='{verde}%' bgcolor='{GREEN}' style='background-color:{GREEN};' height='{altura}'></td>"
-    if verde < 100:
-        celulas += f"<td width='{100 - verde}%' bgcolor='{ORANGE}' style='background-color:{ORANGE};' height='{altura}'></td>"
+CABECALHO_TABELA = "#EEF1F6"
+LINHA_ALTERNADA = "#FAFBFD"
+
+
+def _header_discreto(title: str, subtitle: str, generated_at: str) -> str:
+    """Cabecalho claro: simbolo pequeno, titulo navy e um filete fino embaixo."""
+    logo = _logo_data_uri()
+    logo_html = f"<img src='{logo}' width='34' height='34'>" if logo else ""
     return (
-        f"<table width='100%' cellspacing='0' cellpadding='0' style='margin-top:4px; font-size:{altura}px;'>"
-        f"<tr>{celulas}</tr></table>"
+        f"<table width='100%' cellspacing='0' cellpadding='6'><tr>"
+        f"<td width='46' valign='middle'>{logo_html}</td>"
+        f"<td valign='middle'><span style='color:{NAVY}; font-size:16pt; font-weight:600;'>{_esc(title)}</span><br>"
+        f"<span style='color:{MUTED}; font-size:9pt;'>{subtitle}</span></td>"
+        f"<td align='right' valign='middle'><span style='color:{MUTED}; font-size:8.5pt;'>DocFlow"
+        f"<br>Gerado em {_esc(generated_at)}</span></td>"
+        f"</tr></table>"
+        f"<table width='100%' cellspacing='0' cellpadding='0' style='font-size:2px;'><tr>"
+        f"<td bgcolor='{NAVY}' style='background-color:{NAVY};' height='2'></td></tr></table>"
+    )
+
+
+def _numeros(items: list[tuple[str, int, str]]) -> str:
+    """Os totais numa faixa branca so, sem caixas coloridas: [(rotulo, numero, cor do numero)]."""
+    largura = int(100 / max(len(items), 1))
+    cells = "".join(
+        f"<td width='{largura}%' align='center'>"
+        f"<span style='color:{cor}; font-size:17pt; font-weight:600;'>{numero}</span><br>"
+        f"<span style='color:{MUTED}; font-size:8.5pt;'>{_esc(rotulo)}</span></td>"
+        for rotulo, numero, cor in items
+    )
+    return (
+        f"<table width='100%' cellspacing='0' cellpadding='8' bgcolor='#FFFFFF' "
+        f"style='margin-top:10px; background-color:#FFFFFF; border:1px solid {LINE};'><tr>{cells}</tr></table>"
     )
 
 
@@ -215,19 +233,10 @@ def _resumo_geral(chegou: int, falta: int, competencia: str, anteriores: int) ->
     return (
         f"<table width='100%' cellspacing='0' cellpadding='10' style='margin-top:10px; border:1px solid {LINE};'><tr>"
         f"<td bgcolor='#FFFFFF' style='background-color:#FFFFFF;'>"
-        f"<span style='color:{NAVY}; font-size:14pt; font-weight:600;'>Competência {_esc(competencia)}: "
+        f"<span style='color:{NAVY}; font-size:11.5pt; font-weight:600;'>Competência {_esc(competencia)}: "
         f"chegaram {chegou} de {total} documento(s) ({pct}%) &nbsp;·&nbsp; faltam {falta}</span>"
-        f"{_barra(chegou, falta, 10)}{nota}"
+        f"{nota}"
         f"</td></tr></table>"
-    )
-
-
-def _legenda() -> str:
-    return (
-        f"<p style='margin-top:4px; color:{MUTED}; font-size:8.5pt;'>"
-        f"<b style='color:{BROWN};'>Ainda não chegou</b>: a empresa já mandou documento e falta o resto. "
-        f"&nbsp;&nbsp;<b style='color:{RED};'>Procurado e não encontrado</b>: não chegou nenhum documento da "
-        f"empresa no mês.</p>"
     )
 
 
@@ -237,18 +246,16 @@ def _cabecalho_tabela(colunas: list[tuple[str, str, str]]) -> str:
     for titulo, largura, cor in colunas:
         atributo = f" width='{largura}'" if largura else ""
         celulas.append(
-            f"<td bgcolor='{cor}' style='background-color:{cor};'{atributo}>"
-            f"<span style='color:#FFFFFF; font-weight:600; font-size:9pt;'>{_esc(titulo)}</span></td>"
+            f"<td bgcolor='{CABECALHO_TABELA}' style='background-color:{CABECALHO_TABELA}; border-bottom:2px solid {cor};'{atributo}>"
+            f"<span style='color:{NAVY}; font-weight:600; font-size:9pt;'>{_esc(titulo)}</span></td>"
         )
     return f"<tr>{''.join(celulas)}</tr>"
 
 
-def _celula_empresa(codigo, nome, chegou: int, total: int) -> str:
+def _celula_empresa(codigo, nome) -> str:
     return (
         f"<td valign='top' width='22%'><span style='color:{NAVY}; font-weight:600;'>{_esc(codigo)}</span>"
-        f"<span style='color:{TEXT}; font-weight:600;'> - {_esc(nome)}</span>"
-        f"<br><span style='color:{MUTED}; font-size:8pt;'>chegaram {chegou} de {total} no mês</span>"
-        f"{_barra(chegou, total - chegou)}</td>"
+        f"<span style='color:{TEXT}; font-weight:600;'> - {_esc(nome)}</span></td>"
     )
 
 
@@ -271,8 +278,7 @@ def build_report_html(
 ) -> str:
     """Relatorio da competencia, uma linha por empresa, so com o que interessa:
     - Chegou: o que chegou no mes;
-    - Ainda nao chegou: a empresa ja mandou alguma coisa no mes e falta o resto;
-    - Procurado e nao encontrado: nao chegou nenhum documento da empresa no mes.
+    - Pendente: tudo o que falta (tenha a empresa mandado alguma coisa ou nao).
     O que falta inclui o que ficou Pendente de meses anteriores; cada documento aparece debaixo
     da sua competencia. kind 'pendencias' mostra so o que falta. 'Nao cobrar' e encerrados nao entram.
     rows: as linhas da competencia (com as sem marcacao); pendentes_anteriores: os Pendente de antes.
@@ -295,41 +301,38 @@ def build_report_html(
             empresa(row)["anteriores"].append(row)
 
     linhas = []
-    chegou_total = falta_mes_total = anteriores_total = ainda_total = nao_achou_total = 0
+    chegou_total = falta_mes_total = anteriores_total = pendente_total = 0
     for dados in sorted(empresas.values(), key=lambda e: (_ordem_codigo(e["codigo"]), str(e["nome"]).casefold())):
         chegou = [d for d in dados["mes"] if d["status"] == "Recebido"]
         falta_mes = [d for d in dados["mes"] if d["status"] in FALTANDO]
-        faltando = falta_mes + dados["anteriores"]
-        ainda, nao_achou = (faltando, []) if chegou else ([], faltando)
+        pendente = falta_mes + dados["anteriores"]
         chegou_total += len(chegou)
         falta_mes_total += len(falta_mes)
         anteriores_total += len(dados["anteriores"])
-        ainda_total += len(ainda)
-        nao_achou_total += len(nao_achou)
-        linhas.append((dados, chegou, falta_mes, ainda, nao_achou))
+        pendente_total += len(pendente)
+        linhas.append((dados, chegou, falta_mes, pendente))
 
     if kind == "pendencias":
         title = "Relatório de pendências"
-        visiveis = [linha for linha in linhas if linha[3] or linha[4]]
+        visiveis = [linha for linha in linhas if linha[3]]
     else:
         title = "Situação da documentação"
-        visiveis = linhas if include_complete else [linha for linha in linhas if linha[3] or linha[4]]
-    completas = sum(1 for linha in linhas if not (linha[3] or linha[4]))
+        visiveis = linhas if include_complete else [linha for linha in linhas if linha[3]]
+    completas = sum(1 for linha in linhas if not linha[3])
 
     subtitle = f"Competência: {_esc(competencia)} &nbsp;|&nbsp; Empresas: {_esc(company_label)}"
     parts = [
         f"<html><body style=\"font-family: 'Segoe UI', Arial, sans-serif; color:{TEXT}; font-size:9.5pt;\">",
-        _header(title, subtitle, generated_at),
+        _header_discreto(title, subtitle, generated_at),
     ]
     if kind != "pendencias":
         parts.append(_resumo_geral(chegou_total, falta_mes_total, competencia, anteriores_total))
     parts.append(
-        _cards(
+        _numeros(
             [
-                ("empresa(s)", len(visiveis), "#FFFFFF", NAVY),
-                ("documento(s) chegaram", chegou_total, STATUS_STYLE["Recebido"][0], STATUS_STYLE["Recebido"][1]),
-                ("documento(s) ainda não chegaram", ainda_total, STATUS_STYLE["Pendente"][0], STATUS_STYLE["Pendente"][1]),
-                ("procurado(s) e não encontrado(s)", nao_achou_total, "#FBE3E0", RED),
+                ("empresa(s)", len(visiveis), NAVY),
+                ("documento(s) chegaram", chegou_total, STATUS_STYLE["Recebido"][1]),
+                ("documento(s) pendente(s)", pendente_total, STATUS_STYLE["Pendente"][1]),
             ]
         )
     )
@@ -341,24 +344,22 @@ def build_report_html(
             f"<span style='color:{MUTED};'>Nenhuma empresa para mostrar no filtro escolhido.</span></td></tr></table>"
         )
     else:
-        parts.append(_legenda())
         colunas = [("Empresa", "22%", NAVY)]
         if kind != "pendencias":
-            colunas.append(("Chegou", "26%", GREEN))
-        colunas += [("Ainda não chegou", "", BROWN), ("Procurado e não encontrado", "26%", RED)]
+            colunas.append(("Chegou", "39%", GREEN))
+        colunas.append(("Pendente", "", BROWN))
         tabela = [
             f"<table width='100%' cellspacing='0' cellpadding='6' "
-            f"style='margin-top:2px; border-collapse:collapse; border:1px solid {LINE};'>",
+            f"style='margin-top:10px; border-collapse:collapse; border:1px solid {LINE};'>",
             _cabecalho_tabela(colunas),
         ]
-        for index, (dados, chegou, falta_mes, ainda, nao_achou) in enumerate(visiveis):
-            fundo = "#FFFFFF" if index % 2 == 0 else "#F7F9FC"
+        for index, (dados, chegou, falta_mes, pendente) in enumerate(visiveis):
+            fundo = "#FFFFFF" if index % 2 == 0 else LINHA_ALTERNADA
             todos = dados["mes"] + dados["anteriores"]
-            celulas = [_celula_empresa(dados["codigo"], dados["nome"], len(chegou), len(chegou) + len(falta_mes))]
+            celulas = [_celula_empresa(dados["codigo"], dados["nome"])]
             if kind != "pendencias":
-                celulas.append(_celula(lista(chegou, todos, GREEN), CHEGOU_FUNDO if chegou else fundo))
-            celulas.append(_celula(lista(ainda, todos, BROWN), FALTA_FUNDO if ainda else fundo))
-            celulas.append(_celula(lista(nao_achou, todos, RED), NAO_ACHOU_FUNDO if nao_achou else fundo))
+                celulas.append(_celula(lista(chegou, todos, GREEN), fundo))
+            celulas.append(_celula(lista(pendente, todos, BROWN), fundo))
             tabela.append(f"<tr bgcolor='{fundo}' style='background-color:{fundo};'>{''.join(celulas)}</tr>")
         tabela.append("</table>")
         parts.append("".join(tabela))

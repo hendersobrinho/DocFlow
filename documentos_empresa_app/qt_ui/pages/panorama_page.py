@@ -165,10 +165,10 @@ class ExportReportDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        self.kind_situacao = QRadioButton("Completo: o que chegou, o que ainda não chegou e o que foi procurado e não encontrado")
+        self.kind_situacao = QRadioButton("Completo: o que chegou e o que está pendente")
         self.kind_situacao.setChecked(True)
         layout.addWidget(self.kind_situacao)
-        self.kind_pendencias = QRadioButton("Só o que falta (o que ainda não chegou e o que foi procurado e não encontrado)")
+        self.kind_pendencias = QRadioButton("Só o que está pendente")
         layout.addWidget(self.kind_pendencias)
         self.include_complete_check = QCheckBox("Listar também as empresas completas (em que já chegou tudo)")
         self.include_complete_check.setChecked(True)

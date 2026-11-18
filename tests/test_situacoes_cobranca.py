@@ -394,14 +394,14 @@ class SituacoesCobrancaTests(unittest.TestCase):
             None, self.janeiro, self.janeiro, kind="situacao", extra_html=secao
         )
         self.assertIn("Rodadas do Claude (1)", relatorio["html"])
-        self.assertIn("Ainda não chegou", relatorio["html"])
+        self.assertIn("Pendente", relatorio["html"])
 
         sem_competencia = coletar_visao_geral(
             self.services.pending_report_service, self.cobranca, self.services.rodada_service, 1990, 1, date.today(), None
         )
         self.assertIn("ainda não foi criada", build_visao_geral_html(sem_competencia, "10/11/2026 11:00"))
 
-    def test_documentation_report_separates_arrived_missing_and_not_found(self) -> None:
+    def test_documentation_report_separates_arrived_and_pendente(self) -> None:
         tipo_id = self.services.tipo_service.get_or_create_tipo("Extratos CC")["id"]
         bradesco = self.services.documento_service.create_documento(self.empresa_id, tipo_id, "Bradesco CC", ["Email"])
         self.services.status_service.update_status(bradesco, self.janeiro, "Pendente")
@@ -419,7 +419,7 @@ class SituacoesCobrancaTests(unittest.TestCase):
         inativa = self.services.empresa_service.create_empresa(3, "Empresa Inativa")
         self.services.documento_service.create_documento(inativa, tipo_id, "Banco Da Inativa", ["Email"])
         self.services.empresa_service.set_empresa_ativa(inativa, False)
-        # Empresa que nao mandou nada no mes: o que falta vai para "procurado e nao encontrado".
+        # Empresa que nao mandou nada no mes: o que falta tambem e Pendente.
         nada = self.services.empresa_service.create_empresa(4, "Empresa Que Nao Mandou")
         self.services.documento_service.create_documento(nada, tipo_id, "Banco Sumido", ["Email"])
 
@@ -441,21 +441,23 @@ class SituacoesCobrancaTests(unittest.TestCase):
         html = self.services.pending_report_service.build_printable_report(
             None, self.janeiro, fevereiro, kind="situacao"
         )["html"]
-        for texto in ("Chegou", "Ainda não chegou", "Procurado e não encontrado", "Caixa CC", "Inter CC",
+        for texto in ("Chegou", "Pendente", "Caixa CC", "Inter CC",
                       "Banco Sumido", f"02/{self.ano}", f"01/{self.ano}", "pendente(s) de meses anteriores"):
             self.assertIn(texto, html)
         for texto in ("Sicredi CC", "Empresa Sem Cobranca", "Banco Da Inativa"):
             self.assertNotIn(texto, html)
 
         # Padaria (ja mandou o Caixa): falta de fevereiro + pendentes de janeiro, com o mes de cada um,
-        # na coluna "ainda nao chegou". A empresa que nao mandou nada fica na ultima coluna.
+        # na coluna Pendente (a ultima). A empresa que nao mandou nada fica na mesma coluna.
         linha_padaria = html[html.index("Padaria Pao Quente"):html.index("Empresa Que Nao Mandou")]
-        ainda = linha_padaria.split("#FFF6EA;'>")[1]
-        self.assertLess(ainda.index(f"02/{self.ano}"), ainda.index(f"01/{self.ano}"))
-        self.assertIn("Bradesco CC", ainda)
-        self.assertIn("Itau CC", ainda)
+        pendente = linha_padaria.split("<td valign='top'")[-2]  # a ultima e o comeco da proxima empresa
+        self.assertLess(pendente.index(f"02/{self.ano}"), pendente.index(f"01/{self.ano}"))
+        self.assertIn("Bradesco CC", pendente)
+        self.assertIn("Itau CC", pendente)
+        self.assertNotIn("Caixa CC", pendente)
         linha_nada = html[html.index("Empresa Que Nao Mandou"):]
-        self.assertIn("Banco Sumido", linha_nada.split("#FDF0EE;'>")[1])
+        self.assertIn("Banco Sumido", linha_nada.split("<td valign='top'")[-1])
+        self.assertNotIn("não encontrado", html)
 
         pendencias = self.services.pending_report_service.build_printable_report(
             None, fevereiro, fevereiro, kind="pendencias"

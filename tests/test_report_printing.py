@@ -46,7 +46,7 @@ class ReportPrintingTests(unittest.TestCase):
 
     def test_html_uses_the_brand_colors_and_all_statuses(self) -> None:
         html = self._html(_linhas(12))
-        for texto in ("Situação da documentação", "#203461", "#4BBDCD", "Chegou", "Ainda não chegou", "Procurado e não encontrado"):
+        for texto in ("Situação da documentação", "#203461", "Chegou", "Pendente"):
             self.assertIn(texto, html)
 
     def test_months_in_a_row_become_a_range(self) -> None:
@@ -74,6 +74,25 @@ class ReportPrintingTests(unittest.TestCase):
         self.assertIn("02/2026, 05/2026", por_doc)
         por_mes = build_report_html(**kwargs)  # o modelo de sempre continua igual
         self.assertEqual(por_mes.count("Balancete"), 8)
+
+    def test_everything_missing_is_pendente_without_a_separate_not_found_column(self) -> None:
+        def linha(emp, doc_id, nome, status):
+            return {
+                "empresa_id": emp, "documento_id": doc_id, "codigo_empresa": 10 + emp, "nome_empresa": f"Empresa {emp}",
+                "ano": 2026, "mes": 9, "tipo_documento": "Contabil", "nome_documento": nome, "status": status,
+            }
+
+        # Empresa 1 mandou um e falta outro; empresa 2 nao mandou nada: os dois faltando sao Pendente.
+        linhas = [linha(1, 1, "Balancete", "Recebido"), linha(1, 2, "Caixa", "Pendente"), linha(2, 3, "Extrato", "Pendente")]
+        for agrupar in ("competencia", "documento"):
+            html = build_report_html(
+                kind="situacao", rows=linhas, competencia="09/2026", company_label="Todas",
+                generated_at="18/11/2026 10:00", agrupar=agrupar,
+            )
+            self.assertNotIn("não encontrado", html)
+            self.assertNotIn("Ainda não chegou", html)
+            self.assertIn("documento(s) pendente(s)", html)
+            self.assertIn("Extrato", html)
 
     def test_pdf_has_the_system_background_on_every_page(self) -> None:
         from PySide6.QtPdf import QPdfDocument
