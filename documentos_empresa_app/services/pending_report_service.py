@@ -308,6 +308,7 @@ class PendingReportService:
         kind: str = "situacao",
         include_complete: bool = True,
         extra_html: str = "",
+        agrupar: str = "competencia",
     ) -> dict:
         """Relatorio em HTML (identidade visual do DocFlow), pronto para virar PDF ou ir para a
         impressora pela interface. E da competencia final (end_period_id): o que chegou no mes, o
@@ -338,6 +339,7 @@ class PendingReportService:
             generated_at=context["generated_at"],
             include_complete=include_complete,
             extra_html=extra_html,
+            agrupar=agrupar,
         )
         return {"html": html, "result": self._build_export_result(report)}
 

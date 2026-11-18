@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -196,6 +197,26 @@ class ExportReportDialog(QDialog):
             self.start_combo.setCurrentIndex(max(0, self.start_combo.findData(default_period_id)))
             self.end_combo.setCurrentIndex(max(0, self.end_combo.findData(default_period_id)))
         layout.addLayout(period_row)
+        agrupar_row = QHBoxLayout()
+        agrupar_row.setSpacing(12)
+        agrupar_row.addWidget(QLabel("Mostrar"))
+        self.agrupar_competencia = QRadioButton("Por competência (cada mês com os seus documentos)")
+        self.agrupar_documento = QRadioButton("Por documento (cada documento com os meses na frente)")
+        self.agrupar_documento.setToolTip(
+            "Resume: o documento aparece uma vez, com as competências que faltam, ex: Balancete 01/2026 a 08/2026."
+        )
+        self.agrupar_grupo = QButtonGroup(self)
+        for botao in (self.agrupar_competencia, self.agrupar_documento):
+            self.agrupar_grupo.addButton(botao)
+        por_documento = load_ui_state("relatorio:agrupar", "competencia") == "documento"
+        (self.agrupar_documento if por_documento else self.agrupar_competencia).setChecked(True)
+        agrupar_col = QVBoxLayout()
+        agrupar_col.setSpacing(4)
+        agrupar_col.addWidget(self.agrupar_competencia)
+        agrupar_col.addWidget(self.agrupar_documento)
+        agrupar_row.addLayout(agrupar_col)
+        agrupar_row.addStretch(1)
+        layout.addLayout(agrupar_row)
         period_hint = QLabel(
             "Com “De” e “até” no mesmo mês, o relatório mostra só aquele mês. Escolhendo um "
             "intervalo, o que ficou pendente nos meses anteriores do intervalo entra junto, com o "
@@ -292,6 +313,11 @@ class ExportReportDialog(QDialog):
         except Exception:  # noqa: BLE001 - o relatorio principal nao depende disso
             return ""
 
+    def _agrupar(self) -> str:
+        agrupar = "documento" if self.agrupar_documento.isChecked() else "competencia"
+        save_ui_state("relatorio:agrupar", agrupar)
+        return agrupar
+
     def _printable(self) -> dict | None:
         filters = self._filters()
         if filters is None:
@@ -303,6 +329,7 @@ class ExportReportDialog(QDialog):
                 kind=self._kind(),
                 include_complete=self.include_complete_check.isChecked(),
                 extra_html=extra,
+                agrupar=self._agrupar(),
             )
         except ValidationError as exc:
             QMessageBox.information(self, "Relatório de documentação", str(exc))

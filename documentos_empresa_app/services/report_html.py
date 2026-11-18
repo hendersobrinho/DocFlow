@@ -145,6 +145,48 @@ def _lista(docs: list[dict], todos: list[dict], cor: str) -> str:
     return "<br><br>".join(blocos)
 
 
+
+def intervalos_competencias(meses: list[tuple[int, int]]) -> str:
+    """[(ano, mes)] em texto curto, juntando os meses seguidos: 01/2026 a 04/2026, 06/2026."""
+    ordenados = sorted(set(meses))
+    if not ordenados:
+        return ""
+    grupos: list[list[tuple[int, int]]] = [[ordenados[0]]]
+    for ano, mes in ordenados[1:]:
+        ult_ano, ult_mes = grupos[-1][-1]
+        seguinte = (ult_ano + 1, 1) if ult_mes == 12 else (ult_ano, ult_mes + 1)
+        if (ano, mes) == seguinte:
+            grupos[-1].append((ano, mes))
+        else:
+            grupos.append([(ano, mes)])
+    partes = []
+    for grupo in grupos:
+        inicio, fim = grupo[0], grupo[-1]
+        texto = f"{inicio[1]:02d}/{inicio[0]}"
+        if fim != inicio:
+            texto += f" a {fim[1]:02d}/{fim[0]}"
+        partes.append(texto)
+    return ", ".join(partes)
+
+
+def _lista_por_documento(docs: list[dict], todos: list[dict], cor: str) -> str:
+    """Um item por documento, com as competencias na frente (meses seguidos viram intervalo):
+    nao repete o mesmo documento em cada mes."""
+    if not docs:
+        return f"<span style='color:{MUTED};'>-</span>"
+    por_doc: dict[int, list[dict]] = {}
+    for doc in docs:
+        por_doc.setdefault(doc["documento_id"], []).append(doc)
+    linhas = []
+    grupos = sorted(por_doc.values(), key=lambda g: _ordem_doc(g[0]))
+    for i, grupo in enumerate(grupos, start=1):
+        meses = intervalos_competencias([(d["ano"], d["mes"]) for d in grupo])
+        linhas.append(
+            f"<span style='color:{cor}; font-weight:600;'>{i}.</span>&nbsp;{_esc(_rotulo(grupo[0], todos))}"
+            f" <span style='color:{NAVY}; font-size:8pt; font-weight:600;'>&nbsp;{_esc(meses)}</span>"
+        )
+    return "<br>".join(linhas)
+
 def _barra(chegou: int, falta: int, altura: int = 7) -> str:
     total = chegou + falta
     if not total:
@@ -225,6 +267,7 @@ def build_report_html(
     pendentes_anteriores: list[dict] | None = None,
     include_complete: bool = True,
     extra_html: str = "",
+    agrupar: str = "competencia",
 ) -> str:
     """Relatorio da competencia, uma linha por empresa, so com o que interessa:
     - Chegou: o que chegou no mes;
@@ -232,7 +275,10 @@ def build_report_html(
     - Procurado e nao encontrado: nao chegou nenhum documento da empresa no mes.
     O que falta inclui o que ficou Pendente de meses anteriores; cada documento aparece debaixo
     da sua competencia. kind 'pendencias' mostra so o que falta. 'Nao cobrar' e encerrados nao entram.
-    rows: as linhas da competencia (com as sem marcacao); pendentes_anteriores: os Pendente de antes."""
+    rows: as linhas da competencia (com as sem marcacao); pendentes_anteriores: os Pendente de antes.
+    agrupar: 'competencia' (cada mes com os seus documentos) ou 'documento' (cada documento uma vez,
+    com os meses na frente)."""
+    lista = _lista_por_documento if agrupar == "documento" else _lista
     empresas: dict = {}
 
     def empresa(row):
@@ -310,9 +356,9 @@ def build_report_html(
             todos = dados["mes"] + dados["anteriores"]
             celulas = [_celula_empresa(dados["codigo"], dados["nome"], len(chegou), len(chegou) + len(falta_mes))]
             if kind != "pendencias":
-                celulas.append(_celula(_lista(chegou, todos, GREEN), CHEGOU_FUNDO if chegou else fundo))
-            celulas.append(_celula(_lista(ainda, todos, BROWN), FALTA_FUNDO if ainda else fundo))
-            celulas.append(_celula(_lista(nao_achou, todos, RED), NAO_ACHOU_FUNDO if nao_achou else fundo))
+                celulas.append(_celula(lista(chegou, todos, GREEN), CHEGOU_FUNDO if chegou else fundo))
+            celulas.append(_celula(lista(ainda, todos, BROWN), FALTA_FUNDO if ainda else fundo))
+            celulas.append(_celula(lista(nao_achou, todos, RED), NAO_ACHOU_FUNDO if nao_achou else fundo))
             tabela.append(f"<tr bgcolor='{fundo}' style='background-color:{fundo};'>{''.join(celulas)}</tr>")
         tabela.append("</table>")
         parts.append("".join(tabela))
