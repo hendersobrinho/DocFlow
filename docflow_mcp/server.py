@@ -135,10 +135,11 @@ mcp = MCPServer(
         "R$ 50 mil no mes ao mesmo socio pessoa fisica retem 10% de IR sobre o total): depois de dar "
         "baixa nos extratos de uma competencia, chame 'extratos_para_revisar_socios', leia cada "
         "extrato procurando as saidas para os socios cadastrados e registre com "
-        "'registrar_revisao_socios' (um extrato por chamada, mesmo sem achar nada). O sistema soma o "
-        "mes e abre o alerta na tela Socios; quem resolve e uma pessoa. Quando 'o_que_fazer_agora' ou "
-        "'finalizar_rodada' trouxer 'revisao_socios_pendente', e um pedido (nao trava nada): faca a "
-        "conferencia e salve; se nao der, registre resultado='nao_deu' com o motivo.\n"
+        "'registrar_revisao_socios' (um extrato por chamada) so quando os pagamentos ao mesmo socio, "
+        "somando os extratos da empresa no mes, passarem de R$ 50 mil; abaixo disso nao precisa "
+        "registrar. O sistema soma o mes e abre o alerta na tela Socios; quem resolve e uma pessoa. "
+        "'o_que_fazer_agora' e 'finalizar_rodada' trazem 'retiradas_acima_50_mil' com os casos ainda "
+        "abertos: avise o usuario (nao trava nada).\n"
         "Inicio no escritorio: cada empresa pode ter 'inicio_escritorio'; competencias anteriores nao "
         "sao cobradas ('definir_inicio_escritorio' grava a data que o usuario passar).\n\n"
         "Acesso total: alem das tools especificas (preferidas, porque aplicam as regras e registram "
@@ -851,9 +852,9 @@ def finalizar_rodada(resumo: str | None = None) -> dict[str, Any]:
         rodada = services.rodada_service.finalizar(_rodada_atual, resumo)
         _rodada_atual = None
     resposta = _public_rodada(rodada)
-    if pendente := _revisao_socios_pendente(services):
-        # a rodada fecha do mesmo jeito: e so um pedido para a proxima passada
-        resposta["revisao_socios_pendente"] = pendente
+    if acima := _retiradas_acima_do_limite(services):
+        # a rodada fecha do mesmo jeito: e so um aviso do que esta para as pessoas resolverem
+        resposta["retiradas_acima_50_mil"] = acima
     return resposta
 
 
@@ -896,8 +897,8 @@ def o_que_fazer_agora(codigo_empresa: int | None = None, incluir_aguardando: boo
         "rodada_aberta": _rodada_atual,
         "empresas": empresas,
     }
-    if codigo_empresa is None and (pendente := _revisao_socios_pendente(services)):
-        resposta["revisao_socios_pendente"] = pendente
+    if codigo_empresa is None and (acima := _retiradas_acima_do_limite(services)):
+        resposta["retiradas_acima_50_mil"] = acima
     return resposta
 
 
@@ -1586,17 +1587,18 @@ def _public_alerta(alerta: dict) -> dict[str, Any]:
 
 
 PEDIDO_REVISAO_SOCIOS = (
-    "Pedido do DocFlow: depois de conferir os extratos atras de pagamentos aos socios cadastrados "
-    "(nome e CPF vinculados a empresa), salve o que viu com 'registrar_revisao_socios' - um extrato "
-    "por chamada, mesmo sem achar nada (pagamentos=[]). Sem o registro, a conferencia nao fica "
-    "salva, o total do mes por socio nao e somado e o alerta acima de R$ 50 mil nao aparece na tela "
-    "Socios. Nao trava nada: se nao der agora, registre resultado='nao_deu' com o motivo e siga."
+    "Pedido do DocFlow: so precisa salvar a conferencia quando os pagamentos ao mesmo socio "
+    "cadastrado (nome e CPF vinculados a empresa), somando os extratos da empresa no mes, passarem "
+    "de R$ 50 mil. Nesse caso registre com 'registrar_revisao_socios' cada extrato da empresa com "
+    "pagamentos ao socio (um por chamada): o sistema soma o mes e abre o alerta na tela Socios. "
+    "Abaixo de R$ 50 mil nao precisa registrar nada. Nao trava a rodada."
 )
 
 
-def _revisao_socios_pendente(services: ApplicationServices, periodos: list[dict] | None = None) -> dict[str, Any] | None:
-    """Extratos que ja chegaram e ainda nao tiveram a conferencia dos socios salva, nas ultimas
-    competencias (ou nas informadas). None quando nao falta nada. Nunca bloqueia: e um pedido."""
+def _retiradas_acima_do_limite(services: ApplicationServices, periodos: list[dict] | None = None) -> dict[str, Any] | None:
+    """Retiradas acima de R$ 50 mil das ultimas competencias (ou das informadas) que ainda estao
+    abertas para uma pessoa resolver na tela Socios. None quando nao ha nenhuma. So os casos que
+    passaram do limite: o resto nao entra, para nao virar uma lista longa."""
     try:
         if periodos is None:
             hoje = date.today()
@@ -1605,36 +1607,31 @@ def _revisao_socios_pendente(services: ApplicationServices, periodos: list[dict]
                 ano, mes = min(chaves)
                 chaves.add((ano - 1, 12) if mes == 1 else (ano, mes - 1))
             periodos = [p for p in services.periodo_service.list_periodos() if (p["ano"], p["mes"]) in chaves]
-        competencias = []
-        sem_socio = []
-        total = 0
+        casos = []
         for periodo in sorted(periodos, key=lambda p: (p["ano"], p["mes"])):
-            dados = services.socios_service.extratos_para_revisar(periodo["id"])
-            if dados["extratos_pendentes"]:
-                total += dados["extratos_pendentes"]
-                competencias.append(
+            for alerta in services.socios_service.listar_alertas(periodo["id"], status="aberto"):
+                casos.append(
                     {
-                        "competencia": dados["competencia"],
-                        "extratos_sem_revisao": dados["extratos_pendentes"],
-                        "empresas": [e["codigo_empresa"] for e in dados["empresas"]],
+                        "competencia": alerta["competencia"],
+                        "codigo_empresa": alerta["codigo_empresa"],
+                        "nome_empresa": alerta["nome_empresa"],
+                        "socio": alerta["nome_socio"],
+                        "cpf": alerta["cpf_formatado"],
+                        "total_no_mes": alerta["total"],
+                        "retencao_estimada": alerta["retencao_estimada"],
                     }
                 )
-            sem_socio.extend(
-                {"competencia": dados["competencia"], "codigo_empresa": e["codigo_empresa"], "nome_empresa": e["nome_empresa"]}
-                for e in dados["empresas_sem_socio_cadastrado"]
-            )
     except Exception:  # o lembrete nunca derruba a tool que o carrega
         return None
-    if not total and not sem_socio:
+    if not casos:
         return None
-    resultado: dict[str, Any] = {"extratos_sem_revisao": total, "competencias": competencias, "pedido": PEDIDO_REVISAO_SOCIOS}
-    if sem_socio:
-        resultado["empresas_sem_socio_cadastrado"] = sem_socio
-        resultado["pedido_cadastro"] = (
-            "Estas empresas tem extrato mas nenhum socio cadastrado: peca ao usuario nome e CPF dos "
-            "socios (ou cadastre com 'cadastrar_socio' a partir do contrato social / cartao CNPJ)."
-        )
-    return resultado
+    return {
+        "casos": casos,
+        "mensagem": (
+            f"{len(casos)} retirada(s) acima de R$ 50 mil no mes esperando uma pessoa resolver na "
+            "tela Socios. Avise o usuario; nao precisa fazer nada no MCP."
+        ),
+    }
 
 
 @docflow_tool(read_only=True)
@@ -1733,13 +1730,6 @@ def registrar_revisao_socios(
     registro = dict(registro) if isinstance(registro, dict) else {"registro": registro}
     registro["salvo"] = True
     registro["mensagem"] = "Conferencia dos socios salva no DocFlow."
-    try:
-        faltam = services.socios_service.extratos_para_revisar(periodo["id"])
-        da_empresa = next((e for e in faltam["empresas"] if e["codigo_empresa"] == empresa["codigo_empresa"]), None)
-        registro["extratos_da_empresa_ainda_sem_revisao"] = len(da_empresa["extratos"]) if da_empresa else 0
-        registro["extratos_sem_revisao_na_competencia"] = faltam["extratos_pendentes"]
-    except Exception:
-        pass
     return registro
 
 

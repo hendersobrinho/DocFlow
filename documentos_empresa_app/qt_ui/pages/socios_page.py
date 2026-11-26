@@ -58,7 +58,7 @@ class SociosPage(QWidget):
             PageHeader(
                 "Sócios (R$ 50 mil)",
                 "Quando a mesma empresa paga mais de R$ 50.000,00 no mês ao mesmo sócio, retém 10% de IR "
-                "sobre o total. O Claude revisa os extratos que chegaram e os casos aparecem aqui para conferir.",
+                "sobre o total. O Claude revisa os extratos que chegaram e só os casos acima do limite aparecem aqui para conferir.",
             )
         )
         self.tabs = QTabWidget()
@@ -285,7 +285,8 @@ class SociosPage(QWidget):
         except ValidationError:
             return
         partes = [
-            f'{fila["extratos_revisados"]} extrato(s) revisado(s) e {fila["extratos_pendentes"]} esperando o Claude.'
+            f'{fila["extratos_revisados"]} extrato(s) com a conferência salva. O Claude só registra quando os '
+            "pagamentos ao mesmo sócio passam de R$ 50 mil no mês."
         ]
         if fila["empresas_sem_socio_cadastrado"]:
             nomes = ", ".join(f'{e["codigo_empresa"]} - {e["nome_empresa"]}' for e in fila["empresas_sem_socio_cadastrado"][:8])

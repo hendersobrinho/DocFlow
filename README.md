@@ -156,7 +156,7 @@ Envio direto pelo WhatsApp: `whatsapp_service.py` ja traz o cliente da WhatsApp 
 
 Inicio no escritorio: cada empresa pode ter a data em que comecou no escritorio (tela Empresas, campo `Inicio no escritorio`, coluna `inicio_escritorio`; aceita dd/mm/aaaa ou mm/aaaa). As competencias anteriores ao mes dessa data nao sao cobradas: saem da fila de cobranca, de `o_que_fazer_agora`, dos envios de cobranca (a mala direta continua indo) e do relatorio de pendencias. Vazio cobra tudo, como antes. No MCP: `obter_empresa` mostra a data e `definir_inicio_escritorio` grava.
 
-Conferencia dos socios: depois de olhar os extratos atras de pagamentos aos socios cadastrados (nome e CPF vinculados a empresa), o Claude salva o que viu com `registrar_revisao_socios`. O DocFlow pede esse registro sem travar nada: `o_que_fazer_agora` e `finalizar_rodada` trazem `revisao_socios_pendente` quando ha extrato das ultimas competencias sem a conferencia salva (e as empresas com extrato e sem socio cadastrado); `extratos_para_revisar_socios` traz o mesmo pedido; e `registrar_revisao_socios` confirma `salvo` e diz quantos extratos ainda faltam. A rodada fecha do mesmo jeito.
+Conferencia dos socios: o Claude olha os extratos atras de pagamentos aos socios cadastrados (nome e CPF vinculados a empresa) e so salva com `registrar_revisao_socios` quando os pagamentos ao mesmo socio, somando os extratos da empresa no mes, passam de R$ 50 mil (abaixo disso nao precisa registrar, para nao virar uma lista longa). `o_que_fazer_agora` e `finalizar_rodada` trazem `retiradas_acima_50_mil` com os casos das ultimas competencias ainda abertos na tela Socios, sem travar a rodada.
 
 ### Instalacao
 

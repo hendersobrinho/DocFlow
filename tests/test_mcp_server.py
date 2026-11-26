@@ -400,7 +400,7 @@ class DocflowMcpServerTests(unittest.TestCase):
         self.assertEqual(resolvido["situacao"], "resolvido")
         self.assertIn("confirmar", self.call_error("excluir_socio", socio_id=socio["socio_id"]))
 
-    def test_partner_review_is_requested_without_blocking(self) -> None:
+    def test_partner_review_only_flags_withdrawals_above_the_limit(self) -> None:
         from datetime import date
 
         self.addCleanup(setattr, docflow_server, "_rodada_atual", None)
@@ -412,28 +412,28 @@ class DocflowMcpServerTests(unittest.TestCase):
         atual = next(p["id"] for p in self.services.periodo_service.list_periodos() if (p["ano"], p["mes"]) == (hoje.year, hoje.month))
         self.services.status_service.update_status(extrato, atual, "Recebido")
         competencia = f"{hoje.month:02d}/{hoje.year}"
-
-        # extrato sem socio cadastrado: pede o cadastro
-        pendente = self.call("o_que_fazer_agora")["revisao_socios_pendente"]
-        self.assertEqual(pendente["empresas_sem_socio_cadastrado"][0]["codigo_empresa"], 11)
-        self.assertIn("cadastrar_socio", pendente["pedido_cadastro"])
-
         self.call("cadastrar_socio", codigo_empresa=11, nome="Joao Lima", cpf="52998224725")
-        pendente = self.call("o_que_fazer_agora")["revisao_socios_pendente"]
-        self.assertEqual(pendente["extratos_sem_revisao"], 1)
-        self.assertIn("registrar_revisao_socios", pendente["pedido"])
-        self.assertIn("pedido", self.call("extratos_para_revisar_socios", competencia=competencia))
 
-        # nao trava: a rodada fecha mesmo com a conferencia pendente, e o pedido vem junto
+        # extrato sem conferencia salva nao vira lembrete: a lista nao cresce todo mes
+        self.assertNotIn("retiradas_acima_50_mil", self.call("o_que_fazer_agora"))
+        pedido = self.call("extratos_para_revisar_socios", competencia=competencia)["pedido"]
+        self.assertIn("50 mil", pedido)
+
+        # abaixo do limite: salva, mas nao aparece nada para resolver
+        salvo = self.call("registrar_revisao_socios", codigo_empresa=11, competencia=competencia, documento_id=extrato,
+                          pagamentos=[{"cpf": "52998224725", "valor": "20.000,00", "data": hoje.strftime("%d/%m/%Y")}])
+        self.assertTrue(salvo["salvo"])
+        self.assertNotIn("retiradas_acima_50_mil", self.call("o_que_fazer_agora"))
+
+        # acima do limite: aparece no plano e no fechamento da rodada, sem travar
+        self.call("registrar_revisao_socios", codigo_empresa=11, competencia=competencia, documento_id=extrato,
+                  pagamentos=[{"cpf": "52998224725", "valor": "60.000,00", "data": hoje.strftime("%d/%m/%Y")}])
+        acima = self.call("o_que_fazer_agora")["retiradas_acima_50_mil"]
+        caso = acima["casos"][0]
+        self.assertEqual((caso["codigo_empresa"], caso["socio"]), (11, "Joao Lima"))
         self.call("iniciar_rodada")
         fechada = self.call("finalizar_rodada", resumo="so verificacao")
-        self.assertEqual(fechada["revisao_socios_pendente"]["extratos_sem_revisao"], 1)
-
-        salvo = self.call("registrar_revisao_socios", codigo_empresa=11, competencia=competencia,
-                          documento_id=extrato, pagamentos=[])
-        self.assertTrue(salvo["salvo"])
-        self.assertEqual(salvo["extratos_da_empresa_ainda_sem_revisao"], 0)
-        self.assertNotIn("revisao_socios_pendente", self.call("o_que_fazer_agora"))
+        self.assertEqual(len(fechada["retiradas_acima_50_mil"]["casos"]), 1)
 
     def test_start_at_office_skips_earlier_competences(self) -> None:
         from datetime import date
