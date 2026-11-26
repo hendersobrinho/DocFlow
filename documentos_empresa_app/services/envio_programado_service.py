@@ -17,6 +17,7 @@ from documentos_empresa_app.services.audit_service import AuditService
 from documentos_empresa_app.services.session_service import SessionService
 from documentos_empresa_app.services.whatsapp_service import build_link, format_whatsapp
 from documentos_empresa_app.utils.common import (
+    antes_do_inicio,
     CONFIG_DIR,
     MONTH_NAMES,
     ValidationError,
@@ -296,6 +297,10 @@ class EnvioProgramadoService:
         por_empresa: dict[int, dict] = {}
         for linha in linhas:
             if linha["empresa_id"] in excluidas:
+                continue
+            # cobranca de documento (regra com tipo) nao vai para competencia de antes do inicio
+            # da empresa no escritorio; mala direta (sem tipo) vai para todas
+            if envio["tipo_documento_id"] is not None and antes_do_inicio(linha, ano, mes):
                 continue
             empresa = por_empresa.setdefault(linha["empresa_id"], {**linha, "documentos": []})
             if linha["nome_documento"]:

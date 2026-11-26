@@ -6,7 +6,7 @@
 
 Sistema desktop local para controle de recebimento de documentos empresariais.
 
-Versao atual: `2.0.19`
+Versao atual: `2.0.20`
 
 Este repositorio publico foi preparado para portfolio tecnico. O codigo-fonte, a interface e o fluxo principal estao aqui para estudo e demonstracao, mas materiais operacionais privados de licenciamento e distribuicao comercial nao acompanham esta edicao.
 
@@ -153,6 +153,10 @@ Mala direta em copia oculta: como o escritorio faz, um email so para o email do 
 O DocFlow e o centro de informacao. O Claude chama `envios_a_fazer`, envia cada email pela propria ferramenta de email (ou com `enviar_emails_pelo_docflow`) e, no WhatsApp, usa `enviar_whatsapp`; registra tudo com `registrar_envio`. A mesma mensagem nunca vai duas vezes para a mesma empresa na mesma competencia; quem perde o dia continua na lista ate o fim do mes.
 
 Envio direto pelo WhatsApp: `whatsapp_service.py` ja traz o cliente da WhatsApp Cloud API (Meta). Para ligar, grave em `config.json` a chave `whatsapp` com `provedor: "cloud_api"`, `phone_number_id` e `token` (use `save_whatsapp_settings`, que protege o token com DPAPI). Fora da janela de 24h a Meta so aceita mensagens de modelo (template) aprovadas.
+
+Inicio no escritorio: cada empresa pode ter a data em que comecou no escritorio (tela Empresas, campo `Inicio no escritorio`, coluna `inicio_escritorio`; aceita dd/mm/aaaa ou mm/aaaa). As competencias anteriores ao mes dessa data nao sao cobradas: saem da fila de cobranca, de `o_que_fazer_agora`, dos envios de cobranca (a mala direta continua indo) e do relatorio de pendencias. Vazio cobra tudo, como antes. No MCP: `obter_empresa` mostra a data e `definir_inicio_escritorio` grava.
+
+Conferencia dos socios: depois de olhar os extratos atras de pagamentos aos socios cadastrados (nome e CPF vinculados a empresa), o Claude salva o que viu com `registrar_revisao_socios`. O DocFlow pede esse registro sem travar nada: `o_que_fazer_agora` e `finalizar_rodada` trazem `revisao_socios_pendente` quando ha extrato das ultimas competencias sem a conferencia salva (e as empresas com extrato e sem socio cadastrado); `extratos_para_revisar_socios` traz o mesmo pedido; e `registrar_revisao_socios` confirma `salvo` e diz quantos extratos ainda faltam. A rodada fecha do mesmo jeito.
 
 ### Instalacao
 

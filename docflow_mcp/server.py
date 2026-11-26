@@ -40,6 +40,7 @@ from documentos_empresa_app.utils.common import (
     format_competencia,
     format_period_label,
     format_utc_timestamp,
+    parse_inicio_escritorio,
     parse_period_label,
 )
 from documentos_empresa_app.services.email_sender_service import (
@@ -135,7 +136,11 @@ mcp = MCPServer(
         "baixa nos extratos de uma competencia, chame 'extratos_para_revisar_socios', leia cada "
         "extrato procurando as saidas para os socios cadastrados e registre com "
         "'registrar_revisao_socios' (um extrato por chamada, mesmo sem achar nada). O sistema soma o "
-        "mes e abre o alerta na tela Socios; quem resolve e uma pessoa.\n\n"
+        "mes e abre o alerta na tela Socios; quem resolve e uma pessoa. Quando 'o_que_fazer_agora' ou "
+        "'finalizar_rodada' trouxer 'revisao_socios_pendente', e um pedido (nao trava nada): faca a "
+        "conferencia e salve; se nao der, registre resultado='nao_deu' com o motivo.\n"
+        "Inicio no escritorio: cada empresa pode ter 'inicio_escritorio'; competencias anteriores nao "
+        "sao cobradas ('definir_inicio_escritorio' grava a data que o usuario passar).\n\n"
         "Acesso total: alem das tools especificas (preferidas, porque aplicam as regras e registram "
         "no historico), 'consultar_banco' roda qualquer SELECT e 'executar_sql' qualquer comando de "
         "escrita ou exclusao (confirmar=true). Use-os quando o usuario pedir algo que nenhuma tool cobre."
@@ -304,7 +309,14 @@ def _public_company(empresa: dict) -> dict[str, Any]:
         "canais_recebimento": empresa.get("canais_recebimento"),
         "emails_origem_documentos": empresa.get("emails_origem_documentos"),
         "instrucoes_busca": empresa.get("instrucoes_busca"),
+        # competencias anteriores ao mes do inicio nao sao cobradas
+        "inicio_escritorio": _iso(empresa.get("inicio_escritorio")),
     }
+
+
+def _iso(value) -> str | None:
+    data = parse_inicio_escritorio(value) if value else None
+    return data.isoformat() if data else None
 
 
 def _public_document(documento: dict) -> dict[str, Any]:
@@ -337,6 +349,18 @@ def obter_empresa(codigo_empresa: int) -> dict[str, Any]:
         _public_document(d) for d in services.documento_service.list_documentos_empresa(empresa["id"])
     ]
     return result
+
+
+@docflow_tool(read_only=False, idempotent=True)
+def definir_inicio_escritorio(codigo_empresa: int, inicio: str | None = None) -> dict[str, Any]:
+    """Quando a empresa comecou no escritorio (dd/mm/aaaa, mm/aaaa ou AAAA-MM-DD; vazio apaga).
+    A partir da competencia desse mes o DocFlow cobra os documentos: as anteriores saem de
+    'o_que_fazer_agora', dos envios de cobranca e do relatorio de pendencias. So grave datas
+    que o usuario passou ou que estao no cadastro do escritorio - nunca invente."""
+    services = get_services()
+    empresa = _company(services, codigo_empresa)
+    services.empresa_service.set_inicio_escritorio(empresa["id"], inicio)
+    return _public_company(services.empresa_service.get_empresa(empresa["id"]))
 
 
 @docflow_tool(read_only=True)
@@ -826,7 +850,11 @@ def finalizar_rodada(resumo: str | None = None) -> dict[str, Any]:
             raise ToolError("Nao ha rodada aberta nesta conexao.")
         rodada = services.rodada_service.finalizar(_rodada_atual, resumo)
         _rodada_atual = None
-    return _public_rodada(rodada)
+    resposta = _public_rodada(rodada)
+    if pendente := _revisao_socios_pendente(services):
+        # a rodada fecha do mesmo jeito: e so um pedido para a proxima passada
+        resposta["revisao_socios_pendente"] = pendente
+    return resposta
 
 
 @docflow_tool(read_only=True)
@@ -861,13 +889,16 @@ def o_que_fazer_agora(codigo_empresa: int | None = None, incluir_aguardando: boo
         empresa.pop("empresa_id", None)
         empresa["documentos"] = documentos
         empresas.append(empresa)
-    return {
+    resposta = {
         "data": plano["data"],
         "regras": plano["regras"],
         "resumo": plano["resumo"],
         "rodada_aberta": _rodada_atual,
         "empresas": empresas,
     }
+    if codigo_empresa is None and (pendente := _revisao_socios_pendente(services)):
+        resposta["revisao_socios_pendente"] = pendente
+    return resposta
 
 
 @docflow_tool(read_only=False)
@@ -1554,6 +1585,58 @@ def _public_alerta(alerta: dict) -> dict[str, Any]:
     return dados
 
 
+PEDIDO_REVISAO_SOCIOS = (
+    "Pedido do DocFlow: depois de conferir os extratos atras de pagamentos aos socios cadastrados "
+    "(nome e CPF vinculados a empresa), salve o que viu com 'registrar_revisao_socios' - um extrato "
+    "por chamada, mesmo sem achar nada (pagamentos=[]). Sem o registro, a conferencia nao fica "
+    "salva, o total do mes por socio nao e somado e o alerta acima de R$ 50 mil nao aparece na tela "
+    "Socios. Nao trava nada: se nao der agora, registre resultado='nao_deu' com o motivo e siga."
+)
+
+
+def _revisao_socios_pendente(services: ApplicationServices, periodos: list[dict] | None = None) -> dict[str, Any] | None:
+    """Extratos que ja chegaram e ainda nao tiveram a conferencia dos socios salva, nas ultimas
+    competencias (ou nas informadas). None quando nao falta nada. Nunca bloqueia: e um pedido."""
+    try:
+        if periodos is None:
+            hoje = date.today()
+            chaves = {(hoje.year, hoje.month)}
+            for _ in range(2):
+                ano, mes = min(chaves)
+                chaves.add((ano - 1, 12) if mes == 1 else (ano, mes - 1))
+            periodos = [p for p in services.periodo_service.list_periodos() if (p["ano"], p["mes"]) in chaves]
+        competencias = []
+        sem_socio = []
+        total = 0
+        for periodo in sorted(periodos, key=lambda p: (p["ano"], p["mes"])):
+            dados = services.socios_service.extratos_para_revisar(periodo["id"])
+            if dados["extratos_pendentes"]:
+                total += dados["extratos_pendentes"]
+                competencias.append(
+                    {
+                        "competencia": dados["competencia"],
+                        "extratos_sem_revisao": dados["extratos_pendentes"],
+                        "empresas": [e["codigo_empresa"] for e in dados["empresas"]],
+                    }
+                )
+            sem_socio.extend(
+                {"competencia": dados["competencia"], "codigo_empresa": e["codigo_empresa"], "nome_empresa": e["nome_empresa"]}
+                for e in dados["empresas_sem_socio_cadastrado"]
+            )
+    except Exception:  # o lembrete nunca derruba a tool que o carrega
+        return None
+    if not total and not sem_socio:
+        return None
+    resultado: dict[str, Any] = {"extratos_sem_revisao": total, "competencias": competencias, "pedido": PEDIDO_REVISAO_SOCIOS}
+    if sem_socio:
+        resultado["empresas_sem_socio_cadastrado"] = sem_socio
+        resultado["pedido_cadastro"] = (
+            "Estas empresas tem extrato mas nenhum socio cadastrado: peca ao usuario nome e CPF dos "
+            "socios (ou cadastre com 'cadastrar_socio' a partir do contrato social / cartao CNPJ)."
+        )
+    return resultado
+
+
 @docflow_tool(read_only=True)
 def socios_empresa(codigo_empresa: int | None = None, somente_ativos: bool = True) -> list[dict[str, Any]]:
     """Socios pessoa fisica cadastrados (nome e CPF), de uma empresa ou de todas. Sao eles que
@@ -1611,7 +1694,10 @@ def extratos_para_revisar_socios(competencia: str, incluir_revisados: bool = Fal
     'empresas_sem_socio_cadastrado' precisam do cadastro dos socios antes (avise o usuario)."""
     services = get_services()
     periodo = _period(services, competencia)
-    return services.socios_service.extratos_para_revisar(periodo["id"], incluir_revisados)
+    dados = services.socios_service.extratos_para_revisar(periodo["id"], incluir_revisados)
+    if dados["extratos_pendentes"]:
+        dados["pedido"] = PEDIDO_REVISAO_SOCIOS
+    return dados
 
 
 @docflow_tool(read_only=False)
@@ -1634,7 +1720,7 @@ def registrar_revisao_socios(
     services = get_services()
     empresa = _company(services, codigo_empresa)
     periodo = _period(services, competencia)
-    return services.socios_service.registrar_revisao(
+    registro = services.socios_service.registrar_revisao(
         empresa["id"],
         periodo["id"],
         [p.model_dump() for p in pagamentos],
@@ -1644,6 +1730,17 @@ def registrar_revisao_socios(
         resumo=resumo,
         rodada_id=_rodada_atual,
     )
+    registro = dict(registro) if isinstance(registro, dict) else {"registro": registro}
+    registro["salvo"] = True
+    registro["mensagem"] = "Conferencia dos socios salva no DocFlow."
+    try:
+        faltam = services.socios_service.extratos_para_revisar(periodo["id"])
+        da_empresa = next((e for e in faltam["empresas"] if e["codigo_empresa"] == empresa["codigo_empresa"]), None)
+        registro["extratos_da_empresa_ainda_sem_revisao"] = len(da_empresa["extratos"]) if da_empresa else 0
+        registro["extratos_sem_revisao_na_competencia"] = faltam["extratos_pendentes"]
+    except Exception:
+        pass
+    return registro
 
 
 @docflow_tool(read_only=True)

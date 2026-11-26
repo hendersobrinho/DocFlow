@@ -28,6 +28,7 @@ from documentos_empresa_app.database.repositories import (
     StatusRepository,
 )
 from documentos_empresa_app.utils.common import (
+    antes_do_inicio,
     APP_NAME,
     ValidationError,
     build_chargeable_closure_key_map,
@@ -108,6 +109,8 @@ class PendingReportService:
                 for periodo in periodos:
                     current_key = month_key(periodo["ano"], periodo["mes"])
                     if not is_chargeable_period(occurrence_rule, periodo["mes"]):
+                        continue
+                    if antes_do_inicio(company, periodo["ano"], periodo["mes"]):
                         continue
                     if closure_key is not None and current_key > closure_key:
                         continue

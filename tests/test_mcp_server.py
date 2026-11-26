@@ -400,6 +400,67 @@ class DocflowMcpServerTests(unittest.TestCase):
         self.assertEqual(resolvido["situacao"], "resolvido")
         self.assertIn("confirmar", self.call_error("excluir_socio", socio_id=socio["socio_id"]))
 
+    def test_partner_review_is_requested_without_blocking(self) -> None:
+        from datetime import date
+
+        self.addCleanup(setattr, docflow_server, "_rodada_atual", None)
+        hoje = date.today()
+        self.services.periodo_service.generate_year(hoje.year)
+        empresa_id = self.services.empresa_service.create_empresa(11, "Padaria Pao Quente")
+        tipo = self.services.tipo_service.get_or_create_tipo("Extratos CC")["id"]
+        extrato = self.services.documento_service.create_documento(empresa_id, tipo, "Itau CC")
+        atual = next(p["id"] for p in self.services.periodo_service.list_periodos() if (p["ano"], p["mes"]) == (hoje.year, hoje.month))
+        self.services.status_service.update_status(extrato, atual, "Recebido")
+        competencia = f"{hoje.month:02d}/{hoje.year}"
+
+        # extrato sem socio cadastrado: pede o cadastro
+        pendente = self.call("o_que_fazer_agora")["revisao_socios_pendente"]
+        self.assertEqual(pendente["empresas_sem_socio_cadastrado"][0]["codigo_empresa"], 11)
+        self.assertIn("cadastrar_socio", pendente["pedido_cadastro"])
+
+        self.call("cadastrar_socio", codigo_empresa=11, nome="Joao Lima", cpf="52998224725")
+        pendente = self.call("o_que_fazer_agora")["revisao_socios_pendente"]
+        self.assertEqual(pendente["extratos_sem_revisao"], 1)
+        self.assertIn("registrar_revisao_socios", pendente["pedido"])
+        self.assertIn("pedido", self.call("extratos_para_revisar_socios", competencia=competencia))
+
+        # nao trava: a rodada fecha mesmo com a conferencia pendente, e o pedido vem junto
+        self.call("iniciar_rodada")
+        fechada = self.call("finalizar_rodada", resumo="so verificacao")
+        self.assertEqual(fechada["revisao_socios_pendente"]["extratos_sem_revisao"], 1)
+
+        salvo = self.call("registrar_revisao_socios", codigo_empresa=11, competencia=competencia,
+                          documento_id=extrato, pagamentos=[])
+        self.assertTrue(salvo["salvo"])
+        self.assertEqual(salvo["extratos_da_empresa_ainda_sem_revisao"], 0)
+        self.assertNotIn("revisao_socios_pendente", self.call("o_que_fazer_agora"))
+
+    def test_start_at_office_skips_earlier_competences(self) -> None:
+        from datetime import date
+
+        self.call("gerar_periodos_ano", ano=2026)
+        self.call("cadastrar_empresa", codigo_empresa=30, nome_empresa="Nova Cliente", email_contato="a@nova.com")
+        self.call("cadastrar_documento", codigo_empresa=30, tipo="Extratos CC", nome_documento="Itau CC")
+        empresa_id = self.services.empresa_service.get_empresa_by_code(30)["id"]
+
+        def competencias() -> set[str]:
+            plano = self.services.cobranca_service.proximas_acoes(empresa_id, hoje=date(2026, 11, 26))
+            return {doc["competencia"] for e in plano["empresas"] for doc in e["documentos"]}
+
+        antes = competencias()
+        self.assertIn("01/2026", antes)
+
+        dados = self.call("definir_inicio_escritorio", codigo_empresa=30, inicio="15/06/2026")
+        self.assertEqual(dados["inicio_escritorio"], "2026-06-15")
+        self.assertEqual(self.call("obter_empresa", codigo_empresa=30)["inicio_escritorio"], "2026-06-15")
+        depois = competencias()
+        self.assertNotIn("05/2026", depois)
+        self.assertIn("06/2026", depois)
+
+        self.assertIn("invalida", self.call_error("definir_inicio_escritorio", codigo_empresa=30, inicio="31/31/2026"))
+        self.assertIsNone(self.call("definir_inicio_escritorio", codigo_empresa=30, inicio="")["inicio_escritorio"])
+        self.assertEqual(competencias(), antes)
+
 
 if __name__ == "__main__":
     unittest.main()

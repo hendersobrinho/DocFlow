@@ -86,7 +86,7 @@ class EmpresaRepository(BaseRepository):
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                    cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
                    canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
-                   whatsapp_envios, whatsapp_grupo
+                   whatsapp_envios, whatsapp_grupo, inicio_escritorio
             FROM empresas
         """
         params: tuple = ()
@@ -102,7 +102,7 @@ class EmpresaRepository(BaseRepository):
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                    cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
                    canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
-                   whatsapp_envios, whatsapp_grupo
+                   whatsapp_envios, whatsapp_grupo, inicio_escritorio
             FROM empresas
             WHERE id = ?
             """,
@@ -115,7 +115,7 @@ class EmpresaRepository(BaseRepository):
                    observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                    cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
                    canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
-                   whatsapp_envios, whatsapp_grupo
+                   whatsapp_envios, whatsapp_grupo, inicio_escritorio
             FROM empresas
             WHERE codigo_empresa = ?
         """
@@ -138,7 +138,7 @@ class EmpresaRepository(BaseRepository):
                            observacao, diretorio_documentos, ativa, cobranca_inicio_dia, cobranca_fim_dia,
                            cobranca_alerta_dias, cnpj, nao_contatar_mala_direta,
                    canais_recebimento, emails_origem_documentos, instrucoes_busca, whatsapp,
-                   whatsapp_envios, whatsapp_grupo
+                   whatsapp_envios, whatsapp_grupo, inicio_escritorio
                     FROM empresas
                     WHERE id IN ({placeholders})
                     """,
@@ -268,6 +268,9 @@ class EmpresaRepository(BaseRepository):
 
     def update_active(self, empresa_id: int, ativa: int) -> None:
         self._execute("UPDATE empresas SET ativa = ? WHERE id = ?", (ativa, empresa_id))
+
+    def update_inicio_escritorio(self, empresa_id: int, inicio) -> None:
+        self._execute("UPDATE empresas SET inicio_escritorio = ? WHERE id = ?", (inicio, empresa_id))
 
     def update_whatsapp(self, empresa_id: int, whatsapp: str | None) -> None:
         self._execute("UPDATE empresas SET whatsapp = ? WHERE id = ?", (whatsapp, empresa_id))
@@ -1850,7 +1853,7 @@ class EnvioProgramadoRepository(BaseRepository):
         todas as ativas - nos dois casos sem quem pediu para ficar fora da mala direta."""
         colunas_empresa = """
             e.id AS empresa_id, e.codigo_empresa, e.nome_empresa, e.email_contato, e.nome_contato,
-            e.whatsapp, e.canais_recebimento, e.whatsapp_envios, e.whatsapp_grupo
+            e.whatsapp, e.canais_recebimento, e.whatsapp_envios, e.whatsapp_grupo, e.inicio_escritorio
         """
         if tipo_documento_id is None:
             query = f"""

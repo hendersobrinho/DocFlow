@@ -84,6 +84,8 @@ SCHEMA_STATEMENTS = (
     "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_envios INTEGER NOT NULL DEFAULT 0 "
     "CHECK (whatsapp_envios IN (0, 1))",
     "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS whatsapp_grupo TEXT NULL",
+    # Inicio da empresa no escritorio: competencias anteriores nao sao cobradas.
+    "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS inicio_escritorio DATE NULL",
     "CREATE INDEX IF NOT EXISTS idx_empresas_cnpj ON empresas (cnpj)",
     f"""
     CREATE TABLE IF NOT EXISTS tipos_documento (

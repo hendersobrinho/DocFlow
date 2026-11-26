@@ -185,6 +185,42 @@ def month_key(year: int, month: int) -> int:
     return year * 100 + month
 
 
+def parse_inicio_escritorio(value) -> "date | None":
+    """Inicio da empresa no escritorio: aceita date, "dd/mm/aaaa", "mm/aaaa" (vira o dia 1) ou
+    "aaaa-mm-dd". Vazio = sem data (cobra todas as competencias, como antes)."""
+    from datetime import date as _date, datetime as _datetime
+
+    if value is None:
+        return None
+    if isinstance(value, _datetime):
+        return value.date()
+    if isinstance(value, _date):
+        return value
+    texto = str(value).strip()
+    if not texto:
+        return None
+    for formato in ("%d/%m/%Y", "%Y-%m-%d", "%m/%Y", "%d/%m/%y"):
+        try:
+            return _datetime.strptime(texto, formato).date()
+        except ValueError:
+            continue
+    raise ValidationError(
+        f'Data de inicio no escritorio invalida: "{texto}". Use dd/mm/aaaa (ou mm/aaaa).'
+    )
+
+
+def format_data_br(value) -> str:
+    """Data no formato dd/mm/aaaa; vazio quando nao ha data."""
+    data = parse_inicio_escritorio(value) if value else None
+    return data.strftime("%d/%m/%Y") if data else ""
+
+
+def antes_do_inicio(empresa: dict, ano: int, mes: int) -> bool:
+    """A competencia e anterior ao inicio da empresa no escritorio: nao se cobra nada dela."""
+    inicio = parse_inicio_escritorio(empresa.get("inicio_escritorio"))
+    return inicio is not None and month_key(ano, mes) < month_key(inicio.year, inicio.month)
+
+
 def format_period_label(year: int, month: int) -> str:
     return f"{month:02d}/{year} - {MONTH_NAMES.get(month, str(month))}"
 

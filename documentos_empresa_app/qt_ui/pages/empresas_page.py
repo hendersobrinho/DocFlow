@@ -30,7 +30,12 @@ from documentos_empresa_app.qt_ui.widgets.common import Card, PageHeader, Toolba
 from documentos_empresa_app.qt_ui.widgets.tables import fill_table, make_readonly_table, selected_key
 from documentos_empresa_app.qt_ui.workers import BlockingTaskRunner
 from documentos_empresa_app.services.whatsapp_service import format_whatsapp, normalize_grupo_link, normalize_whatsapp
-from documentos_empresa_app.utils.common import MAX_COMPANY_OBSERVATION_LENGTH, ValidationError
+from documentos_empresa_app.utils.common import (
+    MAX_COMPANY_OBSERVATION_LENGTH,
+    ValidationError,
+    format_data_br,
+    parse_inicio_escritorio,
+)
 from documentos_empresa_app.utils.helpers import get_documents_directory
 
 
@@ -197,6 +202,14 @@ class EmpresasPage(QWidget):
         self.cnpj_edit.setPlaceholderText("Opcional - ex: 12.345.678/0001-90")
         self.cnpj_edit.setToolTip("Aceita o CNPJ tradicional e o novo formato alfanumérico da Receita Federal.")
         ident.addRow("CNPJ", self.cnpj_edit)
+        self.inicio_edit = QLineEdit()
+        self.inicio_edit.setPlaceholderText("Opcional - dd/mm/aaaa (ou mm/aaaa)")
+        self.inicio_edit.setToolTip(
+            "Quando a empresa começou no escritório. As cobranças, os envios de cobrança e o relatório\n"
+            "de pendências começam na competência desse mês; as anteriores não são cobradas.\n"
+            "Vazio: cobra todas as competências, como antes."
+        )
+        ident.addRow("Início no escritório", self.inicio_edit)
 
         contato = section("Contato para cobrança")
         self.contato_edit = QLineEdit()
@@ -265,7 +278,7 @@ class EmpresasPage(QWidget):
         layout.addStretch(1)
 
         for edit in (
-            self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit,
+            self.codigo_edit, self.nome_edit, self.cnpj_edit, self.inicio_edit, self.contato_edit, self.email_edit,
             self.whatsapp_edit, self.whatsapp_grupo_edit,
         ):
             edit.textEdited.connect(self._mark_dirty)
@@ -384,6 +397,7 @@ class EmpresasPage(QWidget):
         self.codigo_edit.setToolTip("O código não pode ser alterado depois do cadastro.")
         self.nome_edit.setText(company["nome_empresa"])
         self.cnpj_edit.setText(company.get("cnpj") or "")
+        self.inicio_edit.setText(format_data_br(company.get("inicio_escritorio")))
         self.contato_edit.setText(company.get("nome_contato") or "")
         self.email_edit.setText(company.get("email_contato") or "")
         self.whatsapp_edit.setText(format_whatsapp(company.get("whatsapp")))
@@ -478,7 +492,7 @@ class EmpresasPage(QWidget):
         self.form_title.setText("Nova empresa")
         self._set_badge(None)
         for edit in (
-            self.codigo_edit, self.nome_edit, self.cnpj_edit, self.contato_edit, self.email_edit,
+            self.codigo_edit, self.nome_edit, self.cnpj_edit, self.inicio_edit, self.contato_edit, self.email_edit,
             self.whatsapp_edit, self.whatsapp_grupo_edit,
         ):
             edit.clear()
@@ -510,6 +524,8 @@ class EmpresasPage(QWidget):
         inicio, fim, alerta = self._rule_values()
         try:
             self.services.collection_service.validate_company_settings_values(inicio, fim, alerta)
+            # data invalida barra antes de gravar a empresa
+            parse_inicio_escritorio(self.inicio_edit.text())
             # Numero ou link invalido barra antes de gravar a empresa.
             tem_whatsapp = normalize_whatsapp(self.whatsapp_edit.text()) or normalize_grupo_link(self.whatsapp_grupo_edit.text())
             if self.whatsapp_envios_check.isChecked() and not tem_whatsapp:
@@ -536,6 +552,7 @@ class EmpresasPage(QWidget):
             self.services.collection_service.update_company_settings(company_id, inicio, fim, alerta)
             self.services.empresa_service.set_nao_contatar_mala_direta(company_id, self.opt_out_checkbox.isChecked())
             self.services.empresa_service.set_whatsapp(company_id, self.whatsapp_edit.text())
+            self.services.empresa_service.set_inicio_escritorio(company_id, self.inicio_edit.text())
             self.services.empresa_service.set_whatsapp_envios(
                 company_id, self.whatsapp_envios_check.isChecked(), self.whatsapp_grupo_edit.text()
             )

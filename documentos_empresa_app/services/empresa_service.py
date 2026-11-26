@@ -13,6 +13,8 @@ from documentos_empresa_app.services.whatsapp_service import (
     normalize_whatsapp,
 )
 from documentos_empresa_app.utils.common import (
+    format_data_br,
+    parse_inicio_escritorio,
     MAX_COMPANY_OBSERVATION_LENGTH,
     ValidationError,
     normalize_delivery_methods,
@@ -291,6 +293,29 @@ class EmpresaService:
                 empresa_id=empresa_id,
                 empresa_nome=empresa["nome_empresa"],
             )
+
+    def set_inicio_escritorio(self, empresa_id: int, inicio) -> "date | None":
+        """Grava quando a empresa comecou no escritorio (dd/mm/aaaa, mm/aaaa ou date; vazio apaga).
+        Competencias anteriores a esse mes saem das cobrancas, dos envios de cobranca e do
+        relatorio de pendencias."""
+        data = parse_inicio_escritorio(inicio)
+        with self.empresa_repository.db_manager.connect():
+            empresa = self.get_empresa(empresa_id)
+            if parse_inicio_escritorio(empresa.get("inicio_escritorio")) == data:
+                return data
+            self.empresa_repository.update_inicio_escritorio(empresa_id, data)
+            self._log(
+                "EDICAO_EMPRESA",
+                "empresa",
+                empresa_id,
+                (
+                    f'Usuario {self._actor_name()} alterou o inicio no escritorio da empresa "{empresa["nome_empresa"]}" '
+                    f'para {format_data_br(data) or "(vazio)"}.'
+                ),
+                empresa_id=empresa_id,
+                empresa_nome=empresa["nome_empresa"],
+            )
+        return data
 
     def set_whatsapp(self, empresa_id: int, whatsapp: str | None) -> str | None:
         """Grava o WhatsApp de cobranca da empresa (so digitos, com DDI). Vazio apaga."""

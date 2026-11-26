@@ -12,6 +12,7 @@ from documentos_empresa_app.database.repositories import (
 )
 from documentos_empresa_app.utils.cache import ResultCache
 from documentos_empresa_app.utils.common import (
+    antes_do_inicio,
     AUTO_STATUS_NAO_COBRAR,
     ValidationError,
     build_chargeable_closure_key_map,
@@ -221,6 +222,9 @@ class CollectionService:
 
             company_settings = self._merge_settings(global_settings, self._extract_company_settings(company))
             for periodo in periodos:
+                # competencia de antes de a empresa entrar no escritorio: nao se cobra
+                if antes_do_inicio(company, periodo["ano"], periodo["mes"]):
+                    continue
                 window = self._build_collection_window(periodo["ano"], periodo["mes"], company_settings)
                 if today < window["inicio"]:
                     continue
